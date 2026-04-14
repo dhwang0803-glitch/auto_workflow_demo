@@ -2,6 +2,14 @@
 
 > 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
 
+## 관련 문서
+
+- 전체 아키텍처 / 4-layer 흐름: [`docs/context/architecture.md`](../docs/context/architecture.md)
+- 설계 결정 배경 (FastAPI 선택, Celery 선택 등): [`docs/context/decisions.md`](../docs/context/decisions.md)
+- 파일/디렉토리 맵: [`docs/context/MAP.md`](../docs/context/MAP.md)
+- 하류 의존: [`CLAUDE_Database.md`](./CLAUDE_Database.md), [`CLAUDE_Execution_Engine.md`](./CLAUDE_Execution_Engine.md)
+- 상류 의존: [`CLAUDE_Frontend.md`](./CLAUDE_Frontend.md)
+
 ## 모듈 역할
 
 **FastAPI Core Server** — 워크플로우 자동화 엔진의 두뇌.

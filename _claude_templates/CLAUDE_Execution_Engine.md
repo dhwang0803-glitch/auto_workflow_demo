@@ -2,6 +2,14 @@
 
 > 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
 
+## 관련 문서
+
+- 전체 아키텍처 / 하이브리드 실행 모드: [`docs/context/architecture.md`](../docs/context/architecture.md)
+- 하이브리드 SaaS 배경 (ADR-001), 샌드박스 설계 (ADR-005): [`docs/context/decisions.md`](../docs/context/decisions.md)
+- 파일 맵: [`docs/context/MAP.md`](../docs/context/MAP.md)
+- 상류 의존: [`CLAUDE_API_Server.md`](./CLAUDE_API_Server.md)
+- 하류 의존: [`CLAUDE_Database.md`](./CLAUDE_Database.md)
+
 ## 모듈 역할
 
 **Execution Layer** — 실제로 워크플로우의 노드를 실행하는 엔진.

@@ -2,6 +2,14 @@
 
 > 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
 
+## 관련 문서
+
+- 전체 아키텍처: [`docs/context/architecture.md`](../docs/context/architecture.md)
+- 자격증명 암호화 결정 배경 (ADR-004): [`docs/context/decisions.md`](../docs/context/decisions.md)
+- Repository 패턴 근거 (ADR-006): [`docs/context/decisions.md`](../docs/context/decisions.md)
+- 파일 맵: [`docs/context/MAP.md`](../docs/context/MAP.md)
+- 상류 의존 (Repository 소비자): [`CLAUDE_API_Server.md`](./CLAUDE_API_Server.md), [`CLAUDE_Execution_Engine.md`](./CLAUDE_Execution_Engine.md)
+
 ## 모듈 역할
 
 **Data Layer** — 워크플로우 자동화 엔진의 영속성 계층.
