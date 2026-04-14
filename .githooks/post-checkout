@@ -38,6 +38,9 @@ BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
 # main 브랜치는 작업 디렉터리 컨벤션 없음 → 스킵
 [ "$BRANCH" = "main" ] && exit 0
 
+# docs 브랜치는 위키(docs/context/) 편집 전용 → 스캐폴딩 스킵
+[ "$BRANCH" = "docs" ] && exit 0
+
 # 슬래시 포함 브랜치(fix/xxx, feature/xxx 등)는 작업 디렉터리 규칙 없음 → 스킵
 [[ "$BRANCH" == */* ]] && exit 0
 
