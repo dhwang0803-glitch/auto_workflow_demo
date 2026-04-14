@@ -2,6 +2,13 @@
 
 > 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
 
+## 관련 문서
+
+- 전체 아키텍처 / REST+WebSocket 흐름: [`docs/context/architecture.md`](../docs/context/architecture.md)
+- 설계 결정 배경: [`docs/context/decisions.md`](../docs/context/decisions.md)
+- 파일 맵: [`docs/context/MAP.md`](../docs/context/MAP.md)
+- 하류 의존 (API 소비): [`CLAUDE_API_Server.md`](./CLAUDE_API_Server.md)
+
 ## 모듈 역할
 
 **워크플로우 에디터 UI** — 사용자가 캔버스에 노드를 배치하고 선으로 연결하여
