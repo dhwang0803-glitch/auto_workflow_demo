@@ -99,9 +99,10 @@ LLM 추론은 `Execution_Engine`이 아닌 **독립 레이어 `Inference_Service
 | Light | 외부 API | Claude / Gemini |
 | Middle | 외부 API (공유 풀) | Claude / Gemini |
 | Heavy (Serverless) | **중앙 `Inference_Service`** | Gemma 4 26B MoE / 31B Dense (fp8) |
-| Heavy (Agent) | Agent 내 vLLM (E4B) — **Phase 2** | Phase 1은 중앙 경유 또는 API |
+| Heavy (Agent, GPU 보유) | Agent 내 vLLM (E4B) — **Phase 2** | Phase 1은 중앙 경유 또는 API |
+| Heavy (Agent, CPU-only) | Agent 내 KTransformers — **Phase 2** | GPU 없음 + 외부 API 금지 고객 대응 (ADR-009) |
 
-라우팅은 유저 플랜으로 **고정**된다. 런타임 복잡도 판정으로 백엔드를 바꾸지 않는다 (ADR-008).
+라우팅은 유저 플랜으로 **고정**된다. 런타임 복잡도 판정으로 백엔드를 바꾸지 않는다 (ADR-008). Agent 모드 내부에서만 `LLMRouter`가 고객 하드웨어(`gpu_info`, AMX 지원)에 따라 vLLM / KTransformers / 외부 API로 한 단계 더 분기한다 (ADR-009).
 
 ### 폴백 규칙 (플랜 무관, 운영 안전망)
 

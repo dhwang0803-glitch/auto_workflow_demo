@@ -182,7 +182,7 @@ Execution Layer에 다음을 **엔진 기본 내장**으로 도입한다.
 
 ## ADR-008 — 로컬 LLM 서빙: Gemma 4 + vLLM, 플랜별 라우팅, 별도 Inference_Service 브랜치
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**상태**: Accepted · **날짜**: 2026-04-14 · *Refined by ADR-009 (Agent 모드 CPU-only 경로)*
 
 ![Gemma 4 + vLLM 배포 전략](./images/gemma4_vllm_deployment_strategy.svg)
 
@@ -255,6 +255,87 @@ Gemma 4는 **네이티브 function-calling + structured output**을 지원한다
 - Extends: ADR-007 (LLM 노드 1급 추상화) — Gemma 4 네이티브 structured output으로 어댑터 범위 축소
 - Interacts with: ADR-001 (하이브리드 SaaS) — Agent + vLLM 시너지는 Phase 2
 - Affects branches: `Inference_Service` (신규), `Execution_Engine` (`LlmNode`가 HTTP 클라이언트 의존), `API_Server` (플랜 기반 라우팅 결정), `Database` (유저 플랜 필드)
+
+---
+
+## ADR-009 — Agent 모드 CPU-only 고객 대응: KTransformers를 Inference_Service의 두 번째 백엔드로
+
+**상태**: Proposed · **날짜**: 2026-04-14
+
+**Context**
+
+ADR-008은 Heavy 유저의 비용·지연·데이터 경계 문제를 중앙 `Inference_Service`(vLLM + Gemma 4)로 풀었지만, **Agent 모드 = 고객 VPC 내 실행** 시나리오에서 한 가지 전제가 깨진다: *고객이 GPU를 보유하고 있을 것*. 실제 B2B 영업 과정에서 확인된 패턴은 다음과 같다.
+
+- Heavy 유저라도 사내에 **CPU 서버만 있는** 경우가 적지 않다(특히 금융/공공/제조 온프레).
+- 데이터 민감도 때문에 외부 API 폴백을 **조직 정책으로 금지**한 고객이 존재한다.
+- 즉 ADR-008의 Agent 폴백 경로(중앙 vLLM 호출 또는 외부 API)가 **둘 다 막히는** 고객 세그먼트가 있다.
+
+같은 시기에 **KTransformers**(MADSys @ Tsinghua)가 주목받기 시작했다. vLLM과 자주 비교되지만 **푸는 문제가 다르다**:
+
+| 축 | vLLM | KTransformers |
+|---|---|---|
+| 최적화 목표 | GPU 충분할 때 **동시 요청 처리량** (PagedAttention + continuous batching) | GPU 부족할 때 **CPU-GPU 이기종** 활용으로 거대 모델 구동 |
+| 강점 시나리오 | 멀티유저 SaaS 서빙 | 단일/소수 유저, GPU 없음 또는 ≤24GB |
+| 보고된 성능 | A100 기준 단순 Transformer 대비 50~200× 동시성 | prefill 4.62~19.74×, decode 1.25~4.09× (대비: 기존 CPU offloading); 24GB VRAM 단일 GPU로 671B 파라미터 구동, prefill 최대 286 tok/s |
+| 하드웨어 전제 | NVIDIA GPU (멀티 GPU 텐서/데이터 병렬 우수) | AMD EPYC + AMX 지원 CPU + 최소 16GB CUDA GPU에서 최적 |
+| API 표면 | OpenAI 호환 (즉시 사용 가능) | 연구 프로젝트 성격, OpenAI 호환 미제공 (SGLang 통합 PR 진행 중) |
+| 성숙도 | 프로덕션 검증 다수 | `kt-kernel` / `kt-sft`로 최근 리팩토링, 프로덕션 사례 적음 |
+
+**핵심 통찰**: KTransformers는 vLLM의 **대체재가 아니라 보완재**다. SaaS 모드(중앙 서빙)에서는 vLLM이 정답이고, KTransformers는 **"GPU 없는 Agent 고객"이라는 빈 칸**을 채운다.
+
+**Decision**
+
+1. **`Inference_Service`에 두 번째 백엔드로 KTransformers를 추가**한다.
+   - vLLM은 그대로 1순위(중앙 서빙 + GPU 있는 Agent).
+   - KTransformers는 Agent 모드에서 **GPU가 없거나 부족한 고객 전용** 경로.
+   - 두 백엔드 모두 `LlmNode` 입장에서는 동일한 OpenAI 호환 인터페이스로 보여야 한다. KTransformers는 OpenAI 호환 엔드포인트가 아직 없으므로 **`Inference_Service` 내부 어댑터**로 감싼다.
+
+2. **라우팅은 LLMRouter 한 곳에 집중**한다 (런타임 분기, 플랜 분기 위에 얹는 한 단계).
+
+   ```python
+   class LLMRouter:
+       async def route(self, execution_mode: str, gpu_info: dict) -> LLMProvider:
+           if execution_mode == "serverless":
+               # SaaS 모드 → 무조건 vLLM (동시성이 핵심)
+               return self._vllm_central
+
+           # Agent 모드 → 고객 하드웨어에 따라 분기
+           if gpu_info["vram_gb"] >= 24:
+               return self._agent_vllm           # GPU 충분 → vLLM
+           elif gpu_info["cpu_supports_amx"]:
+               return self._agent_ktransformers  # GPU 부족 + AMX CPU → KTransformers
+           else:
+               return self._api_fallback         # 둘 다 안 되면 → 외부 API (조직 정책 허용 시)
+   ```
+
+   - `gpu_info`는 Agent 부팅 시 1회 수집해 `API_Server`에 등록. 런타임마다 재탐지하지 않는다.
+   - 외부 API 폴백이 조직 정책으로 금지된 고객은 라우팅 결과가 비면 **노드 실행 실패**로 처리(폴백 무한 루프 금지).
+
+3. **MVP에서는 도입하지 않는다 — Phase 2 로드맵으로 분리**.
+   ADR-008과 동일한 보수적 자세를 유지한다. 이유:
+   - KTransformers는 OpenAI 호환 API가 없어 어댑터 작성 비용이 든다.
+   - 하드웨어 호환성 범위가 좁다(AMD EPYC + AMX). 고객 환경 사전조사 프로세스 필요.
+   - 프로덕션 안정성 검증이 vLLM보다 부족 → MVP 신뢰성 리스크.
+   - MVP 단계의 Agent 모드는 ADR-008대로 *중앙 `Inference_Service` 경유 또는 외부 API*로 충분하다.
+
+4. **Phase 2 진입 트리거**: 다음 중 하나가 충족되면 KTransformers 백엔드 구현을 착수한다.
+   - "GPU 없음 + 외부 API 금지" 조합의 Heavy 고객 후보가 **2건 이상** 영업 파이프라인에 등장
+   - KTransformers 측의 SGLang 통합 PR이 머지되어 OpenAI 호환 표면이 안정화
+
+**Consequences**
+
+- (+) **빈 칸 메우기**: ADR-008의 사각지대(GPU 없는 Agent 고객 + 외부 API 금지)에 대한 명시적 대응 경로 확보. 영업 시 "그 고객은 못 받습니다"가 아니라 "Phase 2에서 지원됩니다"라고 답할 수 있음.
+- (+) **라우팅 일관성**: LLMRouter가 백엔드 다양성을 흡수하므로 `LlmNode` 코드는 손대지 않아도 됨. ADR-007의 1급 추상화 원칙과 충돌 없음.
+- (+) **MVP 범위 보호**: Phase 2 분리로 MVP 일정·신뢰성에 영향 없음. ADR-008의 보수적 폴백 전략과 동일한 패턴.
+- (−) **사전조사 부담**: Agent 고객마다 `gpu_info` + AMX 지원 여부 + 조직의 외부 API 정책 3종 세트를 영업/온보딩 단계에서 수집해야 함. CRM 또는 온보딩 체크리스트 필드 추가 필요.
+- (−) **두 번째 어댑터 유지비**: KTransformers의 OpenAI 호환 표면이 안정화되기 전에는 `Inference_Service` 내부 어댑터를 직접 유지해야 함. SGLang 통합이 머지되면 어댑터를 제거하거나 얇게 만들 수 있음.
+- (−) **운영 매트릭스 확장**: vLLM + KTransformers 두 백엔드의 헬스체크/모델 로드/버전 호환성을 각각 관리해야 함. 단, Agent 측에 한정되므로 중앙 서빙 운영 부담은 늘지 않음.
+
+**Related**
+- Refines: ADR-008 (Gemma 4 + vLLM 로컬 서빙) — Agent 모드 백엔드 경로 보강
+- Interacts with: ADR-001 (하이브리드 SaaS) — "데이터 + 추론 둘 다 VPC 잔류" 시나리오의 GPU 없는 변종을 커버
+- Affects branches: `Inference_Service` (KTransformers 어댑터, Phase 2), `API_Server` (Agent `gpu_info`/정책 필드), `Database` (고객 환경 메타데이터)
+- 미해결 질문: KTransformers의 Gemma 4 26B MoE 지원 검증, AMX 미지원 CPU에서의 성능 하한선, 라이선스 재검토(Apache 2.0 호환)
 
 ---
 
