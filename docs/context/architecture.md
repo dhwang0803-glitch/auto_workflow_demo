@@ -38,6 +38,7 @@
 | Core | `API_Server` | [`_claude_templates/CLAUDE_API_Server.md`](../../_claude_templates/CLAUDE_API_Server.md) |
 | Execution | `Execution_Engine` | [`_claude_templates/CLAUDE_Execution_Engine.md`](../../_claude_templates/CLAUDE_Execution_Engine.md) |
 | Data | `Database` | [`_claude_templates/CLAUDE_Database.md`](../../_claude_templates/CLAUDE_Database.md) |
+| Inference | `Inference_Service` *(신설 예정)* | vLLM + Gemma 4 서빙. 템플릿은 후속 작업. |
 | Wiki (본 문서군) | `docs` | [`_claude_templates/CLAUDE_docs.md`](../../_claude_templates/CLAUDE_docs.md) |
 
 ## 실행 모드 (하이브리드 SaaS)
@@ -82,6 +83,49 @@ Trigger fires → API_Server ──execute(AgentCommand)──▶ Agent
 외부 서비스 ──POST /webhooks/{workflow_id}/{path}──▶ API_Server
                 (HMAC 서명 검증)                      │
                                                       └─▶ 실행 디스패치 (위 1 또는 2)
+```
+
+## LLM 추론 계층 (Inference Layer)
+
+LLM 추론은 `Execution_Engine`이 아닌 **독립 레이어 `Inference_Service`** 가 담당한다.
+도입 배경과 결정 상세는 [`decisions.md` ADR-008](./decisions.md) 참조.
+
+![Gemma 4 + vLLM 배포 전략](./images/gemma4_vllm_deployment_strategy.svg)
+
+### 플랜별 백엔드 라우팅
+
+| 플랜 | 백엔드 | 모델 |
+|------|--------|------|
+| Light | 외부 API | Claude / Gemini |
+| Middle | 외부 API (공유 풀) | Claude / Gemini |
+| Heavy (Serverless) | **중앙 `Inference_Service`** | Gemma 4 26B MoE / 31B Dense (fp8) |
+| Heavy (Agent) | Agent 내 vLLM (E4B) — **Phase 2** | Phase 1은 중앙 경유 또는 API |
+
+라우팅은 유저 플랜으로 **고정**된다. 런타임 복잡도 판정으로 백엔드를 바꾸지 않는다 (ADR-008).
+
+### 폴백 규칙 (플랜 무관, 운영 안전망)
+
+1. 로컬 모델 `output_schema` 검증 N회 연속 실패 → 더 큰 로컬 모델로 재시도(26B → 31B)
+2. 로컬 인프라 장애(전체) → 외부 API로 폴백 + 장애 알람
+
+### 호출 흐름
+
+```
+Execution_Engine / LlmNode
+        │
+        ├─ 유저 플랜 조회 (API_Server 경유)
+        │
+        ├─ Light/Middle → 외부 API 어댑터 (OpenAI/Anthropic/Gemini)
+        │
+        └─ Heavy (Serverless) → HTTP POST /v1/chat/completions
+                                 (OpenAI 호환 엔드포인트)
+                                 │
+                                 ▼
+                        Inference_Service
+                        (vLLM + Gemma 4)
+                        │
+                        ├─ structured output 네이티브 지원 (tool_call_parser=gemma4)
+                        └─ 응답 → LlmNode output_schema 검증
 ```
 
 ## AI / LLM 노드 설계 원칙
