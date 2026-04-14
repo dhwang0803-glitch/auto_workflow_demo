@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# .githooks/post-checkout
+#
+# 새 브랜치 체크아웃 시 자동으로:
+#   1. {브랜치명}/agents/ 가 없으면 _agent_templates/ 에서 복사
+#   2. {브랜치명}/ 표준 폴더 구조 스캐폴딩 (없는 폴더만 생성)
+#   3. {브랜치명}/CLAUDE.md 가 없으면 _claude_templates/ 에서 복사
+#
+# 브랜치별 기본 구조:
+#   API_Server       →  app/routers/ app/services/ app/models/ tests/ config/
+#   Database         →  schemas/ migrations/ src/repositories/ src/models/ scripts/ tests/ docs/
+#   Execution_Engine →  src/nodes/ src/dispatcher/ src/runtime/ src/agent/ scripts/ tests/ config/ docs/
+#   Frontend         →  src/components/ src/pages/ src/services/ public/ tests/
+#   (그 외 ML/파이프라인 공통) → src/ scripts/ tests/ config/ docs/
+#
+# 설치: git config core.hooksPath .githooks
+#       chmod +x .githooks/post-checkout
+
+PREV_HEAD=$1
+NEW_HEAD=$2
+BRANCH_CHECKOUT=$3
+
+# 파일 단위 checkout은 무시
+[ "$BRANCH_CHECKOUT" != "1" ] && exit 0
+
+# 새 브랜치 생성(git checkout -b / git switch -c)만 처리
+# 새 브랜치 = PREV_HEAD와 NEW_HEAD가 동일한 커밋 + 브랜치명이 변경된 경우
+# 기존 브랜치 checkout(커밋이 다름)은 스캐폴딩 불필요 → 즉시 종료
+[ "$PREV_HEAD" != "$NEW_HEAD" ] && exit 0
+
+PREV_BRANCH=$(git name-rev --name-only "$PREV_HEAD" 2>/dev/null | sed 's/~.*//')
+CURR_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+[ "$PREV_BRANCH" = "$CURR_BRANCH" ] && exit 0
+
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+[ -z "$BRANCH" ] && exit 0
+
+# main 브랜치는 작업 디렉터리 컨벤션 없음 → 스킵
+[ "$BRANCH" = "main" ] && exit 0
+
+# 슬래시 포함 브랜치(fix/xxx, feature/xxx 등)는 작업 디렉터리 규칙 없음 → 스킵
+[[ "$BRANCH" == */* ]] && exit 0
+
+# 브랜치명이 곧 작업 디렉터리명 (예: RAG → RAG/, VOD_Embedding → VOD_Embedding/)
+WORK_DIR="$BRANCH"
+
+# ─── 공통 설정 ───────────────────────────────────────────────────────────────
+AGENT_TEMPLATES_DIR="_agent_templates"
+CLAUDE_TEMPLATES_DIR="_claude_templates"
+
+# ─── 1. agents/ 자동 생성 ────────────────────────────────────────────────────
+if [ -d "$AGENT_TEMPLATES_DIR" ]; then
+    AGENTS_DIR="${WORK_DIR}/agents"
+    if [ ! -d "$AGENTS_DIR" ]; then
+        mkdir -p "$AGENTS_DIR"
+        cp "$AGENT_TEMPLATES_DIR"/*.md "$AGENTS_DIR/"
+        echo ""
+        echo "[agents] ${AGENTS_DIR}/ 생성 완료"
+        echo "[agents] _agent_templates/ 에서 복사됨 — 브랜치 특성에 맞게 커스터마이징하세요"
+        echo "[agents] SECURITY_AUDITOR.md 는 프로젝트 공통 버전입니다"
+        echo ""
+    fi
+fi
+
+# ─── 2. 표준 폴더 구조 스캐폴딩 ──────────────────────────────────────────────
+CREATED=()
+
+# 폴더가 없을 때만 생성하고 .gitkeep 추가
+_mkdir() {
+    local dir="${WORK_DIR}/$1"
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        touch "${dir}/.gitkeep"
+        CREATED+=("$1/")
+    fi
+}
+
+case "$BRANCH" in
+    Database_Design|Database)
+        # DB 특화: DDL SQL / Repository 구현 / 마이그레이션 이력 / 테스트 / 문서
+        _mkdir schemas
+        _mkdir migrations
+        _mkdir src/repositories
+        _mkdir src/models
+        _mkdir scripts
+        _mkdir tests
+        _mkdir docs
+        ;;
+    API_Server)
+        # FastAPI 구조
+        _mkdir app/routers
+        _mkdir app/services
+        _mkdir app/models
+        _mkdir tests
+        _mkdir config
+        ;;
+    Execution_Engine)
+        # 워크플로우 실행 엔진: 노드 플러그인 / 디스패처 / 런타임 / Agent
+        _mkdir src/nodes
+        _mkdir src/dispatcher
+        _mkdir src/runtime
+        _mkdir src/agent
+        _mkdir scripts
+        _mkdir tests
+        _mkdir config
+        _mkdir docs
+        ;;
+    Frontend)
+        # React/Next.js 구조
+        _mkdir src/components
+        _mkdir src/pages
+        _mkdir src/services
+        _mkdir public
+        _mkdir tests
+        ;;
+    *)
+        # 그 외 브랜치 공통 (ML/파이프라인 등)
+        _mkdir src
+        _mkdir scripts
+        _mkdir tests
+        _mkdir config
+        _mkdir docs
+        ;;
+esac
+
+if [ ${#CREATED[@]} -gt 0 ]; then
+    echo ""
+    echo "[scaffold] ${WORK_DIR}/ 표준 폴더 구조 생성:"
+    for d in "${CREATED[@]}"; do
+        echo "  + ${WORK_DIR}/${d}"
+    done
+    echo "[scaffold] .gitkeep 추가됨 — git add 후 커밋하세요"
+    echo ""
+fi
+
+# ─── 3. 브랜치별 CLAUDE.md 자동 생성 ─────────────────────────────────────────
+if [ -d "$CLAUDE_TEMPLATES_DIR" ]; then
+    _CLAUDE_TARGET="${WORK_DIR}/CLAUDE.md"
+    if [ ! -f "$_CLAUDE_TARGET" ]; then
+        _specific="${CLAUDE_TEMPLATES_DIR}/CLAUDE_${BRANCH}.md"
+        _default="${CLAUDE_TEMPLATES_DIR}/CLAUDE_DEFAULT.md"
+
+        if [ -f "$_specific" ]; then
+            cp "$_specific" "$_CLAUDE_TARGET"
+            echo ""
+            echo "[claude] ${_CLAUDE_TARGET} 생성 완료 (브랜치 전용 템플릿)"
+            echo "[claude] 파일 위치 규칙과 인터페이스를 확인하세요"
+            echo ""
+        elif [ -f "$_default" ]; then
+            cp "$_default" "$_CLAUDE_TARGET"
+            echo ""
+            echo "[claude] ${_CLAUDE_TARGET} 생성 완료 (기본 템플릿)"
+            echo "[claude] TODO 항목을 브랜치 역할에 맞게 수정하세요"
+            echo ""
+        fi
+    fi
+fi
