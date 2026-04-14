@@ -119,6 +119,145 @@ Credentials는 DB 저장 + Agent 전송의 두 수명주기를 가진다. 저장
 
 ---
 
+## ADR-007 — LLM 노드 1급 추상화 + 출력 스키마 강제 + Human-in-the-loop 내장
+
+**상태**: Accepted · **날짜**: 2026-04-14 · *Refined by ADR-008 (structured output 어댑터 범위 축소)*
+
+**Context**
+
+현업에서 n8n 등 기존 워크플로우 자동화 도구의 AI 활용에 대해 세 가지 한계가 반복 지적된다:
+
+1. **출력 불안정성** — LLM 노드가 같은 입력에도 매번 다른 형태(JSON/평문/키명 변이)를 반환해 후속 노드 파싱이 깨진다. 자동화의 본질인 "예측 가능한 반복"과 LLM의 비결정성이 근본 충돌한다.
+2. **복합 판단 정확도 급락** — "계약서에서 위험 조항을 법무팀 기준으로 등급화" 같은 도메인 복합 판단을 단일 노드에 맡기면 할루시네이션 빈도가 현업 허용치를 초과한다. 결과적으로 "자동화했는데 검수 때문에 일이 늘었다".
+3. **비용/지연** — LLM 호출 노드를 3~4개 체이닝하면 실행당 수십 초 + 토큰 비용이 누적되어, 일 수천 건 규모 업무에 경제성이 무너진다.
+
+현재 우리 설계에는 LLM 전용 추상화가 없다. `HttpRequestNode`로 API를 호출하는 수준이면 지금 비판받는 n8n 구조와 동일하므로, 동일한 한계에 그대로 노출된다.
+
+**Decision**
+
+Execution Layer에 다음을 **엔진 기본 내장**으로 도입한다.
+
+1. **`BaseNode.output_schema` (공통)**
+   모든 노드가 선택적으로 **JSON Schema 문자열**을 선언하고, 런타임이 `execute()` 결과를 검증한다. LLM 노드에는 **필수**로 강제한다. 검증 실패 시 `NodeRetryPolicy`(기본: 최대 2회, 지수 백오프)에 따라 재시도하며, 모든 재시도 실패는 구조적 실패로 기록한다.
+   JSON Schema 문자열로 고정한 이유는 워크플로우가 JSON으로 직렬화되어 `workflows` 테이블에 저장·복원되는 전체 수명주기에서 스키마가 **데이터와 함께 이동**해야 하기 때문이다. Pydantic 모델 객체는 Python 런타임에 묶여 직렬화가 불리하고, Frontend 스키마 편집 UI와도 어긋난다. 시스템 안정성(직렬화 라운드트립 손실 없음)을 타입 편의보다 우선한다.
+
+2. **`LlmNode` 1급 서브클래스**
+   `HttpRequestNode` 파생이 아닌 별도 추상화. 속성: `prompt_template`, `output_schema`(필수), `model`, `temperature`, `max_retries`.
+   모델이 structured output(JSON mode, tool use)을 지원하면 그 경로를 우선 사용, 미지원 모델은 "JSON 강제 프롬프트 + 검증 루프" 폴백. 모델별 규격 차이(OpenAI tool use / Anthropic tool use / Gemini responseSchema)는 어댑터 계층에서 흡수한다.
+
+3. **`ApprovalNode` — 웹 승인 + 알림 2-track 기본**
+   특정 노드에서 실행을 일시정지하고 사람의 승인을 기다린다. **MVP부터 두 경로를 동시 제공**한다:
+   - **웹 경로**: 프론트엔드 "승인 인박스(Approval Inbox)"에 항목 표시, `POST /api/v1/executions/{id}/approve | reject` 엔드포인트로 재개.
+   - **알림 경로**: 승인 대기 시 사용자에게 이메일/Slack(추후 모바일 푸시) 발송, 메시지 내 액션 링크로 동일 엔드포인트 호출.
+
+   두 경로 병행이 MVP 범위인 이유는 실서비스 UX 전제가 "사용자가 워크플로우 UI를 항시 띄우고 있지 않다"는 것이기 때문이다. 알림 없이 웹 인박스만 제공하면 승인 지연으로 전체 실행이 무기한 대기하게 되어 ApprovalNode 자체가 사용되지 않는다. 알림 채널은 `NotificationChannel` 인터페이스로 추상화하고 초기 구현은 이메일 + Slack 2종으로 한정한다.
+
+   DAG 런타임은 상태 머신(`running` → `paused` → `resumed`/`rejected`)을 저장하고 재개 명령을 멱등하게 처리한다. 승인 대기 시간은 분~일 단위로 길 수 있으므로 기존 30초 하드 타임아웃(ADR-005)과는 **별도 수명주기**로 관리한다.
+
+4. **노드 역할 축소 가이드 (정책)**
+   LLM 노드의 권장 역할을 "추출 / 분류 / 요약 / 변환" 단일 작업으로 한정. 복합 판단은 여러 `LlmNode` + `ConditionNode` 조합으로 분해하도록 UI 가이드 및 템플릿에 반영. 기술적 강제는 없고 규범적 가이드라인.
+
+관측성 보강(부수):
+- `executions` 테이블에 `token_usage`, `cost_usd`, `duration_ms`, `paused_at_node` 컬럼 추가.
+- `ExecutionRepository.save_result`에서 LLM 호출 메타데이터 누적.
+
+**Consequences**
+
+- (+) 현업 3대 불만(불안정성 / 정확도 / 비용 가시성)에 **구조적 응답**. "LLM은 믿을 수 없다"는 전제를 엔진 수준에서 보정.
+- (+) `output_schema` 검증은 LLM뿐 아니라 HTTP/DB 응답 검증에도 재사용 가능 → 공통 신뢰성 향상.
+- (+) 워크플로우 JSON 직렬화에 스키마가 포함되어 DB 라운드트립/버전 이행/외부 Export 모두 손실 없음.
+- (+) Approval 2-track이 "95% 자동 + 5% 검수" 배포 모델을 현실적으로 지원해 자동화 도입 초기 저항을 낮춘다.
+- (−) **런타임 복잡도 급증**. DAG 실행기가 상태 머신을 관리해야 하며, Celery/Agent 양쪽에서 멱등 재개를 보장해야 한다.
+- (−) **DB 스키마 변경** 필요(마이그레이션 1건). ADR-006의 Repository 계약이 확장된다.
+- (−) `LlmNode` 구현 난이도 높음: 모델별 structured output 규격 어댑터 계층 필요.
+- (−) **알림 인프라 의존성** 추가. SMTP/Slack 발송 실패 시 승인 지연이 곧 서비스 장애로 인식될 수 있어 재시도/대체 경로가 필요하다.
+- (−) JSON Schema 문자열은 개발자가 직접 타입으로 다루기 불편 → 내부적으로 `jsonschema` 라이브러리 검증 + 런타임 Pydantic 변환 헬퍼 제공으로 완화.
+
+**Related**
+- Refines: ADR-006 (Repository 계약 확장)
+- Interacts with: ADR-005 (코드 노드 30초 타임아웃은 Approval/LLM 수명주기와 분리)
+- Affects branches: `Execution_Engine` (런타임/LlmNode/ApprovalNode), `Database` (스키마), `API_Server` (승인 엔드포인트, 재개 디스패치, 알림 디스패치), `Frontend` (스키마 편집 UI, 승인 인박스)
+
+---
+
+## ADR-008 — 로컬 LLM 서빙: Gemma 4 + vLLM, 플랜별 라우팅, 별도 Inference_Service 브랜치
+
+**상태**: Accepted · **날짜**: 2026-04-14
+
+![Gemma 4 + vLLM 배포 전략](./images/gemma4_vllm_deployment_strategy.svg)
+
+**Context**
+
+ADR-007은 LLM 노드의 출력 안정성과 Human-in-the-loop 문제는 구조적으로 해결했지만, **비용·지연**이라는 세 번째 한계는 여전히 외부 API에 의존한다. 워크플로우당 AI 노드 3~4회 호출 × 일 수천 건을 가정하면:
+
+- API 방식: Heavy 유저 월 $50~200 가변 비용. 호출 수에 비례.
+- 추가 부담: 네트워크 RTT, API 레이트리밋, 고객 데이터가 외부로 나가는 것에 대한 B2B 저항.
+
+같은 시점에 Google이 **Gemma 4**를 Apache 2.0으로 공개했다. 모델 라인업이 우리 3-tier 유저 세그먼트와 정확히 매칭된다:
+
+- **26B MoE (활성 4B)**: 4B급 지연 + 26B급 품질. 일반 AI 노드(분류/요약/추출)의 주력.
+- **31B Dense**: Heavy 추론.
+- **E4B**: Agent/엣지 GPU용.
+
+Gemma 4는 **네이티브 function-calling + structured output**을 지원한다. vLLM이 `--tool-call-parser gemma4` 옵션으로 즉시 활용 가능. vLLM 벤치마크에서 Ollama 대비 TTFT 3배·처리량 3배, 26B MoE가 131 tok/s로 E4B(124 tok/s)보다 빠름(MoE 효과).
+
+**Decision**
+
+1. **로컬 LLM 서빙 도입** — vLLM + Gemma 4를 워크플로우 엔진의 기본 LLM 백엔드로 채택.
+   - 기본 모델: **26B MoE** (일반 노드)
+   - 중량 모델: **31B Dense** (복잡 추론, 초기엔 수요 시 별도 인스턴스 추가)
+   - 양자화: **fp8** (GCP RTX 6000 Pro 24~48GB 클래스 전제)
+   - 서빙 옵션: `--enable-auto-tool-choice --tool-call-parser gemma4`
+
+2. **라우팅 정책: 플랜별 고정 (Option C)**
+   ADR-001의 3-tier 유저 세그먼트와 일관되게 **유저 플랜으로 백엔드를 결정**한다. 런타임 복잡도 판정이나 임계치 자동 전환은 도입하지 않는다.
+
+   | 플랜 | LLM 백엔드 | 비고 |
+   |------|-----------|------|
+   | Light | 외부 API (Claude/Gemini) | 호출량 적음. 고정비 기피. |
+   | Middle | 외부 API (공유 풀) | 사용량 증가 시 로컬 이관은 Phase 2 재검토 |
+   | Heavy (Serverless) | **중앙 vLLM 서빙** (Gemma 4 26B MoE / 31B) | 손익분기 초과 구간 |
+   | Heavy (Agent) | Agent 내 vLLM (E4B) — **Phase 2** | MVP는 중앙 vLLM 경유 또는 API |
+
+   **실패 시 폴백 규칙** (모든 플랜 공통):
+   - 로컬 모델이 `output_schema` 검증 N회 연속 실패 → 동일 플랜 내에서 더 큰 로컬 모델(26B → 31B)로 재시도
+   - 로컬 인프라 장애(전체) → 외부 API로 플랜과 무관하게 폴백 + 장애 알람
+   - 폴백은 운영 안전망이지 라우팅 정책이 아니다.
+
+3. **`Inference_Service` 브랜치 신설**
+   vLLM 서빙을 `Execution_Engine` 내부 서비스가 아닌 **별도 레이어**로 분리한다.
+   - 배포/스케일 수명주기가 다름 (GPU 인스턴스, 모델 로드 수분 소요 vs 워커는 초 단위 기동)
+   - GPU pre-allocate ~90GB 이슈로 독립 인스턴스가 자연스러움
+   - 책임 분리: `Execution_Engine`은 노드 실행, `Inference_Service`는 모델 서빙. 교체·업그레이드 독립.
+   - 인터페이스: `Execution_Engine`의 `LlmNode`가 HTTP로 `Inference_Service`를 호출. OpenAI 호환 엔드포인트(vLLM 기본)로 단순화.
+
+4. **Agent 내 vLLM (E4B)는 Phase 2로 분리**
+   Heavy 유저 VPC Agent에 E4B 서빙을 내장하면 "데이터 + 추론 둘 다 VPC 잔류"가 가능해 ADR-001 하이브리드 SaaS의 장점이 극대화되지만, MVP 범위에는 포함하지 않는다:
+   - Agent 이미지에 GPU 런타임 + vLLM + 모델 가중치(수십 GB) 번들 시 배포 복잡도 급증
+   - Heavy 유저라도 GPU 보유를 전제할 수 없음
+   - Phase 1에서는 Agent가 중앙 `Inference_Service`를 호출(VPC → 중앙) 또는 외부 API 폴백. 데이터 민감도가 높은 고객은 Phase 2까지 API 폴백 금지 옵션으로 대응.
+
+5. **ADR-007 어댑터 범위 축소**
+   Gemma 4 네이티브 structured output이 제공되는 경로에서는 "JSON 강제 프롬프트 + 검증 루프" 폴백이 불필요. ADR-007 Decision 2의 어댑터 계층 범위를 "structured output 미지원 경로만"으로 축소. ADR-007 본문은 수정하지 않고 상태 행에 *Refined by ADR-008* 주석만 추가(ADR 불변성 원칙).
+
+**Consequences**
+
+- (+) **Heavy 유저 단가 급감**: 월 5만 호출 이상 구간에서 호출당 단가가 API 대비 수십 배 낮아짐
+- (+) **데이터 경계 강화**: 중앙 vLLM 서빙으로 B2B 데이터가 외부 API 제공자를 경유하지 않음 (VPC 잔류는 Phase 2)
+- (+) **네이티브 function-calling**: ADR-007의 `output_schema` 강제가 모델 레벨에서 직접 지원됨 → 어댑터 부담 감소
+- (+) **책임 분리**: `Inference_Service` 독립으로 GPU 스케일·모델 업그레이드를 Execution 레이어와 무관하게 수행
+- (−) **고정비 전환**: 얼리 유저 단계에서 GPU 인스턴스 월 $300~500은 매몰비용. Light/Middle API 매출로 상쇄 안 되는 초기 구간 존재
+- (−) **운영 복잡도**: GPU 인스턴스 헬스체크, 모델 로드 타임, OOM, pre-allocate ~90GB 이슈 관리 필요
+- (−) **폴백 경로 테스트 부담**: 로컬 장애 → API 폴백 경로는 드물게만 발동되므로 정기 카나리아 필요
+- (−) **후속 작업 필요**: post-checkout 훅 case 분기 + `_claude_templates/CLAUDE_Inference_Service.md` 템플릿 작성 (이 ADR 범위 밖, main 브랜치에서 처리)
+
+**Related**
+- Extends: ADR-007 (LLM 노드 1급 추상화) — Gemma 4 네이티브 structured output으로 어댑터 범위 축소
+- Interacts with: ADR-001 (하이브리드 SaaS) — Agent + vLLM 시너지는 Phase 2
+- Affects branches: `Inference_Service` (신규), `Execution_Engine` (`LlmNode`가 HTTP 클라이언트 의존), `API_Server` (플랜 기반 라우팅 결정), `Database` (유저 플랜 필드)
+
+---
+
 ## 관련 문서
 
 - 전체 아키텍처: [`architecture.md`](./architecture.md)

@@ -64,6 +64,17 @@ Execution_Engine/
 ```
 세부: [`_claude_templates/CLAUDE_Execution_Engine.md`](../../_claude_templates/CLAUDE_Execution_Engine.md)
 
+### `Inference_Service` *(신설 예정 — ADR-008)*
+```
+Inference_Service/
+├── serving/             vLLM 엔트리포인트, OpenAI 호환 API 래퍼
+├── models/              Gemma 4 가중치 관리 (다운로드 스크립트, 체크섬)
+├── config/              vLLM 실행 옵션, 양자화, 토크나이저 프리셋
+├── scripts/             start_vllm.sh, warmup.py, canary_check.py
+└── tests/               서빙 헬스체크, structured output 검증
+```
+세부 템플릿(`_claude_templates/CLAUDE_Inference_Service.md`)과 post-checkout 훅 case 분기는 **후속 작업**. 현재는 ADR-008 초안 기반 예상 구조.
+
 ### `Frontend` (Frontend Layer — Next.js)
 ```
 Frontend/
