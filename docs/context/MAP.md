@@ -17,6 +17,8 @@ auto_workflow_demo/
 
 `main`에는 **공통 설정만** 있고, 실제 소스는 각 브랜치(`API_Server` / `Database` / `Execution_Engine` / `Frontend`)에 격리된다.
 
+`docs` 브랜치는 **위키 전용**: `docs/context/*` 편집만 허용되며, 코드 브랜치는 이 위키를 읽기 전용으로 참조한다. 자세한 규칙은 [`_claude_templates/CLAUDE_docs.md`](../../_claude_templates/CLAUDE_docs.md) 참고.
+
 ## 브랜치별 구조
 
 ### `API_Server` (Core Layer — FastAPI)
