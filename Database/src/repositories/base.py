@@ -218,6 +218,21 @@ class ExecutionRepository(ABC):
     async def list_pending_approvals(self, owner_id: UUID) -> list[Execution]: ...
 
 
+@dataclass
+class AgentCredentialPayload:
+    """PLAN_05 / ADR-013 — hybrid RSA-AES credential envelope for Agent transport.
+
+    `wrapped_key` is an RSA-OAEP-SHA256 wrap of a fresh AES-256 key
+    (256 bytes for RSA-2048). `ciphertext` = AES-256-GCM(plaintext) with
+    `nonce` (12 B) and embedded 16 B auth tag. Wire serialization (base64
+    JSON) is the WebSocket layer's responsibility.
+    """
+
+    wrapped_key: bytes
+    nonce: bytes
+    ciphertext: bytes
+
+
 class CredentialStore(ABC):
     """ADR-004 Fernet-at-rest. See `FernetCredentialStore` for the impl."""
 
@@ -229,6 +244,22 @@ class CredentialStore(ABC):
 
     @abstractmethod
     async def delete(self, credential_id: UUID) -> None: ...
+
+    @abstractmethod
+    async def retrieve_for_agent(
+        self,
+        credential_id: UUID,
+        *,
+        agent_public_key_pem: bytes,
+    ) -> AgentCredentialPayload:
+        """Fetch credential, decrypt-at-rest, re-wrap for the target Agent.
+
+        ADR-013 hybrid scheme. Caller is responsible for resolving the
+        Agent's RSA public key (PEM) — typically via `AgentRepository`.
+        Implementations must stay side-effect free w.r.t. caching so a
+        future in-process cache decorator can wrap this method.
+        """
+        ...
 
 
 class WebhookRegistry(ABC):
