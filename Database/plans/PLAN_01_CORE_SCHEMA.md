@@ -1,6 +1,6 @@
 # PLAN_01 — Core Schema + Routing Fields (b′)
 
-> **브랜치**: `Database` · **작성일**: 2026-04-14 · **상태**: Draft
+> **브랜치**: `Database` · **작성일**: 2026-04-14 · **완료일**: 2026-04-15 · **상태**: Done
 >
 > 첫 스키마 파일과 Repository ABC 골격을 확정한다. 범위는 ADR-001/007/008 을
 > 만족하는 최소 필드까지. `credentials` / `agents` / `webhook_registry` 와
@@ -45,9 +45,15 @@
 > `gpu_info` 는 **이 PLAN 범위 밖**. ADR-009 본문에 *"Agent 부팅 시 1회 수집"* 로
 > 명시되어 있어 `agents` 테이블에 속함. PLAN_02 에서 같이 처리.
 >
-> `external_api_policy` 는 free-form JSONB 로 시작. 현 시점 합의된 키는
-> `allow_outbound: boolean` 하나이며, 다운스트림(`API_Server`)이 다른 키를
-> 박기 전 PLAN 에서 확정한다.
+> **`external_api_policy` 확정 스펙 (2026-04-15)**
+>
+> MVP 계약 키는 **`allow_outbound: boolean` 단 하나**. 누락 시 기본값
+> `false` (보수적). `API_Server` 는 이 키만 신뢰해 ADR-009 외부 API 폴백
+> 허용 여부를 판단한다.
+>
+> 미정의 키는 포워드 호환을 위해 **저장은 허용하되 읽기 쪽은 무시**하고
+> `WARN` 로그를 남긴다. 도메인 allow/deny 리스트 등 확장 키는 실제 차단
+> 로직이 필요한 PLAN 에서 추가하고, 그때 이 섹션을 갱신한다.
 
 ### 3.2 `workflows`
 
@@ -190,22 +196,21 @@ class CredentialStore(ABC):
 
 ## 6. 수용 기준
 
-- [ ] `psql -f schemas/001_core.sql` 이 빈 DB 에 에러 없이 적용
-- [ ] 모든 CHECK 제약(plan_tier, execution_mode, status) 이 잘못된 값을 거부
-- [ ] `InMemoryExecutionRepository` 로 다음 시나리오 단위 테스트가 통과:
-  - queued → running → paused(paused_at_node set) → resumed → success
-  - running → failed(error set)
-  - paused → rejected
-- [ ] `API_Server` 가 `users.plan_tier` + `users.external_api_policy` 만으로
-      ADR-008 플랜 라우팅 의사결정을 내릴 수 있음 (조회 경로 존재)
-- [ ] 모든 Repository 메서드가 async (ADR-002 FastAPI async 정합)
+- [x] `psql -f schemas/001_core.sql` 이 빈 DB 에 에러 없이 적용 *(test_schema_loads 통과, 2026-04-15)*
+- [x] 모든 CHECK 제약(plan_tier, execution_mode, status) 이 잘못된 값을 거부 *(test_schema_loads)*
+- [x] `InMemoryExecutionRepository` 로 다음 시나리오 단위 테스트가 통과:
+  - [x] queued → running → paused(paused_at_node set) → resumed → success
+  - [x] running → failed(error set)
+  - [x] paused → rejected
+- [x] `API_Server` 가 `users.plan_tier` + `users.external_api_policy` 만으로
+      ADR-008 플랜 라우팅 의사결정을 내릴 수 있음 (조회 경로 존재) — `external_api_policy` 키 스펙 확정
+- [x] 모든 Repository 메서드가 async (ADR-002 FastAPI async 정합)
 
 ## 7. 리스크 & 오픈 이슈
 
-1. **`external_api_policy` 키 네이밍 미확정**
-   현재 합의된 키는 `allow_outbound: boolean` 하나. `API_Server` 가 다른 키를
-   박기 전에 이 PLAN 머지 전 합의 필요. 그렇지 않으면 마이그레이션 없이
-   계약이 깨진다.
+1. ~~**`external_api_policy` 키 네이밍 미확정**~~ → **해소 (2026-04-15)**
+   단일 키 `allow_outbound: boolean`, 기본값 `false`, 미정의 키 무시+WARN.
+   §3.1 참조.
 
 2. **`nodes` 카탈로그 vs `NodeRegistry` 싱크**
    `Execution_Engine` 런타임의 `NodeRegistry` 와 DB `nodes` 가 어긋나면
