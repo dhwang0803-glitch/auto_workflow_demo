@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -83,6 +83,31 @@ class WebhookBinding:
 
 
 NodeLogStatus = Literal["running", "success", "failed", "skipped"]
+
+NotificationChannel = Literal["email", "slack"]
+NotificationStatus = Literal["queued", "sent", "failed", "bounced"]
+
+
+@dataclass
+class ApprovalNotification:
+    """PLAN_04 — one row per send attempt (append-only).
+
+    `recipient` holds a plaintext email address or Slack user id depending
+    on `channel`. Stored in plaintext to avoid a JOIN against `users` on
+    every dashboard query — GDPR deletion is handled by a separate ops PLAN
+    with a targeted `DELETE FROM approval_notifications WHERE recipient=?`.
+    """
+
+    id: UUID
+    execution_id: UUID
+    node_id: str
+    recipient: str
+    channel: NotificationChannel
+    status: NotificationStatus
+    attempt: int
+    error: dict | None = None
+    sent_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 @dataclass
@@ -223,6 +248,29 @@ class WebhookRegistry(ABC):
 
     @abstractmethod
     async def unregister(self, path: str) -> None: ...
+
+
+class ApprovalNotificationRepository(ABC):
+    """PLAN_04 — append-only audit trail for ADR-007 approval notifications.
+
+    Send failures are **independent** of the execution state machine: a
+    failed SMTP/Slack delivery records `status='failed'` here but does not
+    transition the execution out of `paused`. Ops dashboard polls
+    `list_undelivered` to surface stuck notifications.
+    """
+
+    @abstractmethod
+    async def record(self, notification: ApprovalNotification) -> None: ...
+
+    @abstractmethod
+    async def list_for_execution(
+        self, execution_id: UUID
+    ) -> list[ApprovalNotification]: ...
+
+    @abstractmethod
+    async def list_undelivered(
+        self, *, older_than: timedelta
+    ) -> list[ApprovalNotification]: ...
 
 
 class ExecutionNodeLogRepository(ABC):
