@@ -1,13 +1,14 @@
 """Auth endpoints — register / verify / login / me / refresh.
 
-Thin HTTP adapters around `AuthService`. Domain errors (`AuthError`) get
-mapped to HTTP status codes here; the service never knows about HTTP.
+Thin HTTP adapters around `AuthService`. Domain errors raised by the
+service layer bubble up to the global `DomainError` exception handler
+in `app.main`, so this module has no try/except or status-code tables.
 """
 from __future__ import annotations
 
 from auto_workflow_database.repositories.base import User
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.dependencies import get_auth_service, get_current_user
@@ -18,24 +19,9 @@ from app.models.auth import (
     UserResponse,
     VerifyResponse,
 )
-from app.services.auth_service import AuthError, AuthService
+from app.services.auth_service import AuthService
 
 router = APIRouter()
-
-
-_ERROR_STATUS = {
-    "email_exists": status.HTTP_409_CONFLICT,
-    "invalid_credentials": status.HTTP_401_UNAUTHORIZED,
-    "email_not_verified": status.HTTP_403_FORBIDDEN,
-    "token_expired": status.HTTP_400_BAD_REQUEST,
-    "token_invalid": status.HTTP_400_BAD_REQUEST,
-    "token_wrong_purpose": status.HTTP_400_BAD_REQUEST,
-}
-
-
-def _raise_http(e: AuthError) -> None:
-    code = _ERROR_STATUS.get(e.code, status.HTTP_400_BAD_REQUEST)
-    raise HTTPException(status_code=code, detail=e.message)
 
 
 @router.post(
@@ -47,10 +33,7 @@ async def register(
     body: UserRegister,
     auth: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
-    try:
-        await auth.register(email=body.email, password=body.password)
-    except AuthError as e:
-        _raise_http(e)
+    await auth.register(email=body.email, password=body.password)
     return MessageResponse(
         message="verification email sent — check your inbox to activate the account"
     )
@@ -61,10 +44,7 @@ async def verify(
     token: str = Query(..., min_length=10),
     auth: AuthService = Depends(get_auth_service),
 ) -> VerifyResponse:
-    try:
-        user_id = await auth.verify_email(token)
-    except AuthError as e:
-        _raise_http(e)
+    user_id = await auth.verify_email(token)
     return VerifyResponse(status="verified", user_id=user_id)
 
 
@@ -73,10 +53,7 @@ async def login(
     form: OAuth2PasswordRequestForm = Depends(),
     auth: AuthService = Depends(get_auth_service),
 ) -> TokenResponse:
-    try:
-        token = await auth.login(email=form.username, password=form.password)
-    except AuthError as e:
-        _raise_http(e)
+    token = await auth.login(email=form.username, password=form.password)
     return TokenResponse(access_token=token)
 
 

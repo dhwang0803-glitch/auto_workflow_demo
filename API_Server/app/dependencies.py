@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from auto_workflow_database.repositories.base import User
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 
 from app.config import Settings
-from app.services.auth_service import AuthError, AuthService
+from app.services.auth_service import AuthService
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -29,11 +29,6 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     auth: AuthService = Depends(get_auth_service),
 ) -> User:
-    try:
-        return await auth.current_user(token)
-    except AuthError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=e.message,
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from e
+    # AuthenticationError from auth_service bubbles up to the global
+    # DomainError handler in app.main, which emits 401 + WWW-Authenticate.
+    return await auth.current_user(token)
