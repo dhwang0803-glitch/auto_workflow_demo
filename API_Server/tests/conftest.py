@@ -30,9 +30,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_settings() -> Settings:
+def _make_settings(**overrides) -> Settings:
     # All env lookups are routed through Settings so tests never mutate os.environ.
-    return Settings(
+    base = dict(
         database_url=DATABASE_URL or "",
         jwt_secret="test-secret-do-not-use-in-prod",
         jwt_algorithm="HS256",
@@ -42,7 +42,13 @@ def _make_settings() -> Settings:
         app_base_url="http://testserver",
         password_min_length=8,
         bcrypt_cost=4,  # faster hashing for tests
+        # Low quota so the rejection test doesn't need to spin up 100 rows.
+        workflow_limit_light=3,
+        workflow_limit_middle=5,
+        workflow_limit_heavy=10,
     )
+    base.update(overrides)
+    return Settings(**base)
 
 
 @pytest_asyncio.fixture
@@ -73,3 +79,36 @@ async def _truncate_users(app) -> None:
     sm = app.state.sessionmaker
     async with sm() as s, s.begin():
         await s.execute(text("TRUNCATE users CASCADE"))
+
+
+@pytest_asyncio.fixture
+async def authed_client(client, email_sender):
+    """Registered, verified, and logged-in AsyncClient.
+
+    Sets the Authorization header on the underlying client so every
+    subsequent request is authenticated. Returns the client *plus* the
+    decoded user email so tests can cross-reference ownership.
+    """
+    email = "owner@example.com"
+    password = "correct-horse-8"
+    r = await client.post(
+        "/api/v1/auth/register", json={"email": email, "password": password}
+    )
+    assert r.status_code == 201
+
+    # Pull the verify-email link captured by NoopEmailSender.
+    from urllib.parse import parse_qs, urlparse
+    link = next(l for (to, l) in email_sender.sent if to == email)
+    token = parse_qs(urlparse(link).query)["token"][0]
+    v = await client.get("/api/v1/auth/verify", params={"token": token})
+    assert v.status_code == 200
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        data={"username": email, "password": password},
+    )
+    assert login.status_code == 200
+    access = login.json()["access_token"]
+    client.headers["Authorization"] = f"Bearer {access}"
+    client.email = email  # type: ignore[attr-defined]
+    return client
