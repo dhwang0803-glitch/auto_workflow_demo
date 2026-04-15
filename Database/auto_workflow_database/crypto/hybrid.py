@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from Database.src.repositories.base import AgentCredentialPayload
+from auto_workflow_database.repositories.base import AgentCredentialPayload
 
 _AES_KEY_BYTES = 32   # AES-256
 _GCM_NONCE_BYTES = 12

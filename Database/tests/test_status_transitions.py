@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from Database.src.repositories.base import Execution, Workflow
+from auto_workflow_database.repositories.base import Execution, Workflow
 from Database.tests.fakes import (
     InMemoryExecutionRepository,
     InMemoryWorkflowRepository,

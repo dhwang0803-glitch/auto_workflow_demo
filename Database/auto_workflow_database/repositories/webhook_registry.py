@@ -6,8 +6,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from Database.src.models.extras import WebhookBinding as WebhookORM
-from Database.src.repositories.base import WebhookBinding, WebhookRegistry
+from auto_workflow_database.models.extras import WebhookBinding as WebhookORM
+from auto_workflow_database.repositories.base import WebhookBinding, WebhookRegistry
 
 
 def _to_dto(row: WebhookORM) -> WebhookBinding:

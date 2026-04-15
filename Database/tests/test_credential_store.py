@@ -12,9 +12,9 @@ cryptography = pytest.importorskip("cryptography")
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from Database.src.models.core import User as UserORM
-from Database.src.repositories._session import build_engine, build_sessionmaker
-from Database.src.repositories.credential_store import FernetCredentialStore
+from auto_workflow_database.models.core import User as UserORM
+from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
+from auto_workflow_database.repositories.credential_store import FernetCredentialStore
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 

@@ -22,8 +22,8 @@ cryptography = pytest.importorskip("cryptography")
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from Database.src.crypto.hybrid import hybrid_decrypt, hybrid_encrypt
-from Database.src.repositories.base import AgentCredentialPayload
+from auto_workflow_database.crypto.hybrid import hybrid_decrypt, hybrid_encrypt
+from auto_workflow_database.repositories.base import AgentCredentialPayload
 from Database.tests.fakes import InMemoryCredentialStore
 
 
@@ -137,12 +137,12 @@ async def test_fernet_store_retrieve_for_agent_roundtrip():
 
     from cryptography.fernet import Fernet
 
-    from Database.src.models.core import User as UserORM
-    from Database.src.repositories._session import (
+    from auto_workflow_database.models.core import User as UserORM
+    from auto_workflow_database.repositories._session import (
         build_engine,
         build_sessionmaker,
     )
-    from Database.src.repositories.credential_store import FernetCredentialStore
+    from auto_workflow_database.repositories.credential_store import FernetCredentialStore
 
     engine = build_engine(DATABASE_URL)
     sm = build_sessionmaker(engine)
