@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-workflow-api-server"
+version = "0.1.0"
+description = "FastAPI core server for auto_workflow_demo — auth, workflow CRUD, agent dispatch."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic[email]>=2.6",
+    "pydantic-settings>=2.2",
+    "pyjwt>=2.8",
+    "bcrypt>=4.1",
+    "python-multipart>=0.0.9",  # FastAPI OAuth2PasswordRequestForm
+    "auto-workflow-database",    # editable local install: `pip install -e ../Database`
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+# The auto-workflow-database dependency is satisfied by running
+#   pip install -e Database/
+# from the repo root BEFORE installing this package. Phase 2 (ADR-014) will
+# swap this for a version-pinned GitHub Packages wheel with no import changes.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = ["tests*", "plans*", "agents*", "config*"]
