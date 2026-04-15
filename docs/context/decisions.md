@@ -28,6 +28,31 @@ n8n 유사 워크플로우 자동화 SaaS를 구축. 유저층이 갈린다:
 - (−) Agent 빌드/배포/버전 관리 파이프라인 추가 필요
 - (−) 두 경로의 통합 테스트 커버리지 부담
 
+**Update (2026-04-15)** — API_Server PLAN_02 에서 **플랜별 워크플로우 쿼터**
+를 아래와 같이 확정:
+
+| 플랜 | 활성 워크플로우 상한 | 경고 시점 (`approaching_limit`) |
+|------|---------------------|-------------------------------|
+| light | **100** | 90 이상 (90%) |
+| middle | **200** | 180 이상 (90%) |
+| heavy | **500** | 450 이상 (90%) |
+
+- 쿼터는 `is_active=true` 행만 카운트. soft delete 된 워크플로우는 불산입
+  → 유저가 생성/삭제를 반복해도 누적되지 않음 (DB bloat 는 별도 retention
+  정책에서 다룸)
+- 상한 도달 시 `POST /workflows` → **403 Forbidden**:
+  `"workflow limit reached: N workflows for <tier> tier (plan upgrade available)"`
+- `approaching_limit=true` 는 `GET /workflows` 응답에 포함되어 프론트가
+  경고 배너를 UI 로 띄우는 용도 (추가 API 호출 불요)
+- 값은 `API_Server/app/config.py` 의 `Settings` 에서 환경변수로 override
+  가능 (`WORKFLOW_LIMIT_LIGHT=150` 등) → 운영이 코드 재배포 없이 비즈니스
+  의사결정 반영 가능
+- **결정 근거**: 무한 생성 허용 시 운영 DB 부담 + 실행 스케줄러/트리거
+  매니저 구동 비용이 상한 없이 증가. 플랜별 차등은 가격 차등화 구조를
+  기술 계층에서 강제하는 장치
+- Phase 2 에서 조직(Organization) 단위 쿼터를 추가할 때 본 값을 **유저당
+  기본값** 으로 유지하고 조직 쿼터를 상위 레이어에 추가 예정
+
 ---
 
 ## ADR-002 — 백엔드: Python/FastAPI (not Node.js)
