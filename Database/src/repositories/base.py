@@ -53,6 +53,44 @@ class Workflow:
 
 
 @dataclass
+class Credential:
+    id: UUID
+    owner_id: UUID
+    name: str
+    # `encrypted_data` never leaves the credential_store boundary — kept here
+    # only for Postgres repo round-tripping. Retrieval returns plaintext dict.
+    encrypted_data: bytes = b""
+    created_at: datetime | None = None
+
+
+@dataclass
+class Agent:
+    id: UUID
+    owner_id: UUID
+    public_key: str
+    gpu_info: dict = field(default_factory=dict)
+    last_heartbeat: datetime | None = None
+    registered_at: datetime | None = None
+
+
+@dataclass
+class WebhookBinding:
+    id: UUID
+    workflow_id: UUID
+    path: str
+    secret: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass
+class NodeDefinition:
+    type: str
+    version: str
+    schema: dict
+    registered_at: datetime | None = None
+
+
+@dataclass
 class Execution:
     id: UUID
     workflow_id: UUID
@@ -125,10 +163,42 @@ class ExecutionRepository(ABC):
 
 
 class CredentialStore(ABC):
-    """Signature-only. Real impl (Fernet, ADR-004) lands in PLAN_02."""
+    """ADR-004 Fernet-at-rest. See `FernetCredentialStore` for the impl."""
 
     @abstractmethod
     async def store(self, owner_id: UUID, name: str, plaintext: dict) -> UUID: ...
 
     @abstractmethod
     async def retrieve(self, credential_id: UUID) -> dict: ...
+
+    @abstractmethod
+    async def delete(self, credential_id: UUID) -> None: ...
+
+
+class WebhookRegistry(ABC):
+    """Dynamic webhook path ↔ workflow_id mapping.
+
+    `register` mints a fresh `/webhooks/<uuid>` path. `resolve` is on the
+    request hot path — Postgres impl must hit the unique index on `path`.
+    """
+
+    @abstractmethod
+    async def register(
+        self, workflow_id: UUID, *, secret: str | None = None
+    ) -> WebhookBinding: ...
+
+    @abstractmethod
+    async def resolve(self, path: str) -> WebhookBinding | None: ...
+
+    @abstractmethod
+    async def unregister(self, path: str) -> None: ...
+
+
+class NodeCatalogRepository(ABC):
+    """Runtime node catalog — populated by `Execution_Engine` at startup."""
+
+    @abstractmethod
+    async def upsert_many(self, nodes: list[NodeDefinition]) -> None: ...
+
+    @abstractmethod
+    async def list_all(self) -> list[NodeDefinition]: ...

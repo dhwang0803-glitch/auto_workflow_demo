@@ -23,7 +23,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-SCHEMA_SQL = Path(__file__).resolve().parents[1] / "schemas" / "001_core.sql"
+SCHEMAS_DIR = Path(__file__).resolve().parents[1] / "schemas"
+# Apply every schema file in lexical order. This test wipes the public schema
+# as part of the smoke check, so it must restore the *full* schema for
+# downstream tests (test_postgres_repositories, test_credential_store) to find
+# their tables after this one runs.
+SCHEMA_FILES = sorted(SCHEMAS_DIR.glob("*.sql"))
 
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
@@ -31,12 +36,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-async def _apply_schema(engine) -> None:
-    ddl = SCHEMA_SQL.read_text(encoding="utf-8")
+async def _apply_schemas(engine) -> None:
     async with engine.begin() as conn:
-        # psql meta-commands (\i) are not supported by the driver; strip them.
-        for stmt in _split_statements(ddl):
-            await conn.execute(text(stmt))
+        for path in SCHEMA_FILES:
+            ddl = path.read_text(encoding="utf-8")
+            for stmt in _split_statements(ddl):
+                await conn.execute(text(stmt))
 
 
 def _split_statements(ddl: str) -> list[str]:
@@ -54,7 +59,7 @@ async def test_schema_applies_and_checks_enforced():
             await conn.execute(text("DROP SCHEMA public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
 
-        await _apply_schema(engine)
+        await _apply_schemas(engine)
 
         async with engine.connect() as conn:
             tables = set(
@@ -68,7 +73,11 @@ async def test_schema_applies_and_checks_enforced():
                     )
                 ).all()
             )
-        assert {"users", "workflows", "nodes", "executions"}.issubset(tables)
+        expected = {
+            "users", "workflows", "nodes", "executions",
+            "credentials", "agents", "webhook_registry",
+        }
+        assert expected.issubset(tables), f"missing: {expected - tables}"
 
         async with engine.begin() as conn:
             with pytest.raises(Exception):
