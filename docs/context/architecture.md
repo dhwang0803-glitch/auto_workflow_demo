@@ -61,9 +61,25 @@ Frontend ──POST /api/v1/workflows──▶ API_Server
                                       └─▶ Celery.enqueue → Worker (Execution_Engine)
                                               │
                                               ├─ CredentialStore.retrieve (실행 시점만)
-                                              ├─ Node.execute (병렬: asyncio.gather)
-                                              └─ ExecutionRepository.save_result
+                                              │
+                                              └─ Node.execute (병렬: asyncio.gather)
+                                                    │
+                                                    ├─ ExecutionNodeLogRepository.record_start  (running)
+                                                    │
+                                                    ├─ [stdout/stderr → GCS 업로드, URI 만 DB]
+                                                    │
+                                                    ├─ ExecutionNodeLogRepository.record_finish (success|failed|skipped)
+                                                    │      + LLM 4필드(model/tokens/cost) 정규 컬럼 적재
+                                                    │
+                                                    └─ ExecutionRepository.append_node_result   (최신 요약 only)
+                                                           + update_status
 ```
+
+실행 상세는 **`execution_node_logs` (월별 파티션)** 가 단독 소스이고,
+`executions.node_results` 는 최신 attempt 요약만 보유한다. 두 테이블의 역할
+분리와 2-phase write(시작→완료 UPDATE) 배경은 [`decisions.md` ADR-011](./decisions.md) 참조.
+노드가 `running` 상태일 때도 행이 존재하므로 Frontend 는 진행 애니메이션을
+실시간 렌더링할 수 있다 (ADR-007 Update 2026-04-15).
 
 ### 2. Agent 모드 실행
 ```

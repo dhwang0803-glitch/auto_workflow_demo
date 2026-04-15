@@ -121,7 +121,7 @@ Credentials는 DB 저장 + Agent 전송의 두 수명주기를 가진다. 저장
 
 ## ADR-007 — LLM 노드 1급 추상화 + 출력 스키마 강제 + Human-in-the-loop 내장
 
-**상태**: Accepted · **날짜**: 2026-04-14 · *Refined by ADR-008 (structured output 어댑터 범위 축소)*
+**상태**: Accepted · **날짜**: 2026-04-14 · *Refined by ADR-008 (structured output 어댑터 범위 축소), ADR-011 (실행 로그 분리 저장)*
 
 **Context**
 
@@ -173,10 +173,25 @@ Execution Layer에 다음을 **엔진 기본 내장**으로 도입한다.
 - (−) **알림 인프라 의존성** 추가. SMTP/Slack 발송 실패 시 승인 지연이 곧 서비스 장애로 인식될 수 있어 재시도/대체 경로가 필요하다.
 - (−) JSON Schema 문자열은 개발자가 직접 타입으로 다루기 불편 → 내부적으로 `jsonschema` 라이브러리 검증 + 런타임 Pydantic 변환 헬퍼 제공으로 완화.
 
+**Update (2026-04-15) — 노드 `running` 상태의 DB 영속화**
+
+원본 Decision 은 `executions.paused_at_node` 를 통해 "승인 대기 중 어느 노드에
+멈췄는가" 만 드러냈다. 이후 Frontend UX 검토에서 "일반 실행 중에도 사용자가
+어느 단계까지 왔는지 보고 싶다 (로딩 아이콘이 아니라 진행 애니메이션)" 요구가
+올라와 이를 충족하도록 관측 계층을 보강한다:
+
+- 노드가 **시작되는 순간** `execution_node_logs` 에 `status='running'` 행을
+  INSERT 한다. 완료 시 같은 행을 `'success'|'failed'|'skipped'` 로 UPDATE.
+- 이 2-phase write 경로의 구체 스키마와 파티셔닝은 **ADR-011** 에서 정의.
+- Frontend 는 이 테이블을 폴링/스트리밍으로 읽어 노드별 진행 상태를 렌더링.
+- `ApprovalNode` 의 `paused` 전이도 같은 테이블을 경유한다 — Approval 은
+  "running 노드 중 하나가 사람 입력을 기다리는 특수 케이스" 로 일관된다.
+
 **Related**
 - Refines: ADR-006 (Repository 계약 확장)
+- Refined by: ADR-011 (실행 로그 분리 저장 / 파티셔닝 / 2-phase write)
 - Interacts with: ADR-005 (코드 노드 30초 타임아웃은 Approval/LLM 수명주기와 분리)
-- Affects branches: `Execution_Engine` (런타임/LlmNode/ApprovalNode), `Database` (스키마), `API_Server` (승인 엔드포인트, 재개 디스패치, 알림 디스패치), `Frontend` (스키마 편집 UI, 승인 인박스)
+- Affects branches: `Execution_Engine` (런타임/LlmNode/ApprovalNode), `Database` (스키마), `API_Server` (승인 엔드포인트, 재개 디스패치, 알림 디스패치), `Frontend` (스키마 편집 UI, 승인 인박스, 실행 진행 애니메이션)
 
 ---
 
@@ -331,11 +346,184 @@ ADR-008은 Heavy 유저의 비용·지연·데이터 경계 문제를 중앙 `In
 - (−) **두 번째 어댑터 유지비**: KTransformers의 OpenAI 호환 표면이 안정화되기 전에는 `Inference_Service` 내부 어댑터를 직접 유지해야 함. SGLang 통합이 머지되면 어댑터를 제거하거나 얇게 만들 수 있음.
 - (−) **운영 매트릭스 확장**: vLLM + KTransformers 두 백엔드의 헬스체크/모델 로드/버전 호환성을 각각 관리해야 함. 단, Agent 측에 한정되므로 중앙 서빙 운영 부담은 늘지 않음.
 
+**Update (2026-04-15) — `external_api_policy` 구현 계약**
+
+Decision §2 의 "외부 API 폴백이 조직 정책으로 금지된 고객은 라우팅 결과가
+비면 노드 실행 실패로 처리" 조항이 `API_Server` 의 라우팅 코드에서 읽어야
+할 구체 데이터 형상을 정의한다.
+
+- 저장 위치: `users.external_api_policy` (JSONB, PLAN_01 §3.1)
+- **유일한 계약 키**: `allow_outbound: boolean`
+  - `true` — 외부 API 폴백 허용
+  - `false` (기본값, 누락 시) — 외부 API 폴백 금지 → 라우팅 결과가 비면 노드 실행 실패
+- **포워드 호환 규칙**: 미정의 키는 저장 허용, 읽기 시 무시 + `WARN` 로그.
+  현재 이 ADR 가 확정한 키는 `allow_outbound` **단 하나**이며, 도메인 allow/
+  deny 리스트 등 확장 키는 차단 로직이 실제로 필요해지는 시점에 별도 PLAN 에서
+  합의 후 추가한다.
+- 변경 이력: 이 키를 추가/제거할 때는 본 ADR 의 Update 섹션에 표로 기록.
+
+이 계약은 `Inference_Service` 의 `LLMRouter` 폴백 분기(§2 의 `_api_fallback`)
+가 활성화될지 말지를 결정하는 단일 소스가 된다.
+
 **Related**
 - Refines: ADR-008 (Gemma 4 + vLLM 로컬 서빙) — Agent 모드 백엔드 경로 보강
 - Interacts with: ADR-001 (하이브리드 SaaS) — "데이터 + 추론 둘 다 VPC 잔류" 시나리오의 GPU 없는 변종을 커버
-- Affects branches: `Inference_Service` (KTransformers 어댑터, Phase 2), `API_Server` (Agent `gpu_info`/정책 필드), `Database` (고객 환경 메타데이터)
+- Affects branches: `Inference_Service` (KTransformers 어댑터, Phase 2), `API_Server` (Agent `gpu_info`/정책 필드, `external_api_policy` 읽기 경로), `Database` (고객 환경 메타데이터, `users.external_api_policy`, `agents.gpu_info`)
 - 미해결 질문: KTransformers의 Gemma 4 26B MoE 지원 검증, AMX 미지원 CPU에서의 성능 하한선, 라이선스 재검토(Apache 2.0 호환)
+
+---
+
+## ADR-010 — pgvector 확장 MVP 선탑재
+
+**상태**: Accepted · **날짜**: 2026-04-15
+
+**Context**
+
+Database 브랜치 MVP 부트스트랩 중 "지금은 벡터 컬럼이 필요한 유스케이스가
+없지만, 장래 RAG(자연어 → 노드 생성, 템플릿/과거 워크플로우 검색)가 들어올
+가능성" 이 논의됐다. 선택지는 둘:
+
+1. 순정 `postgres:16` 으로 시작, RAG 가 필요해지는 시점에
+   `CREATE EXTENSION vector` 와 pgvector 도커 이미지로 교체
+2. `pgvector/pgvector:pg16` 을 처음부터 사용하고 확장을 기본 설치
+
+**Decision**
+
+**옵션 2 채택**. `Database/docker-compose.yml` 이미지는
+`pgvector/pgvector:pg16`, `schemas/001_core.sql` 에 `CREATE EXTENSION IF NOT
+EXISTS "vector"` 를 포함. MVP 스키마에는 아직 벡터 컬럼이 없다 — 확장만
+설치하고 사용 시점을 기다린다.
+
+**Rationale**
+
+- **교체 비용의 비대칭성**: 장래 교체 시 도커 이미지 변경 + 재시작 + 확장
+  설치 마이그레이션이 필요하고, 운영 중 DB 에서는 이게 non-trivial. 지금
+  설치해 두면 RAG 도입 시 "마이그레이션 한 줄 + 컬럼 추가" 로 끝난다.
+- **선탑재 비용**: 이미지 크기 차이는 수십 MB. 설치된 미사용 확장의 런타임
+  오버헤드는 0. 즉 현재 비용이 **거의 0** 이고 미래 비용 회피는 크다.
+- **YAGNI 원칙의 예외 기준**: 비용이 0 인 옵션을 YAGNI 로 거부하면 오히려
+  기술부채가 된다. YAGNI 는 "복잡도를 키우는 기능" 에 적용되는 것이지
+  "0 비용의 기반 인프라" 에는 적용되지 않는다.
+
+**Consequences**
+
+- (+) 후속 PLAN(예: PLAN_06 RAG)에서 확장 설치 단계 불필요 → 단일 마이그레이션
+  으로 `ALTER TABLE ... ADD COLUMN embedding vector(N)` 만 하면 됨.
+- (+) 데이터 마이그레이션 리스크 축소 — 운영 DB 의 확장 설치는 재시작/락
+  이슈가 있어 별도 운영 창구가 필요한데, 이걸 MVP 단계에 흡수.
+- (−) 도커 이미지가 `pgvector` 변종으로 고정됨. 순정 이미지로 되돌릴 때
+  도커 재설정 필요 (역방향 비용도 크지 않음).
+- (−) 확장이 "설치만 돼 있고 미사용" 인 상태가 장기화되면 팀원이 "쓰는 줄
+  알았는데 왜 없지?" 같은 혼동을 할 수 있음 — 이 ADR 로 상태를 명시해
+  완화.
+
+**Related**
+- Enables: 후속 RAG PLAN (템플릿 갤러리 / 사용자 워크플로우 임베딩 검색)
+- Affects branches: `Database` (DDL/도커 이미지)
+
+---
+
+## ADR-011 — 실행 로그 분리 저장 + 월별 파티셔닝 + GCS 원문 오프로드
+
+**상태**: Accepted · **날짜**: 2026-04-15
+
+**Context**
+
+ADR-006/007 이 도입한 `executions.node_results jsonb` 는 "노드별 결과 요약"
+용도로 시작했지만 실제로 쌓일 데이터는 세 가지 압력을 받는다:
+
+1. **ADR-007 관측성 요구** — 노드별 `token_usage`/`cost_usd`/`duration_ms` +
+   Approval 상태머신. LLM 사용량을 모델별로 집계하려면 JSONB 안을 스캔해야
+   하고, 이건 성능이 나오지 않는다.
+2. **Retry 이력** — 같은 노드가 N 회 재시도되면 JSONB 키 충돌. "최신 결과만
+   보이고 과거 시도는 유실" 되거나 깊은 중첩 구조가 된다. 둘 다 UX/디버깅에
+   해롭다.
+3. **UI 애니메이션 요구 (ADR-007 Update 2026-04-15)** — 사용자는 "로딩 아이콘"
+   이 아니라 "노드 N 까지 진행, 노드 N+1 실행 중" 을 보고 싶다. 이는 노드가
+   `running` 상태일 때도 DB 에 레코드가 존재해야 한다는 뜻이다.
+4. **stdout/stderr 원문 크기** — 커스텀 스크립트 노드가 MB 급 출력을 낼 수
+   있다. 이걸 JSONB 에 넣으면 row 가 비대화되고 전체 테이블 I/O 에 악영향.
+5. **파티셔닝 기술부채** — "나중에 로그 테이블에 파티션 붙이자" 는 잘 알려진
+   부채 함정. 운영 중 파티션 도입은 lock/재작성 리스크가 크다.
+
+**Decision**
+
+PLAN_03 에서 구현한 분리 저장 구조를 설계 결정으로 승격:
+
+1. **새 테이블 `execution_node_logs` — 월별 RANGE 파티션**
+   - 파티션 키: `started_at` (timestamptz)
+   - PK: `(id, started_at)` — Postgres 네이티브 파티셔닝은 UNIQUE 제약에 파티션
+     키 포함을 요구
+   - 초기 12 개 월 파티션을 DDL `DO` 블록으로 부트스트랩
+   - `scripts/roll_partitions.py` 가 월별 롤포워드 (외부 스케줄러 책임)
+   - 보존 삭제 정책은 **별도 운영 PLAN** 에서 결정 — 본 ADR 범위 밖
+
+2. **`executions.node_results` 와의 역할 분리 (옵션 A)**
+   - `executions.node_results` = **최신 attempt 요약만**. `API_Server` 의
+     기존 계약(`append_node_result`) 유지.
+   - `execution_node_logs` = **상세 로그의 단독 소스**. retry/running/완료
+     모두 여기에 N 행으로 쌓인다.
+   - `Execution_Engine` 은 노드 실행 시 **두 Repository 에 모두 기록**.
+
+3. **2-phase write (`record_start` / `record_finish`)**
+   - 노드 시작 → `record_start` 가 `status='running'` 행 INSERT
+   - 노드 종료 → 같은 행 UPDATE (`success|failed|skipped`)
+   - 파티션 키 `started_at` 는 **불변** → UPDATE 가 파티션 간 row 이동을
+     일으키지 않음
+   - UPDATE WHERE 절은 반드시 `(id, started_at)` 둘 다 지정 (id 단독이면
+     Postgres 가 모든 파티션 스캔 — 파티션 프루닝 실패)
+
+4. **`attempt` 는 호출자 명시 전달**
+   - 1-based 정수, DEFAULT 1 은 해피패스 편의 only
+   - `Execution_Engine` 의 리트라이 루프가 자기 카운터로 관리하고 매
+     `record_start` 에 명시 전달
+   - DB 측 auto-increment 는 사용 안 함(레이스 방어 복잡도 회피)
+
+5. **LLM 관측 4필드 컬럼 선승격**
+   - `model text`, `tokens_prompt int`, `tokens_completion int`,
+     `cost_usd numeric(10,6)` — JSONB 가 아니라 정규 컬럼
+   - 부분 인덱스 `(model) WHERE model IS NOT NULL` 로 모델별 집계 쿼리 경로
+   - 그 외 노드별 상세 메타데이터는 `input/output/error jsonb` 필드 유지
+
+6. **stdout/stderr 는 GCS 오프로드 — DB 에는 URI 포인터만**
+   - `stdout_uri text NULL`, `stderr_uri text NULL`
+   - 형식 권장: `gs://{bucket}/executions/{execution_id}/{node_id}/{attempt}/stdout.log`
+   - GCS 업로더 구현은 `Execution_Engine` 책임. DB 브랜치는 URI 형식 검증 안 함.
+   - 보안 효과: 민감 페이로드가 DB 백업/덤프에 섞일 위험 축소.
+
+**Consequences**
+
+- (+) LLM 사용량 집계가 파셜 인덱스 + 정규 컬럼으로 O(파티션 프루닝) 성능.
+- (+) 파티셔닝을 **처음부터** 적용해 장래 무파티션 → 파티션 전환 리스크 제거.
+- (+) 2-phase write 로 Frontend 실시간 진행 애니메이션 가능. `ApprovalNode` 와
+  일관된 상태 모델 (running 의 특수 케이스가 paused).
+- (+) stdout/stderr 가 DB row 를 부풀리지 않음. 대용량 노드 출력이 DB 성능에
+  영향 주지 않음. 백업/복제 비용 감소.
+- (+) `Execution_Engine` 의 리트라이 루프가 attempt 를 소유 → DB 가 "진실의
+  원천" 을 두 곳에 둘 필요 없음. 레이스 방어 복잡도 없음.
+- (−) `Execution_Engine` 이 두 Repository 를 모두 호출해야 함 — 호출 누락 시
+  "요약은 있는데 상세는 없음" 또는 그 반대가 발생. 호출 래퍼/데코레이터로
+  보완 필요.
+- (−) GCS 의존성이 `Execution_Engine` 에 추가됨. 업로드 실패 시 `stdout_uri`
+  는 NULL 인 채로 남아야 하며, 업로드 실패가 노드 실패를 유발해선 안 됨
+  (관측 실패 ≠ 실행 실패).
+- (−) 파티션 롤포워드가 **외부 스케줄러 책임** 이라 배포 측에서 크론 등록을
+  잊으면 새 월 INSERT 가 "no partition of relation ... found" 로 실패한다.
+  완화: `roll_partitions.py --dry-run` 을 온보딩 체크리스트에 포함, 초기
+  12 개월 버퍼.
+- (−) 보존 삭제 정책 미정 → 무제한 누적. 별도 운영 PLAN 에서 결정.
+
+**Related**
+- Refines: ADR-006 (Repository 패턴 — 새 ABC 추가), ADR-007 (노드 running
+  상태의 DB 영속화 이유 + Approval 상태머신을 동일 테이블로 통합)
+- Depends on: ADR-010 (pgvector 와 무관하지만 동일한 "기반 인프라 MVP 선탑재"
+  철학)
+- Affects branches:
+  - `Database` — 스키마 003, Repository, `roll_partitions.py`
+  - `Execution_Engine` — 노드 실행 래퍼가 `ExecutionNodeLogRepository.record_start/finish` 호출 + `ExecutionRepository.append_node_result` 이중 쓰기, GCS 업로더, 리트라이 루프의 attempt 카운터 소유
+  - `API_Server` — 실행 상세 조회 엔드포인트가 두 테이블을 함께 읽음
+  - `Frontend` — 실행 진행 애니메이션, 노드별 로그/토큰/비용 렌더링
+  - 운영 — `scripts/roll_partitions.py` 크론 등록, GCS 버킷 프로비저닝/수명주기 정책
 
 ---
 
