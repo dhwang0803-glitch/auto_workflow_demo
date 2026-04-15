@@ -9,10 +9,17 @@ from __future__ import annotations
 from copy import deepcopy
 from uuid import UUID
 
+from uuid import uuid4
+
 from Database.src.repositories.base import (
+    CredentialStore,
     Execution,
     ExecutionRepository,
     ExecutionStatus,
+    NodeCatalogRepository,
+    NodeDefinition,
+    WebhookBinding,
+    WebhookRegistry,
     Workflow,
     WorkflowRepository,
 )
@@ -117,3 +124,58 @@ class InMemoryExecutionRepository(ExecutionRepository):
         if ex is None:
             raise KeyError(f"execution {execution_id} not found")
         return ex
+
+
+class InMemoryCredentialStore(CredentialStore):
+    """Unit-test double. Skips encryption entirely — never use in prod."""
+
+    def __init__(self) -> None:
+        self._store: dict[UUID, tuple[UUID, str, dict]] = {}
+
+    async def store(self, owner_id: UUID, name: str, plaintext: dict) -> UUID:
+        cid = uuid4()
+        self._store[cid] = (owner_id, name, deepcopy(plaintext))
+        return cid
+
+    async def retrieve(self, credential_id: UUID) -> dict:
+        _, _, pt = self._store[credential_id]
+        return deepcopy(pt)
+
+    async def delete(self, credential_id: UUID) -> None:
+        self._store.pop(credential_id, None)
+
+
+class InMemoryWebhookRegistry(WebhookRegistry):
+    def __init__(self) -> None:
+        self._by_path: dict[str, WebhookBinding] = {}
+
+    async def register(
+        self, workflow_id: UUID, *, secret: str | None = None
+    ) -> WebhookBinding:
+        binding = WebhookBinding(
+            id=uuid4(),
+            workflow_id=workflow_id,
+            path=f"/webhooks/{uuid4()}",
+            secret=secret,
+        )
+        self._by_path[binding.path] = binding
+        return deepcopy(binding)
+
+    async def resolve(self, path: str) -> WebhookBinding | None:
+        b = self._by_path.get(path)
+        return deepcopy(b) if b else None
+
+    async def unregister(self, path: str) -> None:
+        self._by_path.pop(path, None)
+
+
+class InMemoryNodeCatalog(NodeCatalogRepository):
+    def __init__(self) -> None:
+        self._store: dict[tuple[str, str], NodeDefinition] = {}
+
+    async def upsert_many(self, nodes: list[NodeDefinition]) -> None:
+        for n in nodes:
+            self._store[(n.type, n.version)] = deepcopy(n)
+
+    async def list_all(self) -> list[NodeDefinition]:
+        return [deepcopy(n) for n in self._store.values()]
