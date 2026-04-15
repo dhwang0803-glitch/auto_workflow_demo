@@ -13,7 +13,11 @@ from uuid import uuid4
 
 from datetime import datetime, timedelta, timezone
 
+import json
+
+from Database.src.crypto.hybrid import hybrid_encrypt
 from Database.src.repositories.base import (
+    AgentCredentialPayload,
     ApprovalNotification,
     ApprovalNotificationRepository,
     CredentialStore,
@@ -150,6 +154,17 @@ class InMemoryCredentialStore(CredentialStore):
 
     async def delete(self, credential_id: UUID) -> None:
         self._store.pop(credential_id, None)
+
+    async def retrieve_for_agent(
+        self,
+        credential_id: UUID,
+        *,
+        agent_public_key_pem: bytes,
+    ) -> AgentCredentialPayload:
+        plaintext = await self.retrieve(credential_id)
+        return hybrid_encrypt(
+            json.dumps(plaintext).encode("utf-8"), agent_public_key_pem
+        )
 
 
 class InMemoryWebhookRegistry(WebhookRegistry):

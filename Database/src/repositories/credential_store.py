@@ -12,8 +12,9 @@ from uuid import UUID
 from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from Database.src.crypto.hybrid import hybrid_encrypt
 from Database.src.models.extras import Credential as CredentialORM
-from Database.src.repositories.base import CredentialStore
+from Database.src.repositories.base import AgentCredentialPayload, CredentialStore
 
 
 class FernetCredentialStore(CredentialStore):
@@ -48,3 +49,13 @@ class FernetCredentialStore(CredentialStore):
             row = await s.get(CredentialORM, credential_id)
             if row is not None:
                 await s.delete(row)
+
+    async def retrieve_for_agent(
+        self,
+        credential_id: UUID,
+        *,
+        agent_public_key_pem: bytes,
+    ) -> AgentCredentialPayload:
+        plaintext_dict = await self.retrieve(credential_id)
+        plaintext_bytes = json.dumps(plaintext_dict).encode("utf-8")
+        return hybrid_encrypt(plaintext_bytes, agent_public_key_pem)
