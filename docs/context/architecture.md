@@ -163,7 +163,11 @@ LLM 노드는 `HttpRequestNode` 파생이 아니라 **1급 추상화 `LlmNode`**
 DAG 실행 … → ApprovalNode
               │
               ├─ 실행 상태 = paused, paused_at_node = N
+              │
               ├─ NotificationChannel.send (email + slack)
+              │     │
+              │     ├─ 매 시도마다 ApprovalNotificationRepository.record
+              │     │   (append-only audit trail, 독립 상태)
               │     │
               │     └─ 메시지 내 링크: /approve/{execution_id}
               │
@@ -172,13 +176,21 @@ DAG 실행 … → ApprovalNode
                     ▼
            사용자 액션 (웹 인박스 또는 알림 링크)
                     │
+              ┌─── 웹 인박스 = executions WHERE status='paused' 쿼리 ───┐
+              │    (독립 테이블 아님, 페이지네이션만 필요)                  │
+              └───────────────────────────────────────────────────────────┘
+                    │
               POST /api/v1/executions/{id}/approve | reject
                     │
                     ▼
            런타임 재개 (멱등): 후속 노드 실행 또는 실패 분기
 ```
 
-Approval 수명주기는 ADR-005의 30초 하드 타임아웃과 **분리**된다 — 코드 노드 샌드박스 타임아웃은 그대로 유지하되, paused 실행은 만료 없는 별도 상태로 관리.
+핵심 설계 원칙:
+
+- **알림 발송 실패는 Approval 상태머신과 독립** — SMTP/Slack 장애가 `executions.status` 에 영향을 주지 않는다. 발송 이력은 `approval_notifications` 에 `status='failed'` 로 남고, 운영 대시보드가 "24시간+ 미도달 알림" 을 별도로 감시한다. 상세는 [`decisions.md` ADR-012](./decisions.md) 참조.
+- **인박스는 읽기 경로일 뿐** — `executions WHERE status='paused'` 를 페이지네이션으로 렌더링하는 쿼리이며 별도 저장소가 없다. Pending 은 사람 처리 속도로 자연 캡이 걸리고, Resolved 는 날짜 범위 필터 + keyset 페이지네이션으로 충분하다.
+- **Approval 수명주기는 ADR-005 의 30초 하드 타임아웃과 분리** — 코드 노드 샌드박스 타임아웃은 그대로 유지하되, paused 실행은 만료 없는 별도 상태로 관리.
 
 ## 플러그인 확장 포인트
 
