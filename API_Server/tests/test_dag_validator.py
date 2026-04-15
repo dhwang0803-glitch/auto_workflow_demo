@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import pytest
 
+from app.errors import InvalidGraphError
 from app.models.workflow import EdgeSpec, NodeSpec, WorkflowGraph
-from app.services.dag_validator import DAGError, validate_dag
+from app.services.dag_validator import validate_dag
 
 
 def _g(nodes, edges=()):
@@ -27,17 +28,17 @@ def test_single_node_ok():
 
 
 def test_cycle_rejected():
-    with pytest.raises(DAGError, match="cycle"):
+    with pytest.raises(InvalidGraphError, match="cycle"):
         validate_dag(_g(["a", "b", "c"], [("a", "b"), ("b", "c"), ("c", "a")]))
 
 
 def test_self_loop_rejected():
-    with pytest.raises(DAGError, match="cycle"):
+    with pytest.raises(InvalidGraphError, match="cycle"):
         validate_dag(_g(["a"], [("a", "a")]))
 
 
 def test_duplicate_node_id_rejected():
-    with pytest.raises(DAGError, match="duplicate"):
+    with pytest.raises(InvalidGraphError, match="duplicate"):
         validate_dag(
             WorkflowGraph(
                 nodes=[NodeSpec(id="x", type="t1"), NodeSpec(id="x", type="t2")],
@@ -47,10 +48,10 @@ def test_duplicate_node_id_rejected():
 
 
 def test_unknown_edge_source_rejected():
-    with pytest.raises(DAGError, match="source"):
+    with pytest.raises(InvalidGraphError, match="source"):
         validate_dag(_g(["a"], [("ghost", "a")]))
 
 
 def test_unknown_edge_target_rejected():
-    with pytest.raises(DAGError, match="target"):
+    with pytest.raises(InvalidGraphError, match="target"):
         validate_dag(_g(["a"], [("a", "ghost")]))

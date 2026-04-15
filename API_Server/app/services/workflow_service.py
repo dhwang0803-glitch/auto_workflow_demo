@@ -1,8 +1,10 @@
-"""Workflow CRUD orchestration — PLAN_02.
+"""Workflow CRUD orchestration — PLAN_02 (refactor: concrete DomainError subclasses).
 
-Enforces: DAG validity (via `dag_validator`), per-plan workflow quota,
-ownership scoping (callers pass the authenticated user and we never fan
-out beyond their rows), and soft-delete semantics.
+Enforces DAG validity (via `dag_validator` which raises `InvalidGraphError`),
+per-plan workflow quota, ownership scoping (callers pass the authenticated
+user and we never fan out beyond their rows), and soft-delete semantics.
+All error paths raise concrete `DomainError` subclasses so routers need no
+try/except and the global exception handler maps statuses in one place.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from auto_workflow_database.repositories.base import (
 )
 
 from app.config import Settings
+from app.errors import NotFoundError, QuotaExceededError
 from app.models.workflow import (
     WorkflowCreate,
     WorkflowListResponse,
@@ -22,13 +25,6 @@ from app.models.workflow import (
     WorkflowUpdate,
 )
 from app.services.dag_validator import validate_dag
-
-
-class WorkflowError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        self.code = code
-        self.message = message
-        super().__init__(message)
 
 
 class WorkflowService:
@@ -48,7 +44,7 @@ class WorkflowService:
         # 404 (not 403) when the row is missing *or* owned by someone else —
         # enumeration defence, matches PLAN_02 Q3.
         if wf is None or wf.owner_id != user.id or not wf.is_active:
-            raise WorkflowError("not_found", "workflow not found")
+            raise NotFoundError("workflow not found")
         return wf
 
     async def list_for_user(self, user: User) -> WorkflowListResponse:
@@ -75,18 +71,14 @@ class WorkflowService:
     # ----------------------------------------------------------------- write
 
     async def create(self, user: User, body: WorkflowCreate) -> Workflow:
-        try:
-            validate_dag(body.graph)
-        except Exception as e:
-            raise WorkflowError("invalid_graph", str(e)) from e
+        validate_dag(body.graph)  # raises InvalidGraphError (422)
 
         existing = await self._repo.list_by_owner(user.id, active_only=True)
         limit = self._s.workflow_limit_for_tier(user.plan_tier)
         if len(existing) >= limit:
-            raise WorkflowError(
-                "quota_exceeded",
+            raise QuotaExceededError(
                 f"workflow limit reached: {limit} workflows for "
-                f"{user.plan_tier} tier (plan upgrade available)",
+                f"{user.plan_tier} tier (plan upgrade available)"
             )
 
         wf = Workflow(
@@ -104,10 +96,7 @@ class WorkflowService:
         self, user: User, workflow_id: UUID, body: WorkflowUpdate
     ) -> Workflow:
         wf = await self.get_owned(user, workflow_id)
-        try:
-            validate_dag(body.graph)
-        except Exception as e:
-            raise WorkflowError("invalid_graph", str(e)) from e
+        validate_dag(body.graph)
 
         wf.name = body.name
         wf.settings = body.settings
