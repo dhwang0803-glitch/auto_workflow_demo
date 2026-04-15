@@ -17,9 +17,11 @@ from auto_workflow_database.repositories.workflow_repository import (
     PostgresWorkflowRepository,
 )
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.config import Settings
+from app.errors import DomainError
 from app.routers.auth import router as auth_router
 from app.routers.workflows import router as workflows_router
 from app.services.auth_service import AuthService
@@ -62,6 +64,18 @@ def create_app(
             await engine.dispose()
 
     app = FastAPI(title="auto_workflow API", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
+        # Single mapping site for every service-layer error — the HTTP
+        # status and (optional) headers live on the exception class itself,
+        # so new error types only need one class definition.
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={"detail": exc.message},
+            headers=exc.headers,
+        )
+
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(
         workflows_router, prefix="/api/v1/workflows", tags=["workflows"]
