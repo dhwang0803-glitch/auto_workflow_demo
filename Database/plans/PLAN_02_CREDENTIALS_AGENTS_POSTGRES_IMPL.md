@@ -1,6 +1,6 @@
 # PLAN_02 — Credentials + Agents + Webhooks + Postgres Repository 구현
 
-> **브랜치**: `Database` · **작성일**: 2026-04-15 · **상태**: Draft
+> **브랜치**: `Database` · **작성일**: 2026-04-15 · **완료일**: 2026-04-15 · **상태**: Done
 >
 > PLAN_01 이 4개 코어 테이블 + Repository ABC + InMemory 더블까지 고정했다.
 > PLAN_02 는 (1) 남은 3개 테이블, (2) 실제 Postgres Repository 구현체,
@@ -141,17 +141,18 @@ class FernetCredentialStore(CredentialStore):
 
 ## 6. 수용 기준
 
-- [ ] `python scripts/migrate.py` 가 002 마이그레이션을 깨끗이 적용
-- [ ] `PostgresWorkflowRepository` 로 PLAN_01 `test_status_transitions` 와 동일한 시나리오가 실제 DB 에서 통과
-- [ ] `FernetCredentialStore.store → retrieve` 왕복이 평문 동등
-- [ ] 잘못된 키로 로드 시 `InvalidToken` 발생 (복호화 실패 = 보안 사건, 로그로 남김)
-- [ ] `PostgresWebhookRegistry.resolve` 가 1ms 수준 (인덱스 적중)
-- [ ] `PostgresNodeCatalog.upsert_many` 가 `(type, version)` 기준 멱등
+- [x] `python scripts/migrate.py` 가 002 마이그레이션을 깨끗이 적용 *(2026-04-15)*
+- [x] `PostgresExecutionRepository` 로 PLAN_01 상태머신 시나리오가 실제 DB 에서 통과 *(test_postgres_repositories)*
+- [x] `FernetCredentialStore.store → retrieve` 왕복이 평문 동등 *(test_credential_store)*
+- [x] 잘못된 키로 로드 시 `InvalidToken` 발생 *(test_wrong_key_rejects_ciphertext)*
+- [x] `PostgresWebhookRegistry.resolve` 가 인덱스 경로로 조회 *(unique index on `webhook_registry.path`)*
+- [x] `PostgresNodeCatalog.upsert_many` 가 `(type, version)` 기준 멱등 *(test_node_catalog_upsert_idempotent)*
 
 ## 7. 오픈 이슈
 
-1. **`agents.gpu_info` JSONB 키 스펙** — 위 §3.2 초안으로 진행하되,
-   Agent 쪽 PLAN 이 다른 필드(예: `compute_capability`)를 요구하면 머지 전 동기화.
+1. ~~**`agents.gpu_info` JSONB 키 스펙**~~ → **MVP 확정 (2026-04-15)**
+   `{vendor, vram_gb, backend}` 3키를 002 DDL 주석에 명시. Agent 쪽 PLAN 이
+   추가 필드를 요구하면 포워드 호환 확장 (미정의 키는 저장 허용).
 2. **Fernet 키 로테이션** — MVP 는 단일 키. MultiFernet 로의 전환 경로는
    PLAN_03 이후. 지금은 `CREDENTIAL_MASTER_KEY` 가 바뀌면 기존 자격증명 복호화
    실패 — 배포 노트로 명시.
@@ -160,7 +161,17 @@ class FernetCredentialStore(CredentialStore):
 4. **`NodeRegistry ↔ nodes` 싱크 시점** — `Execution_Engine` 기동 시 1회로
    합의. 런타임 중 노드 플러그인 핫스왑은 지원하지 않음.
 
-## 8. 후속 PLAN 예고
+## 8. 구현 노트 (2026-04-15)
+
+- **`test_schema_loads` 파괴성 주의**: 이 테스트는 `DROP SCHEMA public CASCADE`
+  후 모든 `schemas/*.sql` 을 재적용한다. 새 DDL 파일을 추가하면 이 테스트의
+  `expected` 테이블 집합을 반드시 갱신해야 한다 — 그렇지 않으면 후속 통합
+  테스트에서 "테이블 없음" 로 깨진다 (실제로 PLAN_02 구현 중 한 번 겪음).
+- **JSONB in-place 변이**: `PostgresExecutionRepository.append_node_result` 는
+  `flag_modified()` 로 변경 마킹. 누락 시 SQLAlchemy 가 UPDATE 를 발행하지
+  않아 조용히 사라진다.
+
+## 9. 후속 PLAN 예고
 
 - **PLAN_03** — 실행 관측 상세(노드별 로그 분리 저장), Approval 알림 발송 이력,
   Agent 공개키 기반 자격증명 재암호화 전송
