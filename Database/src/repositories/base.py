@@ -82,6 +82,37 @@ class WebhookBinding:
     created_at: datetime | None = None
 
 
+NodeLogStatus = Literal["running", "success", "failed", "skipped"]
+
+
+@dataclass
+class ExecutionNodeLog:
+    """PLAN_03 — one row per (execution, node, attempt).
+
+    `attempt` is assigned by the caller (e.g. `Execution_Engine` retry loop).
+    The DEFAULT 1 in the DDL exists only for happy-path first-attempt
+    convenience; retries MUST pass an explicit, monotonically increasing value.
+    """
+
+    id: UUID
+    execution_id: UUID
+    node_id: str
+    attempt: int
+    status: NodeLogStatus
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    input: dict | None = None
+    output: dict | None = None
+    error: dict | None = None
+    stdout_uri: str | None = None
+    stderr_uri: str | None = None
+    model: str | None = None
+    tokens_prompt: int | None = None
+    tokens_completion: int | None = None
+    cost_usd: float | None = None
+
+
 @dataclass
 class NodeDefinition:
     type: str
@@ -192,6 +223,50 @@ class WebhookRegistry(ABC):
 
     @abstractmethod
     async def unregister(self, path: str) -> None: ...
+
+
+class ExecutionNodeLogRepository(ABC):
+    """PLAN_03 — append-only detail log for per-node / per-attempt execution.
+
+    Two-phase write:
+      - `record_start` INSERTs a `running` row when a node begins.
+      - `record_finish` UPDATEs that same row with terminal state + metrics.
+
+    Partition key (`started_at`) is immutable, so the finish UPDATE never
+    moves the row between partitions.
+    """
+
+    @abstractmethod
+    async def record_start(self, log: ExecutionNodeLog) -> None: ...
+
+    @abstractmethod
+    async def record_finish(
+        self,
+        log_id: UUID,
+        started_at: datetime,
+        *,
+        status: NodeLogStatus,
+        finished_at: datetime,
+        duration_ms: int,
+        output: dict | None = None,
+        error: dict | None = None,
+        stdout_uri: str | None = None,
+        stderr_uri: str | None = None,
+        model: str | None = None,
+        tokens_prompt: int | None = None,
+        tokens_completion: int | None = None,
+        cost_usd: float | None = None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def list_for_execution(
+        self, execution_id: UUID
+    ) -> list[ExecutionNodeLog]: ...
+
+    @abstractmethod
+    async def summarize_llm_usage(
+        self, execution_id: UUID
+    ) -> dict[str, dict]: ...
 
 
 class NodeCatalogRepository(ABC):

@@ -173,7 +173,10 @@ class FernetCredentialStore(CredentialStore):
 
 ## 9. 후속 PLAN 예고
 
-- **PLAN_03** — 실행 관측 상세(노드별 로그 분리 저장), Approval 알림 발송 이력,
-  Agent 공개키 기반 자격증명 재암호화 전송
-- **PLAN_04** — RAG: 사용자 워크플로우/템플릿 임베딩 컬럼 도입 (pgvector 이미
+기존 "PLAN_03 통합 범위" 를 관심사별로 3개 작은 PLAN 으로 분리 (2026-04-15):
+
+- **PLAN_03** — 실행 관측 상세: 노드별 로그 분리 저장 (`execution_node_logs`)
+- **PLAN_04** — Approval 알림 발송 이력: 누구에게 / 언제 / 어떤 채널로
+- **PLAN_05** — Agent 공개키 기반 자격증명 재암호화 전송 (ADR-004 Agent 경로)
+- **PLAN_06** — RAG: 사용자 워크플로우/템플릿 임베딩 컬럼 (pgvector 이미
   설치됨, 마이그레이션만 필요)
