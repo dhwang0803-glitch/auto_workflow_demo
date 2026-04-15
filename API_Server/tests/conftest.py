@@ -1,0 +1,75 @@
+"""Test fixtures for API_Server PLAN_01.
+
+Builds a real FastAPI app against a live Postgres (set `DATABASE_URL`),
+injects a `NoopEmailSender` so tests can assert on captured verification
+links, and truncates `users` (CASCADE) between tests.
+"""
+from __future__ import annotations
+
+import os
+from typing import AsyncIterator
+
+import pytest
+import pytest_asyncio
+
+sqlalchemy = pytest.importorskip("sqlalchemy")
+asyncpg = pytest.importorskip("asyncpg")  # noqa: F841
+
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+
+from app.config import Settings
+from app.main import create_app
+from app.services.email_sender import NoopEmailSender
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+pytestmark = pytest.mark.skipif(
+    not DATABASE_URL,
+    reason="DATABASE_URL not set — API_Server tests require live Postgres",
+)
+
+
+def _make_settings() -> Settings:
+    # All env lookups are routed through Settings so tests never mutate os.environ.
+    return Settings(
+        database_url=DATABASE_URL or "",
+        jwt_secret="test-secret-do-not-use-in-prod",
+        jwt_algorithm="HS256",
+        jwt_access_ttl_minutes=60,
+        jwt_verify_email_ttl_hours=24,
+        email_sender="console",
+        app_base_url="http://testserver",
+        password_min_length=8,
+        bcrypt_cost=4,  # faster hashing for tests
+    )
+
+
+@pytest_asyncio.fixture
+async def email_sender() -> NoopEmailSender:
+    return NoopEmailSender()
+
+
+@pytest_asyncio.fixture
+async def app(email_sender):
+    settings = _make_settings()
+    fastapi_app = create_app(settings, email_sender=email_sender)
+    # Start lifespan manually via the httpx transport below; nothing to do here.
+    yield fastapi_app
+
+
+@pytest_asyncio.fixture
+async def client(app) -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+        # Trigger lifespan startup via first request-like setup.
+        async with app.router.lifespan_context(app):
+            await _truncate_users(app)
+            yield c
+            await _truncate_users(app)
+
+
+async def _truncate_users(app) -> None:
+    sm = app.state.sessionmaker
+    async with sm() as s, s.begin():
+        await s.execute(text("TRUNCATE users CASCADE"))
