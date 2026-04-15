@@ -11,9 +11,11 @@ from uuid import UUID
 
 from uuid import uuid4
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from Database.src.repositories.base import (
+    ApprovalNotification,
+    ApprovalNotificationRepository,
     CredentialStore,
     Execution,
     ExecutionNodeLog,
@@ -247,6 +249,49 @@ class InMemoryExecutionNodeLogRepository(ExecutionNodeLogRepository):
             bucket["cost_usd"] += l.cost_usd or 0.0
             bucket["calls"] += 1
         return out
+
+
+class InMemoryApprovalNotificationRepository(ApprovalNotificationRepository):
+    def __init__(self) -> None:
+        self._store: dict[UUID, ApprovalNotification] = {}
+
+    async def record(self, notification: ApprovalNotification) -> None:
+        if notification.id in self._store:
+            raise ValueError(f"notification {notification.id} already recorded")
+        n = deepcopy(notification)
+        if n.created_at is None:
+            n.created_at = datetime.now(timezone.utc)
+        self._store[n.id] = n
+
+    async def list_for_execution(
+        self, execution_id: UUID
+    ) -> list[ApprovalNotification]:
+        rows = [
+            deepcopy(n)
+            for n in self._store.values()
+            if n.execution_id == execution_id
+        ]
+        rows.sort(key=lambda r: (r.node_id, r.created_at or datetime.min), reverse=False)
+        # Secondary desc on created_at within same node_id
+        rows.sort(
+            key=lambda r: (r.node_id, -(r.created_at.timestamp() if r.created_at else 0))
+        )
+        return rows
+
+    async def list_undelivered(
+        self, *, older_than: timedelta
+    ) -> list[ApprovalNotification]:
+        cutoff = datetime.now(timezone.utc) - older_than
+        return sorted(
+            (
+                deepcopy(n)
+                for n in self._store.values()
+                if n.status in ("queued", "failed")
+                and n.created_at is not None
+                and n.created_at < cutoff
+            ),
+            key=lambda r: r.created_at,
+        )
 
 
 class InMemoryNodeCatalog(NodeCatalogRepository):

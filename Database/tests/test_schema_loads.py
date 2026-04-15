@@ -74,6 +74,7 @@ async def test_schema_applies_and_checks_enforced():
             "users", "workflows", "nodes", "executions",
             "credentials", "agents", "webhook_registry",
             "execution_node_logs",
+            "approval_notifications",
         }
         assert expected.issubset(tables), f"missing: {expected - tables}"
 
