@@ -83,16 +83,44 @@ Frontend ──POST /api/v1/workflows──▶ API_Server
 
 ### 2. Agent 모드 실행
 ```
-Agent ──WebSocket register──▶ API_Server  (agent_key → JWT)
-Agent ──heartbeat (10~30s)──▶ API_Server
+Agent (고객 VPC) ──dial-out WSS──▶ API_Server   (agent_key → JWT, long-lived socket)
+Agent ──heartbeat (10~30s)─────▶ API_Server
 
-Trigger fires → API_Server ──execute(AgentCommand)──▶ Agent
-                                                       │
-                                                       ├─ RSA 복호화 (자격증명)
-                                                       ├─ Node.execute (VPC 내부)
-                                                       └─ status_update / execution_result
-                                                          (메타데이터만, 원본 데이터 VPC 잔류)
+Trigger fires → API_Server ──execute(workflow, credential_refs)──▶ Agent
+                                                                    │
+                                                                    │  (노드 실행 직전, credential 필요 시점마다)
+                                                                    ▼
+Agent ──get_credential(cred_id)──▶ API_Server
+                                        │
+                                        ├─ CredentialStore.retrieve_for_agent
+                                        │    ├─ Fernet 복호 (마스터키)
+                                        │    └─ 하이브리드 재암호:
+                                        │        AES-256-GCM(payload) + RSA-OAEP-SHA256(AES key)
+                                        │        → {wrapped_key, nonce, ciphertext}
+                                        ▼
+API_Server ──credential_payload──▶ Agent
+                                        │
+                                        ├─ RSA 개인키로 wrapped_key 복호 → AES key
+                                        ├─ AES-256-GCM 으로 payload 복호 + tag 검증
+                                        ├─ 평문은 execution 수명 동안만 프로세스 메모리 보관
+                                        ├─ Node.execute (VPC 내부)
+                                        └─ execution 종료 시 즉시 zeroize
+                                        ▼
+Agent ──status_update / execution_result──▶ API_Server
+       (메타데이터만, 원본 데이터 VPC 잔류)
 ```
+
+핵심 원칙 (상세: [`decisions.md` ADR-004 / ADR-013](./decisions.md)):
+
+- **네트워크 방향은 항상 Agent → 서버 아웃바운드** — 기업 방화벽이 인바운드
+  TCP 를 차단해도 Agent 가 먼저 dial-out 한 long-lived WebSocket 을 재사용한다.
+- **자격증명 전송은 pull 방식** — Agent 가 노드 실행 직전에 `get_credential`
+  프레임을 올리고, 서버가 응답 프레임에 하이브리드 암호 payload 를 담아 반환.
+  execute 프레임에 자격증명을 동봉하지 않음 (최소권한/최소노출).
+- **DB/서버 캐시 없음** — 매 요청 즉석 재암호화. 향후 실측 기반으로 API_Server
+  인프로세스 캐시 도입 여지는 `retrieve_for_agent` 순수 함수 설계로 확보.
+- **Agent 로컬 캐시는 execution 수명 동안만** — 같은 실행 안에서 credential
+  재사용 시 서버 왕복 없음. 실행 종료 시 메모리 zeroize.
 
 ### 3. Webhook 트리거
 ```
