@@ -32,3 +32,16 @@ class Settings(BaseSettings):
     # Password policy — kept here so router/service stay numeric-free.
     password_min_length: int = Field(default=8, ge=8)
     bcrypt_cost: int = Field(default=12, ge=4, le=15)
+
+    # PLAN_02 — per-plan workflow quotas. Override via env if the business
+    # tier pricing changes. approaching_limit fires at 90% of the cap.
+    workflow_limit_light: int = Field(default=100, ge=1)
+    workflow_limit_middle: int = Field(default=200, ge=1)
+    workflow_limit_heavy: int = Field(default=500, ge=1)
+
+    def workflow_limit_for_tier(self, plan_tier: str) -> int:
+        return {
+            "light": self.workflow_limit_light,
+            "middle": self.workflow_limit_middle,
+            "heavy": self.workflow_limit_heavy,
+        }[plan_tier]
