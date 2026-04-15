@@ -11,13 +11,18 @@ from uuid import UUID
 
 from uuid import uuid4
 
+from datetime import datetime
+
 from Database.src.repositories.base import (
     CredentialStore,
     Execution,
+    ExecutionNodeLog,
+    ExecutionNodeLogRepository,
     ExecutionRepository,
     ExecutionStatus,
     NodeCatalogRepository,
     NodeDefinition,
+    NodeLogStatus,
     WebhookBinding,
     WebhookRegistry,
     Workflow,
@@ -167,6 +172,81 @@ class InMemoryWebhookRegistry(WebhookRegistry):
 
     async def unregister(self, path: str) -> None:
         self._by_path.pop(path, None)
+
+
+class InMemoryExecutionNodeLogRepository(ExecutionNodeLogRepository):
+    def __init__(self) -> None:
+        self._store: dict[UUID, ExecutionNodeLog] = {}
+
+    async def record_start(self, log: ExecutionNodeLog) -> None:
+        if log.id in self._store:
+            raise ValueError(f"log {log.id} already started")
+        self._store[log.id] = deepcopy(log)
+
+    async def record_finish(
+        self,
+        log_id: UUID,
+        started_at: datetime,
+        *,
+        status: NodeLogStatus,
+        finished_at: datetime,
+        duration_ms: int,
+        output: dict | None = None,
+        error: dict | None = None,
+        stdout_uri: str | None = None,
+        stderr_uri: str | None = None,
+        model: str | None = None,
+        tokens_prompt: int | None = None,
+        tokens_completion: int | None = None,
+        cost_usd: float | None = None,
+    ) -> None:
+        log = self._store.get(log_id)
+        if log is None or log.started_at != started_at:
+            raise KeyError(f"node log {log_id} not found")
+        log.status = status
+        log.finished_at = finished_at
+        log.duration_ms = duration_ms
+        log.output = output
+        log.error = error
+        log.stdout_uri = stdout_uri
+        log.stderr_uri = stderr_uri
+        log.model = model
+        log.tokens_prompt = tokens_prompt
+        log.tokens_completion = tokens_completion
+        log.cost_usd = cost_usd
+
+    async def list_for_execution(
+        self, execution_id: UUID
+    ) -> list[ExecutionNodeLog]:
+        rows = [
+            deepcopy(l)
+            for l in self._store.values()
+            if l.execution_id == execution_id
+        ]
+        rows.sort(key=lambda r: (r.node_id, -r.attempt))
+        return rows
+
+    async def summarize_llm_usage(
+        self, execution_id: UUID
+    ) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for l in self._store.values():
+            if l.execution_id != execution_id or l.model is None:
+                continue
+            bucket = out.setdefault(
+                l.model,
+                {
+                    "tokens_prompt": 0,
+                    "tokens_completion": 0,
+                    "cost_usd": 0.0,
+                    "calls": 0,
+                },
+            )
+            bucket["tokens_prompt"] += l.tokens_prompt or 0
+            bucket["tokens_completion"] += l.tokens_completion or 0
+            bucket["cost_usd"] += l.cost_usd or 0.0
+            bucket["calls"] += 1
+        return out
 
 
 class InMemoryNodeCatalog(NodeCatalogRepository):

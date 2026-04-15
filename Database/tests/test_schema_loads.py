@@ -37,18 +37,15 @@ pytestmark = pytest.mark.skipif(
 
 
 async def _apply_schemas(engine) -> None:
-    async with engine.begin() as conn:
+    # Schema files may contain PL/pgSQL DO blocks (e.g. partition bootstrap),
+    # so naive splitting on `;` breaks. Route the whole DDL through the raw
+    # asyncpg connection which accepts multi-statement scripts via the
+    # simple query protocol.
+    async with engine.connect() as conn:
+        raw = (await conn.get_raw_connection()).driver_connection
         for path in SCHEMA_FILES:
             ddl = path.read_text(encoding="utf-8")
-            for stmt in _split_statements(ddl):
-                await conn.execute(text(stmt))
-
-
-def _split_statements(ddl: str) -> list[str]:
-    cleaned = "\n".join(
-        line for line in ddl.splitlines() if not line.strip().startswith("\\")
-    )
-    return [s.strip() for s in cleaned.split(";") if s.strip()]
+            await raw.execute(ddl)
 
 
 @pytest.mark.asyncio
@@ -76,6 +73,7 @@ async def test_schema_applies_and_checks_enforced():
         expected = {
             "users", "workflows", "nodes", "executions",
             "credentials", "agents", "webhook_registry",
+            "execution_node_logs",
         }
         assert expected.issubset(tables), f"missing: {expected - tables}"
 
