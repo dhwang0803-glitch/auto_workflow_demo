@@ -12,29 +12,37 @@ PostgreSQL 스키마 설계, Repository 구현체, 자격증명 암호화 저장
 
 ## 파일 위치 규칙 (MANDATORY)
 
+**PLAN_00 이후 Database 는 `auto-workflow-database` 파이썬 패키지로 배포**
+된다. 타 브랜치(`API_Server`, `Execution_Engine`)는 `pip install -e Database/`
+로 editable 설치하고 `from auto_workflow_database.repositories.base import ...`
+로 참조한다. Phase 2 에서 GitHub Packages wheel 게시로 전환 예정.
+
 ```
 Database/
-├── schemas/      ← DDL (CREATE TABLE/INDEX) SQL
-├── migrations/   ← 스키마 변경 이력 (YYYYMMDD_설명.sql)
-├── src/          ← Repository 구현체 (import 전용)
+├── pyproject.toml                  ← 패키지 메타데이터 + 의존성
+├── schemas/                         ← DDL (CREATE TABLE/INDEX) SQL
+├── migrations/                      ← 스키마 변경 이력 (YYYYMMDD_설명.sql)
+├── auto_workflow_database/          ← 파이썬 패키지 루트
 │   ├── repositories/
-│   │   ├── workflow_repository.py   ← PostgresWorkflowRepository
-│   │   ├── execution_repository.py  ← PostgresExecutionRepository
-│   │   └── credential_store.py      ← AES-256 암호화 저장소
-│   └── models/   ← SQLAlchemy ORM 모델
-├── scripts/      ← migrate.py, seed.py, validate.py (직접 실행)
-├── tests/        ← pytest (실제 DB 연결, 스키마 검증)
-└── docs/         ← ERD, 설계 문서
+│   │   ├── workflow_repository.py
+│   │   ├── execution_repository.py
+│   │   └── credential_store.py
+│   ├── models/                      ← SQLAlchemy ORM
+│   └── crypto/                      ← hybrid.py (ADR-013)
+├── scripts/                         ← migrate.py, roll_partitions.py
+├── tests/                           ← pytest
+└── plans/                           ← PLAN 문서
 ```
 
-| 파일 종류 | 저장 위치 |
-|-----------|-----------|
-| `CREATE TABLE`, `CREATE INDEX` | `schemas/` |
-| `ALTER TABLE`, 컬럼 변경 | `migrations/YYYYMMDD_*.sql` |
-| Repository 구현 (import 전용) | `src/repositories/` |
-| SQLAlchemy ORM 모델 | `src/models/` |
-| 마이그레이션 실행 스크립트 | `scripts/` |
-| pytest | `tests/` |
+| 파일 종류 | 저장 위치 | import 경로 |
+|-----------|-----------|------------|
+| `CREATE TABLE`, `CREATE INDEX` | `schemas/` | — |
+| `ALTER TABLE`, 컬럼 변경 | `migrations/YYYYMMDD_*.sql` | — |
+| Repository 구현 | `auto_workflow_database/repositories/` | `auto_workflow_database.repositories.X` |
+| SQLAlchemy ORM 모델 | `auto_workflow_database/models/` | `auto_workflow_database.models.X` |
+| 암호 헬퍼 | `auto_workflow_database/crypto/` | `auto_workflow_database.crypto.X` |
+| 마이그레이션 실행 스크립트 | `scripts/` | (직접 실행) |
+| pytest | `tests/` | — |
 
 **`Database/` 루트 또는 프로젝트 루트에 파일 직접 생성 금지.**
 

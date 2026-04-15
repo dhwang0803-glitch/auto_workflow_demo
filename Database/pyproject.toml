@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-workflow-database"
+version = "0.1.0"
+description = "Data layer for auto_workflow_demo — Repository ABCs, Postgres implementations, and Fernet+RSA credential storage."
+readme = "CLAUDE.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.29",
+    "psycopg[binary]>=3.1",
+    "cryptography>=42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+# Phase 1 (MVP): editable local install.
+#   From repo root:  pip install -e ./Database
+# Phase 2: publish wheel to GitHub Packages. API_Server/Execution_Engine will
+# then pin a version instead of the local path.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["auto_workflow_database*"]
+exclude = ["tests*", "schemas*", "migrations*", "scripts*", "plans*"]

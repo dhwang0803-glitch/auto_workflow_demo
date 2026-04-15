@@ -12,9 +12,9 @@ from uuid import UUID
 from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from Database.src.crypto.hybrid import hybrid_encrypt
-from Database.src.models.extras import Credential as CredentialORM
-from Database.src.repositories.base import AgentCredentialPayload, CredentialStore
+from auto_workflow_database.crypto.hybrid import hybrid_encrypt
+from auto_workflow_database.models.extras import Credential as CredentialORM
+from auto_workflow_database.repositories.base import AgentCredentialPayload, CredentialStore
 
 
 class FernetCredentialStore(CredentialStore):

@@ -12,9 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 
-from Database.src.models.core import Execution as ExecutionORM
-from Database.src.models.core import Workflow as WorkflowORM
-from Database.src.repositories.base import (
+from auto_workflow_database.models.core import Execution as ExecutionORM
+from auto_workflow_database.models.core import Workflow as WorkflowORM
+from auto_workflow_database.repositories.base import (
     Execution,
     ExecutionRepository,
     ExecutionStatus,

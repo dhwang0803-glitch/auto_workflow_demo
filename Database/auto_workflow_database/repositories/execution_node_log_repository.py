@@ -14,8 +14,8 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from Database.src.models.logs import ExecutionNodeLog as NodeLogORM
-from Database.src.repositories.base import (
+from auto_workflow_database.models.logs import ExecutionNodeLog as NodeLogORM
+from auto_workflow_database.repositories.base import (
     ExecutionNodeLog,
     ExecutionNodeLogRepository,
     NodeLogStatus,

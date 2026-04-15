@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from Database.src.models.core import Node as NodeORM
-from Database.src.repositories.base import NodeCatalogRepository, NodeDefinition
+from auto_workflow_database.models.core import Node as NodeORM
+from auto_workflow_database.repositories.base import NodeCatalogRepository, NodeDefinition
 
 
 def _to_dto(row: NodeORM) -> NodeDefinition:

@@ -6,8 +6,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from Database.src.models.core import Workflow as WorkflowORM
-from Database.src.repositories.base import Workflow, WorkflowRepository
+from auto_workflow_database.models.core import Workflow as WorkflowORM
+from auto_workflow_database.repositories.base import Workflow, WorkflowRepository
 
 
 def _to_dto(row: WorkflowORM) -> Workflow:

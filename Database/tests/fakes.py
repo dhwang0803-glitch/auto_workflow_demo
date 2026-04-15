@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 
 import json
 
-from Database.src.crypto.hybrid import hybrid_encrypt
-from Database.src.repositories.base import (
+from auto_workflow_database.crypto.hybrid import hybrid_encrypt
+from auto_workflow_database.repositories.base import (
     AgentCredentialPayload,
     ApprovalNotification,
     ApprovalNotificationRepository,

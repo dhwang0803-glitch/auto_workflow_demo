@@ -12,17 +12,17 @@ asyncpg = pytest.importorskip("asyncpg")  # noqa: F841
 
 from sqlalchemy.exc import IntegrityError
 
-from Database.src.models.core import Execution as ExecutionORM
-from Database.src.models.core import User as UserORM
-from Database.src.models.core import Workflow as WorkflowORM
-from Database.src.models.notifications import (
+from auto_workflow_database.models.core import Execution as ExecutionORM
+from auto_workflow_database.models.core import User as UserORM
+from auto_workflow_database.models.core import Workflow as WorkflowORM
+from auto_workflow_database.models.notifications import (
     ApprovalNotification as NotificationORM,
 )
-from Database.src.repositories._session import build_engine, build_sessionmaker
-from Database.src.repositories.approval_notification_repository import (
+from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
+from auto_workflow_database.repositories.approval_notification_repository import (
     PostgresApprovalNotificationRepository,
 )
-from Database.src.repositories.base import ApprovalNotification
+from auto_workflow_database.repositories.base import ApprovalNotification
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 

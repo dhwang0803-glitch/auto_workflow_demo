@@ -16,19 +16,19 @@ asyncpg = pytest.importorskip("asyncpg")  # noqa: F841
 
 from sqlalchemy import text
 
-from Database.src.models.core import User as UserORM
-from Database.src.repositories._session import build_engine, build_sessionmaker
-from Database.src.repositories.base import (
+from auto_workflow_database.models.core import User as UserORM
+from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
+from auto_workflow_database.repositories.base import (
     Execution,
     NodeDefinition,
     Workflow,
 )
-from Database.src.repositories.execution_repository import (
+from auto_workflow_database.repositories.execution_repository import (
     PostgresExecutionRepository,
 )
-from Database.src.repositories.node_catalog import PostgresNodeCatalog
-from Database.src.repositories.webhook_registry import PostgresWebhookRegistry
-from Database.src.repositories.workflow_repository import (
+from auto_workflow_database.repositories.node_catalog import PostgresNodeCatalog
+from auto_workflow_database.repositories.webhook_registry import PostgresWebhookRegistry
+from auto_workflow_database.repositories.workflow_repository import (
     PostgresWorkflowRepository,
 )
 

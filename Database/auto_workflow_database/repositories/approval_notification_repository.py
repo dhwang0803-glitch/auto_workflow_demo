@@ -7,10 +7,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from Database.src.models.notifications import (
+from auto_workflow_database.models.notifications import (
     ApprovalNotification as NotificationORM,
 )
-from Database.src.repositories.base import (
+from auto_workflow_database.repositories.base import (
     ApprovalNotification,
     ApprovalNotificationRepository,
 )
