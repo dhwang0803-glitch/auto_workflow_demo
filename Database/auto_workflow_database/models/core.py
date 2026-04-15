@@ -10,6 +10,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -17,7 +18,7 @@ from sqlalchemy import (
     String,
     text,
 )
-from sqlalchemy.dialects.postgresql import CITEXT, JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import BYTEA, CITEXT, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -48,6 +49,10 @@ class User(Base):
     )
     external_api_policy: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    password_hash: Mapped[bytes | None] = mapped_column(BYTEA, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
     )
     created_at: Mapped[datetime] = mapped_column(
         nullable=False, server_default=text("now()")

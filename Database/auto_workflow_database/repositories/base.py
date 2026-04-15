@@ -32,11 +32,20 @@ ExecutionStatus = Literal[
 
 @dataclass
 class User:
+    """User profile DTO — **never carries `password_hash`**.
+
+    The bcrypt hash is exposed only through `UserRepository.get_password_hash`
+    so API_Server's auth service can verify a login attempt without the hash
+    ever passing through generic user-facing APIs or being accidentally
+    serialized into a response.
+    """
+
     id: UUID
     email: str
     plan_tier: PlanTier
     default_execution_mode: ExecutionMode = "serverless"
     external_api_policy: dict = field(default_factory=dict)
+    is_verified: bool = False
     created_at: datetime | None = None
 
 
@@ -176,6 +185,45 @@ class WorkflowRepository(ABC):
 
     @abstractmethod
     async def delete(self, workflow_id: UUID) -> None: ...
+
+
+class UserRepository(ABC):
+    """Local password auth + email verification gate.
+
+    Consumed by `API_Server`'s auth service. The repository enforces the
+    `password_hash` isolation rule — it is never returned as part of the
+    `User` DTO and can only be fetched via the explicit `get_password_hash`
+    method used by the bcrypt verify path.
+    """
+
+    @abstractmethod
+    async def create(
+        self,
+        *,
+        email: str,
+        password_hash: bytes,
+        plan_tier: PlanTier = "light",
+    ) -> User: ...
+
+    @abstractmethod
+    async def get(self, user_id: UUID) -> User | None: ...
+
+    @abstractmethod
+    async def get_by_email(self, email: str) -> User | None: ...
+
+    @abstractmethod
+    async def get_password_hash(self, email: str) -> bytes | None:
+        """Return the bcrypt hash for a login attempt, or None if unknown.
+
+        Kept off the `User` DTO intentionally — callers should only invoke
+        this from the bcrypt verify path and never log/serialize the result.
+        """
+        ...
+
+    @abstractmethod
+    async def mark_verified(self, user_id: UUID) -> None:
+        """Idempotent — flipping an already-verified account is a no-op."""
+        ...
 
 
 class ExecutionRepository(ABC):

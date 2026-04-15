@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS users (
     plan_tier                text         NOT NULL,
     default_execution_mode   text         NOT NULL DEFAULT 'serverless',
     external_api_policy      jsonb        NOT NULL DEFAULT '{}'::jsonb,
+    -- API_Server PLAN_01 — local password auth. NULL permitted so future
+    -- OAuth-only users (social login) don't require a bcrypt hash.
+    password_hash            bytea        NULL,
+    -- Email verification gate — false until the user clicks the link sent
+    -- on register. Login endpoint rejects unverified accounts.
+    is_verified              boolean      NOT NULL DEFAULT false,
     created_at               timestamptz  NOT NULL DEFAULT now(),
     CONSTRAINT users_plan_tier_chk
         CHECK (plan_tier IN ('light', 'middle', 'heavy')),

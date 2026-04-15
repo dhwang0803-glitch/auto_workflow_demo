@@ -29,6 +29,9 @@ from auto_workflow_database.repositories.base import (
     NodeCatalogRepository,
     NodeDefinition,
     NodeLogStatus,
+    PlanTier,
+    User,
+    UserRepository,
     WebhookBinding,
     WebhookRegistry,
     Workflow,
@@ -319,3 +322,53 @@ class InMemoryNodeCatalog(NodeCatalogRepository):
 
     async def list_all(self) -> list[NodeDefinition]:
         return [deepcopy(n) for n in self._store.values()]
+
+
+class InMemoryUserRepository(UserRepository):
+    """Unit-test double for API_Server auth flow.
+
+    Keeps `password_hash` in a side map so the public `User` DTO never
+    carries it, matching the Postgres repository's isolation rule.
+    """
+
+    def __init__(self) -> None:
+        self._by_id: dict[UUID, User] = {}
+        self._hash_by_email: dict[str, bytes] = {}
+
+    async def create(
+        self,
+        *,
+        email: str,
+        password_hash: bytes,
+        plan_tier: PlanTier = "light",
+    ) -> User:
+        if any(u.email == email for u in self._by_id.values()):
+            raise ValueError(f"email {email} already registered")
+        user = User(
+            id=uuid4(),
+            email=email,
+            plan_tier=plan_tier,
+            is_verified=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        self._by_id[user.id] = user
+        self._hash_by_email[email] = password_hash
+        return deepcopy(user)
+
+    async def get(self, user_id: UUID) -> User | None:
+        user = self._by_id.get(user_id)
+        return deepcopy(user) if user else None
+
+    async def get_by_email(self, email: str) -> User | None:
+        for user in self._by_id.values():
+            if user.email == email:
+                return deepcopy(user)
+        return None
+
+    async def get_password_hash(self, email: str) -> bytes | None:
+        return self._hash_by_email.get(email)
+
+    async def mark_verified(self, user_id: UUID) -> None:
+        user = self._by_id.get(user_id)
+        if user is not None:
+            user.is_verified = True
