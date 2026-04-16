@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.27",
     "celery[redis]>=5.3",
     "websockets>=12.0",
+    "RestrictedPython>=7.0",
     "auto-workflow-database",
 ]
 
