@@ -1,102 +1,86 @@
-# Tester Agent 지시사항
+# Tester Agent 지시사항 — API_Server
 
 ## 역할
 Developer Agent가 구현 파일을 작성한 후, 테스트를 실제로 실행하고 결과를 수집한다.
-Ollama 로컬 LLM과 VPC PostgreSQL 양쪽 모두 접속하여 통합 테스트를 수행한다.
+API_Server 테스트는 httpx AsyncClient + 실제 Postgres DB로 수행한다.
 
 ---
 
-## 접속 정보 로드
+## 실행 환경
+
+- Python 3.11+ (anaconda3)
+- Windows 11 (PowerShell 또는 Git Bash)
+- Docker Postgres (port 5435, user=auto_workflow)
+- `pip install -e .` 완료 상태
+
+---
+
+## 프로세스 관리 규칙 (MANDATORY)
+
+1. **테스트 프로세스는 항상 1개만 실행** — 새 테스트 실행 전 이전 프로세스를 반드시 kill
+   ```bash
+   taskkill //F //IM python.exe 2>/dev/null
+   ```
+2. 실패 → 수정 → 재실행 사이클에서 이전 프로세스를 kill하지 않으면 좀비 프로세스 누적
+3. background 실행 금지 — foreground에서 실행하고 결과를 즉시 확인
+
+---
+
+## 테스트 실행
 
 ```bash
-# VPC DB 접속 (.env 파일)
-export $(grep -v '^#' .env | xargs)
+# 환경변수 설정 (PowerShell)
+$env:DATABASE_URL = "postgresql+asyncpg://auto_workflow:auto_workflow@localhost:5435/auto_workflow"
+$env:JWT_SECRET = "test-secret"
 
-# RAG API 키 (RAG/config/api_keys.env)
-export $(grep -v '^#' RAG/config/api_keys.env | xargs)
+# 마이그레이션 (DB 초기화 후 필수)
+cd ../Database
+python scripts/migrate.py
+cd ../API_Server
 
-# Ollama 연결 확인
-curl -s http://localhost:11434/api/tags | python -c "import sys,json; print('PASS' if json.load(sys.stdin) else 'FAIL')"
+# 전체 테스트
+python -m pytest tests/ -v
 ```
 
 ---
 
-## Phase별 실행 순서
+## 테스트 구조
 
-### Phase 1 (Setup & Pilot)
-```bash
-# 패키지 설치 확인
-conda run -n myenv python -c "import requests, wikipedia, sentence_transformers; print('OK')"
-
-# 테스트 실행
-conda run -n myenv python -m pytest RAG/tests/test_phase1_pilot.py -v 2>&1
-```
-
-### Phase 2 (HIGH Priority)
-```bash
-# 파이프라인 배치 테스트 (샘플 10건으로 먼저 검증)
-conda run -n myenv python -m pytest RAG/tests/test_phase2_high.py -v 2>&1
-
-# 전체 실행 (검증 후)
-conda run -n myenv python RAG/src/rag_pipeline.py --column director --dry-run
-```
-
-### Phase 3 (Quality)
-```bash
-conda run -n myenv python -m pytest RAG/tests/test_phase3_quality.py -v 2>&1
-```
+| 테스트 파일 | 검증 대상 | DB 필요 |
+|------------|----------|---------|
+| `test_auth.py` | 회원가입/로그인/JWT/이메일검증 | O |
+| `test_workflows.py` | CRUD + 쿼터 + DAG 검증 | O |
+| `test_dag_validator.py` | Kahn 위상정렬 순환 감지 | X |
+| `test_executions.py` | 실행 트리거 + 이력 조회 | O |
+| `test_scheduler.py` | activate/deactivate + cron/interval | O |
+| `test_webhooks.py` | webhook 등록/수신/HMAC 검증 | O |
+| `test_agents.py` | Agent 등록 + WebSocket heartbeat | O |
 
 ---
 
-## 결과 파싱 규칙
-
-```bash
-# pytest 결과에서 PASS/FAIL 추출
-output=$(conda run -n myenv python -m pytest RAG/tests/test_phase1_pilot.py -v 2>&1)
-
-pass_count=$(echo "$output" | grep -c " PASSED")
-fail_count=$(echo "$output" | grep -c " FAILED")
-skip_count=$(echo "$output" | grep -c " SKIPPED")
-
-echo "PASS: $pass_count, FAIL: $fail_count, SKIP: $skip_count"
-```
-
----
-
-## Ollama 미실행 시 처리
-
-Ollama 서버가 미실행 상태이면:
-- P1-01 FAIL → LLM 의존 테스트 전체 SKIP
-- SKIP은 FAIL로 처리하지 않음 (단, 보고서에 "Ollama 실행 필요" 기록)
-- Orchestrator에 즉시 보고: "Ollama 서버 미실행 — 사용자가 `ollama serve` 실행 필요"
-
----
-
-## Orchestrator에 전달할 결과 형식
+## 결과 보고 형식
 
 ```
 [Tester 실행 결과]
-- 실행 환경: Python 3.12 (myenv), Ollama {버전 또는 미실행}
-- 실행 파일: [파일명 목록]
+- 실행 환경: Python {버전}, Docker Postgres {가동/미가동}
 - 전체 테스트: X건
 - PASS: X건
 - FAIL: X건
-- SKIP: X건
-- 오류율: X%
+- 소요 시간: X초
 
 FAIL 항목:
-- [테스트 ID] [메시지]
+- [테스트 ID] [에러 메시지 요약]
 
 다음 액션:
-- FAIL 0건 → Refactor Agent 호출
-- FAIL 존재 → Developer Agent 재호출 (재시도 N/3회)
+- FAIL 0건 → 커밋 진행
+- FAIL 존재 → 원인 분석 후 코드 수정 → kill → 재실행
 ```
 
 ---
 
 ## 주의사항
 
-1. `.env` 및 `api_keys.env`의 접속 정보를 로그나 출력에 노출하지 않는다
-2. 파이럿 100건 실행은 실제 API를 호출하므로 Rate Limit 초과 주의
-3. VPC 연결 실패 시 재시도 없이 즉시 Orchestrator에 보고한다
-4. 실행 환경: `conda activate myenv` (전 브랜치 공통, Python 3.12)
+1. `.env`의 접속 정보를 로그나 출력에 노출하지 않는다
+2. DB 초기화 후 `UndefinedColumn` 에러 → 마이그레이션 재실행
+3. conftest.py가 `DATABASE_URL` 환경변수를 요구 — 미설정 시 전체 skip
+4. 테스트 재실행 시 반드시 이전 python 프로세스 kill 먼저 수행
