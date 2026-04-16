@@ -93,3 +93,9 @@ class InvalidGraphError(DomainError):
     """422 — DAG validation failed (cycle, unknown edge, duplicate id, empty)."""
 
     http_status = 422
+
+
+class WorkflowNotActiveError(DomainError):
+    """409 — tried to execute a soft-deleted or deactivated workflow."""
+
+    http_status = 409
