@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # PLAN_02 — per-plan workflow quotas. Override via env if the business
     # tier pricing changes. approaching_limit fires at 90% of the cap.
+    agent_jwt_ttl_hours: int = 24
+
     @property
     def scheduler_jobstore_url(self) -> str:
         return self.database_url.replace("+asyncpg", "")

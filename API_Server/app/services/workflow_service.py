@@ -16,6 +16,8 @@ import hashlib
 import secrets
 
 from auto_workflow_database.repositories.base import (
+    Agent,
+    AgentRepository,
     Execution,
     ExecutionRepository,
     User,
@@ -55,6 +57,7 @@ class WorkflowService:
         scheduler: AsyncIOScheduler | None = None,
         webhook_registry: WebhookRegistry | None = None,
         user_repo: UserRepository | None = None,
+        agent_repo: AgentRepository | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
@@ -62,6 +65,7 @@ class WorkflowService:
         self._scheduler = scheduler
         self._webhook_registry = webhook_registry
         self._user_repo = user_repo
+        self._agent_repo = agent_repo
 
     # ------------------------------------------------------------------ read
 
@@ -261,3 +265,15 @@ class WorkflowService:
             raise WorkflowNotActiveError("workflow inactive")
         user = await self._user_repo.get(wf.owner_id)
         return await self.execute_workflow(user, binding.workflow_id)
+
+    # ------------------------------------------------------------------ agent
+
+    async def register_agent(self, user: User, public_key: str, gpu_info: dict) -> Agent:
+        agent = Agent(
+            id=uuid4(),
+            owner_id=user.id,
+            public_key=public_key,
+            gpu_info=gpu_info,
+        )
+        await self._agent_repo.register(agent)
+        return agent

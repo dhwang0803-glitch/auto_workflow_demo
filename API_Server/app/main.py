@@ -10,6 +10,9 @@ from auto_workflow_database.repositories._session import (
     build_engine,
     build_sessionmaker,
 )
+from auto_workflow_database.repositories.agent_repository import (
+    PostgresAgentRepository,
+)
 from auto_workflow_database.repositories.execution_repository import (
     PostgresExecutionRepository,
 )
@@ -32,6 +35,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.config import Settings
 from app.errors import DomainError
+from app.routers.agents import router as agents_router
 from app.routers.auth import router as auth_router
 from app.routers.executions import router as executions_router
 from app.routers.webhooks import router as webhooks_router
@@ -56,6 +60,7 @@ def create_app(
         workflow_repo = PostgresWorkflowRepository(sessionmaker)
         execution_repo = PostgresExecutionRepository(sessionmaker)
         webhook_registry = PostgresWebhookRegistry(sessionmaker)
+        agent_repo = PostgresAgentRepository(sessionmaker)
         sender = email_sender or make_email_sender(s)
         scheduler = AsyncIOScheduler(
             jobstores={"default": SQLAlchemyJobStore(url=s.scheduler_jobstore_url)},
@@ -75,6 +80,7 @@ def create_app(
             settings=s,
         )
         app.state.webhook_registry = webhook_registry
+        app.state.agent_repo = agent_repo
         app.state.workflow_service = WorkflowService(
             repo=workflow_repo,
             execution_repo=execution_repo,
@@ -82,6 +88,7 @@ def create_app(
             scheduler=scheduler,
             webhook_registry=webhook_registry,
             user_repo=user_repo,
+            agent_repo=agent_repo,
         )
         try:
             yield
@@ -117,6 +124,9 @@ def create_app(
     )
     app.include_router(
         webhooks_router, prefix="/webhooks", tags=["webhooks"]
+    )
+    app.include_router(
+        agents_router, prefix="/api/v1/agents", tags=["agents"]
     )
 
     @app.get("/health")
