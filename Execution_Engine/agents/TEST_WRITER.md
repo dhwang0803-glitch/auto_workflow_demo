@@ -1,9 +1,7 @@
-# Test Writer Agent 지시사항
+# Test Writer Agent 지시사항 — Execution_Engine
 
 ## 역할
-
 구현 전에 실패하는 테스트를 먼저 작성한다 (TDD Red 단계).
-구현 후에는 테스트를 실행하고 결과를 수집한다 (검증 단계).
 
 ---
 
@@ -11,121 +9,86 @@
 
 1. 구현 코드가 없어도 테스트를 먼저 작성한다
 2. 각 테스트는 하나의 요구사항만 검증한다
-3. 기대값을 명확하게 명시한다
-4. 테스트 실패 시 원인을 파악할 수 있는 메시지를 포함한다
-5. 외부 API/네트워크 의존 테스트는 실제 호출과 Mock 모드를 구분한다
+3. InMemory fakes 사용 — 실 DB 불필요
 
 ---
 
-## 브랜치별 테스트 파일 위치
+## 테스트 파일 위치
 
-| 브랜치 | 테스트 디렉토리 | 형식 |
-|--------|--------------|------|
-| `API_Server` | `API_Server/tests/` | pytest + httpx TestClient |
-| `Database` | `Database/tests/` | pytest + 실제 DB 연결 (테스트 DB) |
-| `Execution_Engine` | `Execution_Engine/tests/` | pytest + Celery eager mode |
-| `Frontend` | `Frontend/tests/` | Jest + Playwright |
-
----
-
-## 테스트 작성 예시 (pytest)
-
-### API_Server 라우터 테스트
-
-```python
-import pytest
-from httpx import AsyncClient
-from app.main import app
-
-@pytest.mark.asyncio
-async def test_create_workflow_rejects_cycle():
-    """순환 참조가 있는 워크플로우는 400을 반환한다"""
-    cyclic_payload = {
-        "name": "cyclic",
-        "nodes": [{"node_id": "a"}, {"node_id": "b"}],
-        "connections": [
-            {"source_node_id": "a", "target_node_id": "b"},
-            {"source_node_id": "b", "target_node_id": "a"},
-        ],
-    }
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        r = await client.post("/api/v1/workflows", json=cyclic_payload)
-    assert r.status_code == 400
-    assert "순환" in r.json()["detail"]
+```
+Execution_Engine/tests/test_{기능명}.py
 ```
 
-### Execution_Engine 노드 테스트
+| 파일 | 검증 대상 |
+|------|----------|
+| `test_http_request_node.py` | HttpRequestNode + registry |
+| `test_condition_node.py` | ConditionNode 연산자별 분기 |
+| `test_code_node.py` | CodeNode + RestrictedPython sandbox |
+| `test_executor.py` | DAG executor (single/chain/diamond/failure/empty) |
+| `test_dispatcher.py` | Celery dispatcher _execute() |
+| `test_agent.py` | WebSocketExecutionRepository + command handler |
+
+---
+
+## 테스트 작성 예시
+
+### 노드 단위 테스트
 
 ```python
-import pytest
-from src.nodes.condition import ConditionNode
-
-@pytest.mark.asyncio
-async def test_condition_node_equals_true():
+async def test_condition_eq_true():
     node = ConditionNode()
     result = await node.execute(
-        input_data={"status_code": 200},
-        parameters={"field": "status_code", "operator": "equals", "value": 200},
+        {"status": 200},
+        {"left_field": "status", "operator": "eq", "right_value": 200},
     )
-    assert result["branch"] == "true"
+    assert result["result"] is True
 ```
 
-### Database Repository 테스트
+### DAG executor 테스트 (InMemory fakes)
 
 ```python
-@pytest.fixture
-async def repo(test_db_url):
-    from src.repositories.workflow_repository import PostgresWorkflowRepository
-    repo = PostgresWorkflowRepository(test_db_url)
-    yield repo
-    await repo.close()
+async def test_diamond_parallel(reg, repo):
+    graph = {
+        "nodes": [
+            {"id": "a", "type": "add", "config": {"amount": 1}},
+            {"id": "b", "type": "add", "config": {"amount": 10}},
+            {"id": "c", "type": "add", "config": {"amount": 100}},
+            {"id": "d", "type": "add", "config": {"amount": 0}},
+        ],
+        "edges": [
+            {"source": "a", "target": "b"}, {"source": "a", "target": "c"},
+            {"source": "b", "target": "d"}, {"source": "c", "target": "d"},
+        ],
+    }
+    await run_workflow(graph, ex, repo, reg)
+    result = await repo.get(ex.id)
+    assert result.status == "success"
+```
 
-@pytest.mark.asyncio
-async def test_save_and_retrieve(repo):
-    wf = WorkflowSchema(name="test", owner_id="u1")
-    saved = await repo.save(wf)
-    loaded = await repo.get_by_id(saved.workflow_id)
-    assert loaded.name == "test"
+### Sandbox 보안 테스트
+
+```python
+def test_import_blocked():
+    with pytest.raises(ImportError):
+        run_restricted("import os", {})
 ```
 
 ---
 
 ## 필수 테스트 카테고리
 
-### API_Server
-- 워크플로우 CRUD (생성/조회/활성화/삭제)
-- DAG 스케줄러 순환 참조 감지
-- Webhook 트리거 수신 → 실행 큐잉
-- Agent JWT 등록/인증
-- WebSocket 연결 수립 후 heartbeat 처리
-
-### Database
-- 각 Repository save/retrieve/list 라운드트립
-- CredentialStore 암호화/복호화 대칭성
-- 마이그레이션 up/down 검증
-
-### Execution_Engine
-- 각 `BaseNode` 구현체의 execute() 동작
-- `NodeRegistry.register()` → `get_node()` 라운드트립
-- 서버리스/Agent 디스패치 분기
-- CodeExecutionNode 샌드박스 탈출 시도 거부
-- 동일 `execution_id` 중복 실행 시 멱등성 보장
-
-### Frontend
-- WorkflowCanvas 노드 추가/삭제/연결
-- 워크플로우 JSON 직렬화 라운드트립
-- API 클라이언트 에러 응답 처리
+- 각 BaseNode 구현체의 execute() 동작
+- NodeRegistry register/get 라운드트립
+- DAG executor: single node, chain, diamond parallel, failure, empty graph
+- Celery dispatcher: 정상/missing execution/missing workflow/node failure
+- Agent: WS repo 메시지 전송, execute 커맨드 성공/실패
+- Sandbox: import 차단, open 차단, 타임아웃
 
 ---
 
-## 테스트 결과 수집 형식
+## 결과 수집 형식
 
 ```
-전체 테스트: X건
-PASS: X건
-FAIL: X건
-SKIP: X건
-
-FAIL 목록:
-- [테스트 ID]: [실패 메시지]
+전체: X건, PASS: X건, FAIL: X건
+FAIL: [테스트 ID]: [메시지]
 ```
