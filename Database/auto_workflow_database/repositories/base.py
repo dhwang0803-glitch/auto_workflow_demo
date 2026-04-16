@@ -169,6 +169,7 @@ class Execution:
     cost_usd: float = 0.0
     duration_ms: int | None = None
     paused_at_node: str | None = None
+    created_at: datetime | None = None
 
 
 class WorkflowRepository(ABC):
@@ -261,6 +262,15 @@ class ExecutionRepository(ABC):
 
     @abstractmethod
     async def get(self, execution_id: UUID) -> Execution | None: ...
+
+    @abstractmethod
+    async def list_by_workflow(
+        self,
+        workflow_id: UUID,
+        *,
+        limit: int = 50,
+        cursor: tuple[datetime, UUID] | None = None,
+    ) -> list[Execution]: ...
 
     @abstractmethod
     async def list_pending_approvals(self, owner_id: UUID) -> list[Execution]: ...

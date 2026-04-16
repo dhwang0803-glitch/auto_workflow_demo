@@ -117,6 +117,27 @@ class InMemoryExecutionRepository(ExecutionRepository):
         ex = self._store.get(execution_id)
         return deepcopy(ex) if ex else None
 
+    async def list_by_workflow(
+        self,
+        workflow_id: UUID,
+        *,
+        limit: int = 50,
+        cursor: tuple[datetime, UUID] | None = None,
+    ) -> list[Execution]:
+        rows = [
+            deepcopy(ex)
+            for ex in self._store.values()
+            if ex.workflow_id == workflow_id
+        ]
+        rows.sort(key=lambda e: (e.created_at or datetime.min, e.id), reverse=True)
+        if cursor is not None:
+            created_at, eid = cursor
+            rows = [
+                r for r in rows
+                if (r.created_at or datetime.min, r.id) < (created_at, eid)
+            ]
+        return rows[:limit]
+
     async def list_pending_approvals(self, owner_id: UUID) -> list[Execution]:
         if self._workflows is None:
             raise RuntimeError(

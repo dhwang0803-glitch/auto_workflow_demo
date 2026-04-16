@@ -120,6 +120,12 @@ class Execution(Base):
             text("started_at DESC"),
         ),
         Index(
+            "idx_executions_workflow_created",
+            "workflow_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
             "idx_executions_paused",
             "paused_at_node",
             postgresql_where=text("status = 'paused'"),
@@ -150,3 +156,6 @@ class Execution(Base):
     )
     duration_ms: Mapped[int | None] = mapped_column(nullable=True)
     paused_at_node: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=text("now()")
+    )
