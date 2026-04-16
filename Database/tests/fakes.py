@@ -17,7 +17,9 @@ import json
 
 from auto_workflow_database.crypto.hybrid import hybrid_encrypt
 from auto_workflow_database.repositories.base import (
+    Agent,
     AgentCredentialPayload,
+    AgentRepository,
     ApprovalNotification,
     ApprovalNotificationRepository,
     CredentialStore,
@@ -393,3 +395,23 @@ class InMemoryUserRepository(UserRepository):
         user = self._by_id.get(user_id)
         if user is not None:
             user.is_verified = True
+
+
+class InMemoryAgentRepository(AgentRepository):
+    def __init__(self) -> None:
+        self._store: dict[UUID, Agent] = {}
+
+    async def register(self, agent: Agent) -> None:
+        self._store[agent.id] = deepcopy(agent)
+
+    async def get(self, agent_id: UUID) -> Agent | None:
+        a = self._store.get(agent_id)
+        return deepcopy(a) if a else None
+
+    async def update_heartbeat(self, agent_id: UUID) -> None:
+        a = self._store.get(agent_id)
+        if a:
+            a.last_heartbeat = datetime.now(timezone.utc)
+
+    async def list_by_owner(self, owner_id: UUID) -> list[Agent]:
+        return [deepcopy(a) for a in self._store.values() if a.owner_id == owner_id]

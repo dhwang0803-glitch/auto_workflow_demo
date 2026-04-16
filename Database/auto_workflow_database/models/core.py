@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Numeric,
@@ -55,7 +56,7 @@ class User(Base):
         Boolean, nullable=False, server_default=text("false")
     )
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 
@@ -84,10 +85,10 @@ class Workflow(Base):
         nullable=False, server_default=text("true")
     )
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 
@@ -98,7 +99,7 @@ class Node(Base):
     version: Mapped[str] = mapped_column(String, primary_key=True)
     schema: Mapped[dict] = mapped_column(JSONB, nullable=False)
     registered_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 
@@ -142,8 +143,8 @@ class Execution(Base):
     )
     status: Mapped[str] = mapped_column(String, nullable=False)
     execution_mode: Mapped[str] = mapped_column(String, nullable=False)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     node_results: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
@@ -157,5 +158,5 @@ class Execution(Base):
     duration_ms: Mapped[int | None] = mapped_column(nullable=True)
     paused_at_node: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

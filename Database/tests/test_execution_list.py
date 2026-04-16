@@ -113,7 +113,7 @@ async def test_tiebreaker_same_created_at(sm):
     user = await _seed_user(sm)
     wf_id = await _seed_workflow(sm, user.id)
     repo = PostgresExecutionRepository(sm)
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     ids = []
     for _ in range(3):
         ex = Execution(
