@@ -1,5 +1,8 @@
-"""Re-export Database InMemory fakes for Execution_Engine tests."""
-from auto_workflow_database.repositories.base import Execution, ExecutionRepository, ExecutionStatus
+"""InMemory fakes for Execution_Engine tests."""
+from auto_workflow_database.repositories.base import (
+    Execution, ExecutionRepository, ExecutionStatus,
+    Workflow, WorkflowRepository,
+)
 from copy import deepcopy
 from uuid import UUID
 
@@ -40,3 +43,23 @@ class InMemoryExecutionRepository(ExecutionRepository):
 
     async def list_pending_approvals(self, owner_id):
         return []
+
+
+class InMemoryWorkflowRepository(WorkflowRepository):
+    """Minimal fake — only methods used by dispatcher tests."""
+
+    def __init__(self) -> None:
+        self._store: dict[UUID, Workflow] = {}
+
+    async def get(self, workflow_id: UUID) -> Workflow | None:
+        wf = self._store.get(workflow_id)
+        return deepcopy(wf) if wf else None
+
+    async def save(self, workflow: Workflow) -> None:
+        self._store[workflow.id] = deepcopy(workflow)
+
+    async def list_by_owner(self, owner_id, *, active_only=True):
+        return []
+
+    async def delete(self, workflow_id):
+        self._store.pop(workflow_id, None)
