@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, Index, LargeBinary, String, UniqueConstraint, text
+from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,7 +33,7 @@ class Credential(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     encrypted_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 
@@ -53,9 +53,9 @@ class Agent(Base):
     gpu_info: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    last_heartbeat: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registered_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 
@@ -74,5 +74,5 @@ class WebhookBinding(Base):
     path: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     secret: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=text("now()")
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

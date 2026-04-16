@@ -1,7 +1,7 @@
 """Postgres AgentRepository — PLAN_08."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -46,7 +46,7 @@ class PostgresAgentRepository(AgentRepository):
             await s.execute(
                 update(AgentORM)
                 .where(AgentORM.id == agent_id)
-                .values(last_heartbeat=datetime.now())
+                .values(last_heartbeat=datetime.now(timezone.utc))
             )
 
     async def list_by_owner(self, owner_id: UUID) -> list[Agent]:
