@@ -150,7 +150,9 @@ async def _db_error_handler(request, exc: DBAPIError):
 - Repository 파일 (`workflow_repository.py`, `execution_repository.py`,
   `user_repository.py`, `credential_store.py`, 기타) 은 **수정 금지**.
   git diff 에 `repositories/*.py` 가 _session.py 외엔 등장하면 안 됨.
-- `_session.py` 전체 줄 수는 **40 줄 이하** 유지 (현재 25 줄).
+- `_session.py` 전체 줄 수는 **70 줄 이하** 유지 (현재 25 줄 → 약 65 줄 예상).
+  이벤트 리스너 3개 inline 정의가 본 PLAN 의 핵심이라 초기 추정 40 줄로는
+  불가. 본질은 "Repository 미수정 + 헬퍼/모듈 분리 금지" 이며 줄 수는 그 proxy.
 - 설정값을 묶는 `EngineConfig` / `ResilienceSettings` dataclass 금지.
   `build_engine` 함수 인자 + env var 로 충분.
 - 이벤트 리스너 콜백을 `query_logging.py` 같은 별도 모듈로 분리 금지.
@@ -190,7 +192,7 @@ Postgres testcontainer 기반. 3 케이스면 충분.
 - [ ] 신규 3 테스트 통과
 - [ ] Repository 파일 git diff 0 줄 (= `_session.py` + 테스트 + 본 PLAN
       문서 외에는 수정 없음)
-- [ ] `_session.py` ≤ 40 줄
+- [ ] `_session.py` ≤ 70 줄
 - [ ] `logging.getLogger("auto_workflow_database")` 가 발생시키는
       slow/error 로그가 `caplog` 로 포착됨
 - [ ] `statement_timeout` 이 Postgres 세션에 실제로 적용됨을 `SHOW
