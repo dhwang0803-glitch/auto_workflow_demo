@@ -2,19 +2,17 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
-from datetime import datetime, timedelta, timezone
 from uuid import UUID
-
-import jwt as pyjwt
 
 from auto_workflow_database.repositories.base import User
 
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect, status
 
 from app.dependencies import get_current_user
+from app.errors import InvalidTokenError
 from app.models.agent import AgentRegisterRequest, AgentRegisterResponse
+from app.services.auth_service import AuthService
 from app.services.workflow_service import WorkflowService
 
 router = APIRouter()
@@ -28,19 +26,9 @@ async def register_agent(
     user: User = Depends(get_current_user),
 ) -> AgentRegisterResponse:
     svc: WorkflowService = request.app.state.workflow_service
+    auth: AuthService = request.app.state.auth_service
     agent = await svc.register_agent(user, body.public_key, body.gpu_info)
-    s = request.app.state.settings
-    now = datetime.now(timezone.utc)
-    token = pyjwt.encode(
-        {
-            "sub": f"agent:{agent.id}",
-            "purpose": "agent",
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(hours=s.agent_jwt_ttl_hours)).timestamp()),
-        },
-        s.jwt_secret,
-        algorithm=s.jwt_algorithm,
-    )
+    token = auth.issue_agent_token(agent.id)
     return AgentRegisterResponse(agent_id=agent.id, agent_token=token)
 
 
@@ -49,17 +37,12 @@ async def agent_ws(
     websocket: WebSocket,
     token: str = Query(),
 ) -> None:
-    s = websocket.app.state.settings
+    auth: AuthService = websocket.app.state.auth_service
     try:
-        payload = pyjwt.decode(token, s.jwt_secret, algorithms=[s.jwt_algorithm])
-    except pyjwt.InvalidTokenError:
+        agent_id = auth.decode_agent_token(token)
+    except InvalidTokenError:
         await websocket.close(code=4001, reason="invalid token")
         return
-    sub = payload.get("sub", "")
-    if not sub.startswith("agent:") or payload.get("purpose") != "agent":
-        await websocket.close(code=4001, reason="not an agent token")
-        return
-    agent_id = UUID(sub.removeprefix("agent:"))
     agent_repo = websocket.app.state.agent_repo
     agent = await agent_repo.get(agent_id)
     if agent is None:
