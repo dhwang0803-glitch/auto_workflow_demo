@@ -45,6 +45,8 @@ class AppContainer:
             jobstores={"default": SQLAlchemyJobStore(url=settings.scheduler_jobstore_url)},
         )
 
+        self.agent_connections: dict = {}
+
         self.auth_service = AuthService(
             user_repo=self.user_repo,
             email_sender=self.email_sender,
@@ -58,6 +60,7 @@ class AppContainer:
             webhook_registry=self.webhook_registry,
             user_repo=self.user_repo,
             agent_repo=self.agent_repo,
+            agent_connections=self.agent_connections,
         )
 
     async def dispose(self) -> None:

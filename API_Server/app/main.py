@@ -41,6 +41,7 @@ def create_app(
         app.state.auth_service = c.auth_service
         app.state.webhook_registry = c.webhook_registry
         app.state.agent_repo = c.agent_repo
+        app.state.agent_connections = c.agent_connections
         app.state.workflow_service = c.workflow_service
         try:
             yield
