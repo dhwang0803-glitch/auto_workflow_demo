@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     # PLAN_02 — per-plan workflow quotas. Override via env if the business
     # tier pricing changes. approaching_limit fires at 90% of the cap.
+    @property
+    def scheduler_jobstore_url(self) -> str:
+        return self.database_url.replace("+asyncpg", "")
+
     workflow_limit_light: int = Field(default=100, ge=1)
     workflow_limit_middle: int = Field(default=200, ge=1)
     workflow_limit_heavy: int = Field(default=500, ge=1)
