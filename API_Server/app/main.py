@@ -1,48 +1,23 @@
-"""FastAPI application factory — wires Settings, DB engine, repositories,
-and the auth service onto `app.state`. Dependency providers in
-`app.dependencies` read from there.
+"""FastAPI application factory — wires dependencies via AppContainer
+and mounts them onto `app.state`.
 """
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-
-from auto_workflow_database.repositories._session import (
-    build_engine,
-    build_sessionmaker,
-)
-from auto_workflow_database.repositories.agent_repository import (
-    PostgresAgentRepository,
-)
-from auto_workflow_database.repositories.execution_repository import (
-    PostgresExecutionRepository,
-)
-from auto_workflow_database.repositories.user_repository import (
-    PostgresUserRepository,
-)
-from auto_workflow_database.repositories.webhook_registry import (
-    PostgresWebhookRegistry,
-)
-from auto_workflow_database.repositories.workflow_repository import (
-    PostgresWorkflowRepository,
-)
-
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError
 
 from app.config import Settings
+from app.container import AppContainer
 from app.errors import DomainError
 from app.routers.agents import router as agents_router
 from app.routers.auth import router as auth_router
 from app.routers.executions import router as executions_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
-from app.services.auth_service import AuthService
-from app.services.email_sender import EmailSender, make_email_sender
-from app.services.workflow_service import WorkflowService
+from app.services.email_sender import EmailSender
 
 
 def create_app(
@@ -54,54 +29,28 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        engine = build_engine(s.database_url)
-        sessionmaker = build_sessionmaker(engine)
-        user_repo = PostgresUserRepository(sessionmaker)
-        workflow_repo = PostgresWorkflowRepository(sessionmaker)
-        execution_repo = PostgresExecutionRepository(sessionmaker)
-        webhook_registry = PostgresWebhookRegistry(sessionmaker)
-        agent_repo = PostgresAgentRepository(sessionmaker)
-        sender = email_sender or make_email_sender(s)
-        scheduler = AsyncIOScheduler(
-            jobstores={"default": SQLAlchemyJobStore(url=s.scheduler_jobstore_url)},
-        )
-
-        app.state.settings = s
-        app.state.engine = engine
-        app.state.sessionmaker = sessionmaker
-        app.state.user_repo = user_repo
-        app.state.workflow_repo = workflow_repo
-        app.state.execution_repo = execution_repo
-        app.state.email_sender = sender
-        app.state.scheduler = scheduler
-        app.state.auth_service = AuthService(
-            user_repo=user_repo,
-            email_sender=sender,
-            settings=s,
-        )
-        app.state.webhook_registry = webhook_registry
-        app.state.agent_repo = agent_repo
-        app.state.workflow_service = WorkflowService(
-            repo=workflow_repo,
-            execution_repo=execution_repo,
-            settings=s,
-            scheduler=scheduler,
-            webhook_registry=webhook_registry,
-            user_repo=user_repo,
-            agent_repo=agent_repo,
-        )
+        c = AppContainer(s, email_sender=email_sender)
+        app.state.settings = c.settings
+        app.state.engine = c.engine
+        app.state.sessionmaker = c.sessionmaker
+        app.state.user_repo = c.user_repo
+        app.state.workflow_repo = c.workflow_repo
+        app.state.execution_repo = c.execution_repo
+        app.state.email_sender = c.email_sender
+        app.state.scheduler = c.scheduler
+        app.state.auth_service = c.auth_service
+        app.state.webhook_registry = c.webhook_registry
+        app.state.agent_repo = c.agent_repo
+        app.state.workflow_service = c.workflow_service
         try:
             yield
         finally:
-            await engine.dispose()
+            await c.dispose()
 
     app = FastAPI(title="auto_workflow API", version="0.1.0", lifespan=lifespan)
 
     @app.exception_handler(DomainError)
     async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
-        # Single mapping site for every service-layer error — the HTTP
-        # status and (optional) headers live on the exception class itself,
-        # so new error types only need one class definition.
         return JSONResponse(
             status_code=exc.http_status,
             content={"detail": exc.message},

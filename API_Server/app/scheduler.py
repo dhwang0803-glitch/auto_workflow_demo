@@ -14,17 +14,11 @@ from uuid import UUID
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
-from auto_workflow_database.repositories.execution_repository import PostgresExecutionRepository
-from auto_workflow_database.repositories.user_repository import PostgresUserRepository
-from auto_workflow_database.repositories.workflow_repository import PostgresWorkflowRepository
-
 from app.config import Settings
-from app.services.workflow_service import WorkflowService
+from app.container import AppContainer
 
 logger = logging.getLogger("app.scheduler")
-_svc: WorkflowService | None = None
-_user_repo: PostgresUserRepository | None = None
+_container: AppContainer | None = None
 
 
 def run_scheduled_execution(workflow_id: str, owner_id: str) -> None:
@@ -34,28 +28,21 @@ def run_scheduled_execution(workflow_id: str, owner_id: str) -> None:
 
 
 async def _run_async(workflow_id: UUID, owner_id: UUID) -> None:
-    user = await _user_repo.get(owner_id)
+    user = await _container.user_repo.get(owner_id)
     if user is None:
         logger.error("scheduled exec skipped: user %s not found", owner_id)
         return
     try:
-        ex = await _svc.execute_workflow(user, workflow_id)
+        ex = await _container.workflow_service.execute_workflow(user, workflow_id)
         logger.info("scheduled exec created: %s for workflow %s", ex.id, workflow_id)
     except Exception:
         logger.exception("scheduled exec failed for workflow %s", workflow_id)
 
 
 async def main() -> None:
-    global _svc, _user_repo
+    global _container
     s = Settings()
-    engine = build_engine(s.database_url)
-    sm = build_sessionmaker(engine)
-    _user_repo = PostgresUserRepository(sm)
-    workflow_repo = PostgresWorkflowRepository(sm)
-    execution_repo = PostgresExecutionRepository(sm)
-    _svc = WorkflowService(
-        repo=workflow_repo, execution_repo=execution_repo, settings=s
-    )
+    _container = AppContainer(s)
     scheduler = AsyncIOScheduler(
         jobstores={"default": SQLAlchemyJobStore(url=s.scheduler_jobstore_url)},
     )
@@ -65,7 +52,7 @@ async def main() -> None:
         await asyncio.Event().wait()
     finally:
         scheduler.shutdown()
-        await engine.dispose()
+        await _container.dispose()
 
 
 if __name__ == "__main__":
