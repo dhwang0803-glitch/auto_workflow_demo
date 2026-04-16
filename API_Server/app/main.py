@@ -20,6 +20,9 @@ from auto_workflow_database.repositories.workflow_repository import (
     PostgresWorkflowRepository,
 )
 
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError
@@ -49,6 +52,9 @@ def create_app(
         workflow_repo = PostgresWorkflowRepository(sessionmaker)
         execution_repo = PostgresExecutionRepository(sessionmaker)
         sender = email_sender or make_email_sender(s)
+        scheduler = AsyncIOScheduler(
+            jobstores={"default": SQLAlchemyJobStore(url=s.scheduler_jobstore_url)},
+        )
 
         app.state.settings = s
         app.state.engine = engine
@@ -57,6 +63,7 @@ def create_app(
         app.state.workflow_repo = workflow_repo
         app.state.execution_repo = execution_repo
         app.state.email_sender = sender
+        app.state.scheduler = scheduler
         app.state.auth_service = AuthService(
             user_repo=user_repo,
             email_sender=sender,
@@ -66,6 +73,7 @@ def create_app(
             repo=workflow_repo,
             execution_repo=execution_repo,
             settings=s,
+            scheduler=scheduler,
         )
         try:
             yield

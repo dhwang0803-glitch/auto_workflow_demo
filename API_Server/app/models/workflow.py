@@ -9,7 +9,9 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class NodeSpec(BaseModel):
@@ -68,3 +70,17 @@ class WorkflowListResponse(BaseModel):
     limit: int
     plan_tier: str
     approaching_limit: bool
+
+
+class ActivateRequest(BaseModel):
+    trigger_type: Literal["cron", "interval"]
+    cron: str | None = None
+    interval_seconds: int | None = Field(default=None, ge=10)
+
+    @model_validator(mode="after")
+    def _check_fields(self):
+        if self.trigger_type == "cron" and not self.cron:
+            raise ValueError("cron field required when trigger_type is cron")
+        if self.trigger_type == "interval" and not self.interval_seconds:
+            raise ValueError("interval_seconds required when trigger_type is interval")
+        return self

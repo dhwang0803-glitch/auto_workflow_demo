@@ -19,9 +19,14 @@ from auto_workflow_database.repositories.base import (
     WorkflowRepository,
 )
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
 from app.config import Settings
-from app.errors import NotFoundError, QuotaExceededError, WorkflowNotActiveError
+from app.errors import InvalidGraphError, NotFoundError, QuotaExceededError, WorkflowNotActiveError
 from app.models.workflow import (
+    ActivateRequest,
     WorkflowCreate,
     WorkflowListResponse,
     WorkflowSummary,
@@ -40,10 +45,12 @@ class WorkflowService:
         repo: WorkflowRepository,
         execution_repo: ExecutionRepository,
         settings: Settings,
+        scheduler: AsyncIOScheduler | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
         self._s = settings
+        self._scheduler = scheduler
 
     # ------------------------------------------------------------------ read
 
@@ -160,3 +167,47 @@ class WorkflowService:
         return await self._exec_repo.list_by_workflow(
             workflow_id, limit=limit, cursor=cursor
         )
+
+    # -------------------------------------------------------------- scheduling
+
+    async def activate_workflow(
+        self, user: User, workflow_id: UUID, trigger: ActivateRequest
+    ) -> Workflow:
+        wf = await self._repo.get(workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("workflow not found")
+        if not wf.is_active:
+            raise WorkflowNotActiveError("cannot activate inactive workflow")
+        if trigger.trigger_type == "cron":
+            try:
+                apscheduler_trigger = CronTrigger.from_crontab(trigger.cron)
+            except ValueError as e:
+                raise InvalidGraphError(f"invalid cron expression: {e}") from e
+        else:
+            apscheduler_trigger = IntervalTrigger(seconds=trigger.interval_seconds)
+        if self._scheduler:
+            self._scheduler.add_job(
+                "app.scheduler:run_scheduled_execution",
+                trigger=apscheduler_trigger,
+                id=str(workflow_id),
+                replace_existing=True,
+                kwargs={"workflow_id": str(workflow_id), "owner_id": str(user.id)},
+            )
+        wf.settings = {**wf.settings, "trigger": trigger.model_dump()}
+        await self._repo.save(wf)
+        return wf
+
+    async def deactivate_workflow(self, user: User, workflow_id: UUID) -> Workflow:
+        wf = await self._repo.get(workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("workflow not found")
+        if not wf.is_active:
+            raise WorkflowNotActiveError("cannot deactivate inactive workflow")
+        if self._scheduler:
+            try:
+                self._scheduler.remove_job(str(workflow_id))
+            except Exception:
+                pass
+        wf.settings = {k: v for k, v in wf.settings.items() if k != "trigger"}
+        await self._repo.save(wf)
+        return wf

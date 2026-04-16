@@ -16,6 +16,7 @@ from fastapi.responses import Response
 from app.dependencies import get_current_user
 from app.models.execution import ExecutionResponse
 from app.models.workflow import (
+    ActivateRequest,
     WorkflowCreate,
     WorkflowListResponse,
     WorkflowResponse,
@@ -85,6 +86,27 @@ async def execute_workflow(
 ) -> ExecutionResponse:
     ex = await svc.execute_workflow(user, workflow_id)
     return ExecutionResponse.model_validate(ex)
+
+
+@router.post("/{workflow_id}/activate", response_model=WorkflowResponse)
+async def activate_workflow(
+    workflow_id: UUID,
+    body: ActivateRequest,
+    user: User = Depends(get_current_user),
+    svc: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowResponse:
+    wf = await svc.activate_workflow(user, workflow_id, body)
+    return WorkflowResponse.model_validate(wf)
+
+
+@router.post("/{workflow_id}/deactivate", response_model=WorkflowResponse)
+async def deactivate_workflow(
+    workflow_id: UUID,
+    user: User = Depends(get_current_user),
+    svc: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowResponse:
+    wf = await svc.deactivate_workflow(user, workflow_id)
+    return WorkflowResponse.model_validate(wf)
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
