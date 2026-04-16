@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from auto_workflow_database.crypto.hybrid import hybrid_decrypt, hybrid_encrypt
 from auto_workflow_database.repositories.base import AgentCredentialPayload
-from Database.tests.fakes import InMemoryCredentialStore
+from tests.fakes import InMemoryCredentialStore
 
 
 # --------------------------------------------------------------------- helpers
