@@ -19,6 +19,7 @@ from auto_workflow_database.repositories.workflow_repository import (
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 
 from app.config import Settings
 from app.errors import DomainError
@@ -74,6 +75,13 @@ def create_app(
             status_code=exc.http_status,
             content={"detail": exc.message},
             headers=exc.headers,
+        )
+
+    @app.exception_handler(DBAPIError)
+    async def handle_db_error(request: Request, exc: DBAPIError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "database_unavailable"},
         )
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
