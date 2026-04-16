@@ -118,6 +118,19 @@ python scripts/agent_run.py --agent-key <KEY> --server-url wss://api.example.com
   - `Database` — 실행 결과 메타데이터 저장 (ExecutionRepository 경유)
   - 외부 서비스 — 노드가 호출하는 실제 API들
 
+## 테스트 실행 규칙 (MANDATORY)
+
+1. **테스트 프로세스는 항상 1개만 유지** — 새 테스트 실행 전 이전 프로세스를 반드시 kill
+   ```bash
+   taskkill //F //IM python.exe 2>/dev/null; python -m pytest tests/ -v
+   ```
+2. **실패 분석 → 코드 수정 → 재실행** 사이클에서 이전 실패 프로세스를 kill하지 않으면
+   좀비 프로세스가 누적되어 CPU/메모리를 점유하고 후속 테스트가 느려진다
+3. **background 실행(`run_in_background`) 금지** — 테스트 결과를 즉시 확인해야 하므로
+   foreground에서 실행하고 결과를 바로 읽는다
+4. **무한루프 테스트 주의** — `while True: pass` 등 CPU-bound 무한루프는 Python 스레드에서
+   kill 불가. 유한 루프(`range(10**8)`)로 대체하여 스레드가 자연 종료되도록 한다
+
 ## 보안 주의사항
 
 - 자격증명은 **실행 시점에만** 복호화, 노드 파라미터로 주입 후 즉시 폐기
