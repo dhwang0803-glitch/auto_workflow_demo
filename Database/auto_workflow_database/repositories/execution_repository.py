@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -35,6 +35,7 @@ def _to_dto(row: ExecutionORM) -> Execution:
         cost_usd=float(row.cost_usd),
         duration_ms=row.duration_ms,
         paused_at_node=row.paused_at_node,
+        created_at=row.created_at,
     )
 
 
@@ -44,7 +45,7 @@ class PostgresExecutionRepository(ExecutionRepository):
 
     async def create(self, execution: Execution) -> None:
         async with self._sm() as s, s.begin():
-            row = ExecutionORM(
+            kwargs = dict(
                 id=execution.id,
                 workflow_id=execution.workflow_id,
                 status=execution.status,
@@ -58,6 +59,9 @@ class PostgresExecutionRepository(ExecutionRepository):
                 duration_ms=execution.duration_ms,
                 paused_at_node=execution.paused_at_node,
             )
+            if execution.created_at is not None:
+                kwargs["created_at"] = execution.created_at
+            row = ExecutionORM(**kwargs)
             s.add(row)
 
     async def update_status(
@@ -117,6 +121,29 @@ class PostgresExecutionRepository(ExecutionRepository):
         async with self._sm() as s:
             row = await s.get(ExecutionORM, execution_id)
             return _to_dto(row) if row else None
+
+    async def list_by_workflow(
+        self,
+        workflow_id: UUID,
+        *,
+        limit: int = 50,
+        cursor: tuple[datetime, UUID] | None = None,
+    ) -> list[Execution]:
+        stmt = (
+            select(ExecutionORM)
+            .where(ExecutionORM.workflow_id == workflow_id)
+            .order_by(ExecutionORM.created_at.desc(), ExecutionORM.id.desc())
+            .limit(limit)
+        )
+        if cursor is not None:
+            created_at, eid = cursor
+            stmt = stmt.where(
+                tuple_(ExecutionORM.created_at, ExecutionORM.id)
+                < tuple_(created_at, eid)
+            )
+        async with self._sm() as s:
+            result = await s.execute(stmt)
+            return [_to_dto(r) for r in result.scalars().all()]
 
     async def list_pending_approvals(self, owner_id: UUID) -> list[Execution]:
         stmt = (
