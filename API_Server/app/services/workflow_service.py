@@ -8,16 +8,19 @@ try/except and the global exception handler maps statuses in one place.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from auto_workflow_database.repositories.base import (
+    Execution,
+    ExecutionRepository,
     User,
     Workflow,
     WorkflowRepository,
 )
 
 from app.config import Settings
-from app.errors import NotFoundError, QuotaExceededError
+from app.errors import NotFoundError, QuotaExceededError, WorkflowNotActiveError
 from app.models.workflow import (
     WorkflowCreate,
     WorkflowListResponse,
@@ -32,9 +35,14 @@ class WorkflowService:
     _APPROACHING_RATIO = 0.9
 
     def __init__(
-        self, *, repo: WorkflowRepository, settings: Settings
+        self,
+        *,
+        repo: WorkflowRepository,
+        execution_repo: ExecutionRepository,
+        settings: Settings,
     ) -> None:
         self._repo = repo
+        self._exec_repo = execution_repo
         self._s = settings
 
     # ------------------------------------------------------------------ read
@@ -108,3 +116,47 @@ class WorkflowService:
         wf = await self.get_owned(user, workflow_id)
         wf.is_active = False
         await self._repo.save(wf)
+
+    # --------------------------------------------------------------- execution
+
+    async def execute_workflow(self, user: User, workflow_id: UUID) -> Execution:
+        wf = await self._repo.get(workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("workflow not found")
+        if not wf.is_active:
+            raise WorkflowNotActiveError("cannot execute inactive workflow")
+        execution = Execution(
+            id=uuid4(),
+            workflow_id=wf.id,
+            status="queued",
+            execution_mode=wf.settings.get(
+                "execution_mode", user.default_execution_mode
+            ),
+        )
+        await self._exec_repo.create(execution)
+        # TODO(Execution_Engine): dispatch based on execution_mode
+        return execution
+
+    async def get_execution(self, user: User, execution_id: UUID) -> Execution:
+        ex = await self._exec_repo.get(execution_id)
+        if ex is None:
+            raise NotFoundError("execution not found")
+        wf = await self._repo.get(ex.workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("execution not found")
+        return ex
+
+    async def list_executions(
+        self,
+        user: User,
+        workflow_id: UUID,
+        *,
+        limit: int = 50,
+        cursor: tuple[datetime, UUID] | None = None,
+    ) -> list[Execution]:
+        wf = await self._repo.get(workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("workflow not found")
+        return await self._exec_repo.list_by_workflow(
+            workflow_id, limit=limit, cursor=cursor
+        )

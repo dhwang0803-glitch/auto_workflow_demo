@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import Response
 
 from app.dependencies import get_current_user
+from app.models.execution import ExecutionResponse
 from app.models.workflow import (
     WorkflowCreate,
     WorkflowListResponse,
@@ -70,6 +71,20 @@ async def update_workflow(
 ) -> WorkflowResponse:
     wf = await svc.update(user, workflow_id, body)
     return WorkflowResponse.model_validate(wf)
+
+
+@router.post(
+    "/{workflow_id}/execute",
+    response_model=ExecutionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def execute_workflow(
+    workflow_id: UUID,
+    user: User = Depends(get_current_user),
+    svc: WorkflowService = Depends(get_workflow_service),
+) -> ExecutionResponse:
+    ex = await svc.execute_workflow(user, workflow_id)
+    return ExecutionResponse.model_validate(ex)
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -10,6 +10,9 @@ from auto_workflow_database.repositories._session import (
     build_engine,
     build_sessionmaker,
 )
+from auto_workflow_database.repositories.execution_repository import (
+    PostgresExecutionRepository,
+)
 from auto_workflow_database.repositories.user_repository import (
     PostgresUserRepository,
 )
@@ -24,6 +27,7 @@ from sqlalchemy.exc import DBAPIError
 from app.config import Settings
 from app.errors import DomainError
 from app.routers.auth import router as auth_router
+from app.routers.executions import router as executions_router
 from app.routers.workflows import router as workflows_router
 from app.services.auth_service import AuthService
 from app.services.email_sender import EmailSender, make_email_sender
@@ -43,6 +47,7 @@ def create_app(
         sessionmaker = build_sessionmaker(engine)
         user_repo = PostgresUserRepository(sessionmaker)
         workflow_repo = PostgresWorkflowRepository(sessionmaker)
+        execution_repo = PostgresExecutionRepository(sessionmaker)
         sender = email_sender or make_email_sender(s)
 
         app.state.settings = s
@@ -50,6 +55,7 @@ def create_app(
         app.state.sessionmaker = sessionmaker
         app.state.user_repo = user_repo
         app.state.workflow_repo = workflow_repo
+        app.state.execution_repo = execution_repo
         app.state.email_sender = sender
         app.state.auth_service = AuthService(
             user_repo=user_repo,
@@ -57,7 +63,9 @@ def create_app(
             settings=s,
         )
         app.state.workflow_service = WorkflowService(
-            repo=workflow_repo, settings=s
+            repo=workflow_repo,
+            execution_repo=execution_repo,
+            settings=s,
         )
         try:
             yield
@@ -87,6 +95,9 @@ def create_app(
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(
         workflows_router, prefix="/api/v1/workflows", tags=["workflows"]
+    )
+    app.include_router(
+        executions_router, prefix="/api/v1/executions", tags=["executions"]
     )
 
     @app.get("/health")
