@@ -11,10 +11,17 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+import hmac
+import hashlib
+import secrets
+
 from auto_workflow_database.repositories.base import (
     Execution,
     ExecutionRepository,
     User,
+    UserRepository,
+    WebhookBinding,
+    WebhookRegistry,
     Workflow,
     WorkflowRepository,
 )
@@ -24,7 +31,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import Settings
-from app.errors import InvalidGraphError, NotFoundError, QuotaExceededError, WorkflowNotActiveError
+from app.errors import AuthenticationError, InvalidGraphError, NotFoundError, QuotaExceededError, WorkflowNotActiveError
 from app.models.workflow import (
     ActivateRequest,
     WorkflowCreate,
@@ -46,11 +53,15 @@ class WorkflowService:
         execution_repo: ExecutionRepository,
         settings: Settings,
         scheduler: AsyncIOScheduler | None = None,
+        webhook_registry: WebhookRegistry | None = None,
+        user_repo: UserRepository | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
         self._s = settings
         self._scheduler = scheduler
+        self._webhook_registry = webhook_registry
+        self._user_repo = user_repo
 
     # ------------------------------------------------------------------ read
 
@@ -211,3 +222,42 @@ class WorkflowService:
         wf.settings = {k: v for k, v in wf.settings.items() if k != "trigger"}
         await self._repo.save(wf)
         return wf
+
+    # ---------------------------------------------------------------- webhook
+
+    async def register_webhook(self, user: User, workflow_id: UUID) -> WebhookBinding:
+        wf = await self._repo.get(workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("workflow not found")
+        if not wf.is_active:
+            raise WorkflowNotActiveError("cannot register webhook on inactive workflow")
+        secret = secrets.token_urlsafe(32)
+        binding = await self._webhook_registry.register(workflow_id, secret=secret)
+        wf.settings = {**wf.settings, "webhook_path": binding.path}
+        await self._repo.save(wf)
+        return binding
+
+    async def unregister_webhook(self, user: User, workflow_id: UUID) -> None:
+        wf = await self._repo.get(workflow_id)
+        if wf is None or wf.owner_id != user.id:
+            raise NotFoundError("workflow not found")
+        path = wf.settings.get("webhook_path")
+        if path:
+            await self._webhook_registry.unregister(path)
+            wf.settings = {k: v for k, v in wf.settings.items() if k != "webhook_path"}
+            await self._repo.save(wf)
+
+    async def receive_webhook(self, path: str, body: bytes, signature: str | None) -> Execution:
+        binding = await self._webhook_registry.resolve(path)
+        if binding is None:
+            raise NotFoundError("webhook not found")
+        if not signature or not hmac.compare_digest(
+            signature,
+            hmac.new(binding.secret.encode(), body, hashlib.sha256).hexdigest(),
+        ):
+            raise AuthenticationError("invalid webhook signature")
+        wf = await self._repo.get(binding.workflow_id)
+        if wf is None or not wf.is_active:
+            raise WorkflowNotActiveError("workflow inactive")
+        user = await self._user_repo.get(wf.owner_id)
+        return await self.execute_workflow(user, binding.workflow_id)

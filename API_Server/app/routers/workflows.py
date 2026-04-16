@@ -15,6 +15,7 @@ from fastapi.responses import Response
 
 from app.dependencies import get_current_user
 from app.models.execution import ExecutionResponse
+from app.models.webhook import WebhookResponse
 from app.models.workflow import (
     ActivateRequest,
     WorkflowCreate,
@@ -107,6 +108,30 @@ async def deactivate_workflow(
 ) -> WorkflowResponse:
     wf = await svc.deactivate_workflow(user, workflow_id)
     return WorkflowResponse.model_validate(wf)
+
+
+@router.post(
+    "/{workflow_id}/webhook",
+    response_model=WebhookResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register_webhook(
+    workflow_id: UUID,
+    user: User = Depends(get_current_user),
+    svc: WorkflowService = Depends(get_workflow_service),
+) -> WebhookResponse:
+    binding = await svc.register_webhook(user, workflow_id)
+    return WebhookResponse.model_validate(binding)
+
+
+@router.delete("/{workflow_id}/webhook", status_code=status.HTTP_204_NO_CONTENT)
+async def unregister_webhook(
+    workflow_id: UUID,
+    user: User = Depends(get_current_user),
+    svc: WorkflowService = Depends(get_workflow_service),
+) -> Response:
+    await svc.unregister_webhook(user, workflow_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)

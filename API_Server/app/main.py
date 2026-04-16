@@ -16,6 +16,9 @@ from auto_workflow_database.repositories.execution_repository import (
 from auto_workflow_database.repositories.user_repository import (
     PostgresUserRepository,
 )
+from auto_workflow_database.repositories.webhook_registry import (
+    PostgresWebhookRegistry,
+)
 from auto_workflow_database.repositories.workflow_repository import (
     PostgresWorkflowRepository,
 )
@@ -31,6 +34,7 @@ from app.config import Settings
 from app.errors import DomainError
 from app.routers.auth import router as auth_router
 from app.routers.executions import router as executions_router
+from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
 from app.services.auth_service import AuthService
 from app.services.email_sender import EmailSender, make_email_sender
@@ -51,6 +55,7 @@ def create_app(
         user_repo = PostgresUserRepository(sessionmaker)
         workflow_repo = PostgresWorkflowRepository(sessionmaker)
         execution_repo = PostgresExecutionRepository(sessionmaker)
+        webhook_registry = PostgresWebhookRegistry(sessionmaker)
         sender = email_sender or make_email_sender(s)
         scheduler = AsyncIOScheduler(
             jobstores={"default": SQLAlchemyJobStore(url=s.scheduler_jobstore_url)},
@@ -69,11 +74,14 @@ def create_app(
             email_sender=sender,
             settings=s,
         )
+        app.state.webhook_registry = webhook_registry
         app.state.workflow_service = WorkflowService(
             repo=workflow_repo,
             execution_repo=execution_repo,
             settings=s,
             scheduler=scheduler,
+            webhook_registry=webhook_registry,
+            user_repo=user_repo,
         )
         try:
             yield
@@ -106,6 +114,9 @@ def create_app(
     )
     app.include_router(
         executions_router, prefix="/api/v1/executions", tags=["executions"]
+    )
+    app.include_router(
+        webhooks_router, prefix="/webhooks", tags=["webhooks"]
     )
 
     @app.get("/health")
