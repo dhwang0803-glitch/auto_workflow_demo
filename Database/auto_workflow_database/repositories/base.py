@@ -320,6 +320,20 @@ class CredentialStore(ABC):
         ...
 
 
+class AgentRepository(ABC):
+    @abstractmethod
+    async def register(self, agent: Agent) -> None: ...
+
+    @abstractmethod
+    async def get(self, agent_id: UUID) -> Agent | None: ...
+
+    @abstractmethod
+    async def update_heartbeat(self, agent_id: UUID) -> None: ...
+
+    @abstractmethod
+    async def list_by_owner(self, owner_id: UUID) -> list[Agent]: ...
+
+
 class WebhookRegistry(ABC):
     """Dynamic webhook path ↔ workflow_id mapping.
 
