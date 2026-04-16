@@ -1,4 +1,10 @@
-"""NodeRegistry — type string → BaseNode class mapping."""
+"""NodeRegistry — type string → BaseNode **class** mapping.
+
+This is a class catalog, not an instance store. get() returns the class
+itself so callers create a fresh instance per invocation: registry.get(type)().
+A workflow with five http_request nodes produces five independent instances,
+each with its own config — safe for asyncio.gather parallel execution.
+"""
 from __future__ import annotations
 
 from src.nodes.base import BaseNode
