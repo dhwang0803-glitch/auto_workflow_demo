@@ -60,10 +60,12 @@ class AuthService:
 
     # ------------------------------------------------------------------ JWT
 
-    def _issue_token(self, *, sub: UUID, purpose: str, ttl: timedelta) -> str:
+    def _issue_token(
+        self, *, sub: UUID, purpose: str, ttl: timedelta, sub_prefix: str = "",
+    ) -> str:
         now = datetime.now(timezone.utc)
         payload = {
-            "sub": str(sub),
+            "sub": f"{sub_prefix}{sub}",
             "purpose": purpose,
             "iat": int(now.timestamp()),
             "exp": int((now + ttl).timestamp()),
@@ -107,6 +109,31 @@ class AuthService:
             return self._decode_raw(token, expected_purpose="access")
         except InvalidTokenError as e:
             raise AuthenticationError(e.message) from e
+
+    # --------------------------------------------------------- agent JWT
+
+    def issue_agent_token(self, agent_id: UUID) -> str:
+        return self._issue_token(
+            sub=agent_id,
+            purpose="agent",
+            ttl=timedelta(hours=self._s.agent_jwt_ttl_hours),
+            sub_prefix="agent:",
+        )
+
+    def decode_agent_token(self, token: str) -> UUID:
+        try:
+            payload = jwt.decode(
+                token, self._s.jwt_secret, algorithms=[self._s.jwt_algorithm]
+            )
+        except jwt.InvalidTokenError:
+            raise InvalidTokenError("invalid token")
+        sub = payload.get("sub", "")
+        if not sub.startswith("agent:") or payload.get("purpose") != "agent":
+            raise InvalidTokenError("not an agent token")
+        try:
+            return UUID(sub.removeprefix("agent:"))
+        except ValueError as e:
+            raise InvalidTokenError("invalid agent subject") from e
 
     # --------------------------------------------------------------- flows
 
