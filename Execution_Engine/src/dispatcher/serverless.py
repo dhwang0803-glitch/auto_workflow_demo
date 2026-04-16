@@ -2,26 +2,23 @@
 
 The Celery task is a thin sync wrapper around _execute(), which is the
 testable async core. Tests call _execute() directly with InMemory fakes;
-production wires Postgres repos via _ensure_sessionmaker().
+production wires Postgres repos via WorkerContainer.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from uuid import UUID
 
 from celery import Celery
 
-from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
-from auto_workflow_database.repositories.execution_repository import PostgresExecutionRepository
-from auto_workflow_database.repositories.workflow_repository import PostgresWorkflowRepository
 from auto_workflow_database.repositories.base import (
     ExecutionRepository,
     WorkflowRepository,
 )
 
-from src.nodes.registry import NodeRegistry, registry as default_registry
+from src.container import WorkerContainer
+from src.nodes.registry import NodeRegistry
 from src.runtime.executor import run_workflow
 
 logger = logging.getLogger(__name__)
@@ -29,25 +26,24 @@ logger = logging.getLogger(__name__)
 celery_app = Celery("execution_engine")
 celery_app.config_from_object("config.celery_config")
 
-_sessionmaker = None
+_container: WorkerContainer | None = None
 
 
-def _ensure_sessionmaker():
-    global _sessionmaker
-    if _sessionmaker is None:
-        engine = build_engine(os.environ["DATABASE_URL"])
-        _sessionmaker = build_sessionmaker(engine)
-    return _sessionmaker
+def _ensure_container() -> WorkerContainer:
+    global _container
+    if _container is None:
+        _container = WorkerContainer()
+    return _container
 
 
 @celery_app.task(name="execute_workflow", bind=True, max_retries=0)
 def run_workflow_task(self, execution_id: str) -> None:
-    sm = _ensure_sessionmaker()
+    c = _ensure_container()
     asyncio.run(_execute(
         execution_id,
-        exec_repo=PostgresExecutionRepository(sm),
-        wf_repo=PostgresWorkflowRepository(sm),
-        node_registry=default_registry,
+        exec_repo=c.exec_repo,
+        wf_repo=c.wf_repo,
+        node_registry=c.node_registry,
     ))
 
 
