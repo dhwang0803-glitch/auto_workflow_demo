@@ -49,6 +49,8 @@ async def agent_ws(
         await websocket.close(code=4004, reason="agent not found")
         return
 
+    agent_connections: dict = websocket.app.state.agent_connections
+    agent_connections[agent_id] = websocket
     await websocket.accept()
     try:
         while True:
@@ -57,6 +59,23 @@ async def agent_ws(
             if msg_type == "heartbeat":
                 await agent_repo.update_heartbeat(agent_id)
                 await websocket.send_json({"type": "heartbeat_ack"})
+            elif msg_type == "status_update":
+                exec_repo = websocket.app.state.execution_repo
+                await exec_repo.update_status(
+                    UUID(data["execution_id"]), data["status"],
+                    error=data.get("error"),
+                )
+            elif msg_type == "node_result":
+                exec_repo = websocket.app.state.execution_repo
+                await exec_repo.append_node_result(
+                    UUID(data["execution_id"]), data["node_id"], data["result"],
+                )
+            elif msg_type == "execution_result":
+                exec_repo = websocket.app.state.execution_repo
+                await exec_repo.finalize(
+                    UUID(data["execution_id"]),
+                    duration_ms=data["duration_ms"],
+                )
             elif msg_type == "get_credential":
                 cred_id = data.get("credential_id")
                 if not cred_id:
@@ -81,3 +100,5 @@ async def agent_ws(
                 await websocket.send_json({"type": "error", "message": f"unknown type: {msg_type}"})
     except WebSocketDisconnect:
         pass
+    finally:
+        agent_connections.pop(agent_id, None)
