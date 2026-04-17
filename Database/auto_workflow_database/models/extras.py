@@ -31,6 +31,9 @@ class Credential(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
+    type: Mapped[str] = mapped_column(
+        String, nullable=False, server_default=text("'unknown'")
+    )
     encrypted_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

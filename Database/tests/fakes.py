@@ -167,16 +167,42 @@ class InMemoryCredentialStore(CredentialStore):
     """Unit-test double. Skips encryption entirely — never use in prod."""
 
     def __init__(self) -> None:
-        self._store: dict[UUID, tuple[UUID, str, dict]] = {}
+        # (owner_id, name, credential_type, plaintext)
+        self._store: dict[UUID, tuple[UUID, str, str, dict]] = {}
 
-    async def store(self, owner_id: UUID, name: str, plaintext: dict) -> UUID:
+    async def store(
+        self,
+        owner_id: UUID,
+        name: str,
+        plaintext: dict,
+        *,
+        credential_type: str = "unknown",
+    ) -> UUID:
         cid = uuid4()
-        self._store[cid] = (owner_id, name, deepcopy(plaintext))
+        self._store[cid] = (owner_id, name, credential_type, deepcopy(plaintext))
         return cid
 
     async def retrieve(self, credential_id: UUID) -> dict:
-        _, _, pt = self._store[credential_id]
+        _, _, _, pt = self._store[credential_id]
         return deepcopy(pt)
+
+    async def bulk_retrieve(
+        self,
+        credential_ids: list[UUID],
+        *,
+        owner_id: UUID,
+    ) -> dict[UUID, dict]:
+        if not credential_ids:
+            return {}
+        found: dict[UUID, dict] = {}
+        for cid in credential_ids:
+            row = self._store.get(cid)
+            if row is None or row[0] != owner_id:
+                continue
+            found[cid] = deepcopy(row[3])
+        if len(found) != len(set(credential_ids)):
+            raise KeyError("missing credential(s)")
+        return found
 
     async def delete(self, credential_id: UUID) -> None:
         self._store.pop(credential_id, None)
@@ -191,6 +217,11 @@ class InMemoryCredentialStore(CredentialStore):
         return hybrid_encrypt(
             json.dumps(plaintext).encode("utf-8"), agent_public_key_pem
         )
+
+    # Test-only peek — returns the stored credential_type without going
+    # through ABC. Lets tests assert the `type` was persisted correctly.
+    def _peek_type(self, credential_id: UUID) -> str:
+        return self._store[credential_id][2]
 
 
 class InMemoryWebhookRegistry(WebhookRegistry):

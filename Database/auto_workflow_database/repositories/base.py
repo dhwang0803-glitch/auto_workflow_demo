@@ -295,10 +295,40 @@ class CredentialStore(ABC):
     """ADR-004 Fernet-at-rest. See `FernetCredentialStore` for the impl."""
 
     @abstractmethod
-    async def store(self, owner_id: UUID, name: str, plaintext: dict) -> UUID: ...
+    async def store(
+        self,
+        owner_id: UUID,
+        name: str,
+        plaintext: dict,
+        *,
+        credential_type: str = "unknown",
+    ) -> UUID: ...
 
     @abstractmethod
     async def retrieve(self, credential_id: UUID) -> dict: ...
+
+    @abstractmethod
+    async def bulk_retrieve(
+        self,
+        credential_ids: list[UUID],
+        *,
+        owner_id: UUID,
+    ) -> dict[UUID, dict]:
+        """Per-execution credential resolution — blueprint §1.3.
+
+        Returns plaintext dicts keyed by credential_id. Applies an
+        `owner_id` filter so a workflow can't resolve another tenant's
+        credential even if a malicious graph references the UUID.
+
+        Raises `KeyError` when *any* requested id is missing from the
+        filtered result — partial success is a security hazard
+        (workflow would run with incomplete credentials). Empty
+        `credential_ids` returns an empty dict.
+
+        Returned dicts must only live inside the caller's scope —
+        do not cache or log.
+        """
+        ...
 
     @abstractmethod
     async def delete(self, credential_id: UUID) -> None: ...
