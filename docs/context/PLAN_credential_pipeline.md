@@ -3,7 +3,8 @@
 > **성격**: cross-branch 청사진. 실제 구현 PLAN 은 각 브랜치 `plans/` 에 분리.
 > **근거 ADR**: [ADR-016](./decisions.md#adr-016--노드-자격증명-주입-파이프라인-별도-plan--후속-adr-로-설계-분리)
 > **저장/전송 연관 ADR**: ADR-004 (Fernet 저장), ADR-013 (Agent 전송)
-> **상태**: DRAFT (2026-04-17)
+> **상태**: IN PROGRESS — PLAN_09 (PR #47) + PLAN_07 (PR #48) 머지. PLAN_08 (Execution_Engine) 차기.
+> **최종 갱신**: 2026-04-17 — §2 책임 분배 재정의 (아래 **Update** 참고)
 
 ## 0. 결정 요약
 
@@ -110,40 +111,61 @@ ALTER TABLE credentials
 
 ## 2. 구현 PR 분할 + 순서
 
+> **Update (2026-04-17)** — 당초 §2 는 "API_Server 가 execute_workflow 에서
+> credential_ref 해소" 로 기술했으나 구현 중 현 구조에서는 불가함이 드러났다:
+> Celery `send_task` 의 args 에는 `execution_id` 만 담기고 Worker 가 DB 에서
+> graph 를 재조회하므로, API_Server 가 in-memory 로 평문을 주입해도 Worker 에
+> 전달되지 않는다. 또한 평문을 Celery args 에 싣는 대안은 §1.6 불변식 1번
+> ("평문은 `execute_workflow` 진입 → dispatch 사이 스코프 안에서만") 을 Redis
+> broker 를 통과하는 형태로 위반한다.
+>
+> **조정된 책임 분배:**
+> - **API_Server (PLAN_07, 머지 완료)** — credential CRUD + `execute_workflow` 에서
+>   `bulk_retrieve(ids, owner_id)` 로 **validation only** (존재+소유 검증 후 평문 즉시 폐기).
+>   평문 주입은 수행하지 않음.
+> - **Execution_Engine (PLAN_08, 신규 — 당초 ③ 의 "~10 LOC" 범위 정식 승격)** —
+>   `WorkerContainer` 에 `CredentialStore` 주입 + `_execute()` 가 노드 호출 직전
+>   `bulk_retrieve` 로 해소하여 `config` 에 평문 merge + `credential_ref` 키 제거.
+>   serverless 경로에 적용. Agent 경로는 여전히 ADR-013 패스스루 (서버 평문 미노출).
+>
+> 이 재분배로 평문이 **broker/DB 를 거치지 않음** — §1.6 불변식 1번 보장.
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ ① Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md           │
-│    - 20260XYZ migration: credentials.type 추가               │
-│    - FernetCredentialStore.bulk_retrieve(ids, owner_id)      │
-│    - 테스트: bulk 성공 / ownership 필터 / 누락 KeyError      │
-│    추정: ~40 LOC + 1 migration + 3 tests                    │
+│ ① Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md  [DONE]   │
+│    PR #47 머지 — migration 20260601 + bulk_retrieve 추가     │
+│    ~40 LOC + 1 migration + 13 tests                         │
 └──────────────────────────────────────────────────────────────┘
                              │  (bulk_retrieve API 확정)
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ② API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md            │
-│    - CredentialService + /credentials CRUD 라우터           │
-│      (POST/GET/DELETE, type-specific 검증)                  │
-│    - workflow_service.execute_workflow 에 credential_ref    │
-│      해소 로직 삽입 (serverless 경로)                        │
-│    - Agent 모드는 ADR-013 경로 그대로 — retrieve_for_agent   │
-│      반복 호출 후 WS payload 조립                            │
-│    - 테스트: 등록/조회/삭제 + 실행 시 주입 성공/실패          │
-│    추정: ~140 LOC + 8-10 tests                              │
+│ ② API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md   [DONE]   │
+│    PR #48 머지 — credential CRUD + execute_workflow         │
+│    **validation only**. GET/LIST 는 deferred (§5 참고).      │
+│    ~400 LOC + 10 tests                                      │
 └──────────────────────────────────────────────────────────────┘
-                             │  (end-to-end 서버측 완결)
+                             │  (validation 완결, 평문 주입은 아직)
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ③ Execution_Engine — 신규 PLAN 불필요                        │
-│    현 executor/dispatcher 는 이미 평문 config 를 받는 구조. │
-│    변경 가능성: Agent command_handler.py 가 서버에서 받은    │
-│    암호문을 복호화 + 머지하는 부분이 **이미 있는지** 확인.    │
-│    없으면 ~10 LOC 추가 (branch-local PR로 처리, 별도 PLAN X)│
+│ ③ Execution_Engine/plans/PLAN_08_CREDENTIAL_RESOLUTION.md    │
+│    [TODO]                                                    │
+│    - WorkerContainer 에 CredentialStore 주입                 │
+│    - _execute() / executor: 노드 호출 직전 credential_ref    │
+│      수집 → bulk_retrieve(ids, owner_id) → config merge      │
+│      → credential_ref 키 삭제 → 노드에 평문 config 전달     │
+│    - Agent 경로: command_handler 가 서버 payload 의          │
+│      AgentCredentialPayload 리스트를 VPC 내에서 복호화 후    │
+│      동일 방식으로 config merge (ADR-013)                    │
+│    - 테스트: ref 해소 / 평문이 응답·로그 등에 노출 안 됨 /   │
+│      누락 ref → 실행 실패                                    │
+│    추정: ~80 LOC + 5 tests                                   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**PR 의존성**: ②는 ①의 `bulk_retrieve` 에 의존하므로 **①머지 후 ② 착수**.
-Execution_Engine 변경은 ②머지 후 확인하여 필요할 때만.
+**PR 의존성**: ② 는 ① 의 `bulk_retrieve` 에 의존. ③ 은 ② 머지 후 착수 —
+②가 validation 까지만 책임지므로 ③ 이 머지되어야 end-to-end 실 주입이 동작한다.
+③ 머지 전까지 Email / DB Query / Slack 등 자격증명 사용 노드는 **단위 테스트 가능**
+하지만 **end-to-end 실행 불가** 상태 (PLAN_06/07/08 노드 PR 과 같은 맥락).
 
 ## 3. 각 브랜치 PLAN 이 답해야 할 질문
 
@@ -152,12 +174,25 @@ Execution_Engine 변경은 ②머지 후 확인하여 필요할 때만.
 - 누락 credential_id → 전체 실패. 에러 타입은? (→ 기존 `retrieve` 와 동일 `KeyError`)
 - migration 에서 기존 로우 `unknown` 백필 — prod 비어있을 가능성이 높지만 방어적으로 포함
 
-### API_Server PLAN_07
-- `/credentials` 엔드포인트 쉐이프 (요청/응답 Pydantic)
-- credential_type 별 validation — `smtp` 는 host/port/user/password 필수, 등
-- credential plaintext 는 **등록 시에만 요청 body 에 존재**, 응답에는 `id/name/type/created_at` 만
-- `execute_workflow` 에서 `credential_ref` 수집 — graph 노드를 순회하며 재귀적으로 찾아야 하는지, depth 1 인지 결정
-- Agent 모드 dispatch payload 에 하이브리드 암호문 묶음 형식 (ADR-013 의 `AgentCredentialPayload` 재사용)
+### API_Server PLAN_07 [RESOLVED — PR #48]
+- `/credentials` 엔드포인트: `POST /api/v1/credentials` + `DELETE /{id}`. GET/LIST 는
+  `CredentialStore.list_by_owner()` 미존재로 **deferred** (후속 Database supplement).
+- credential_type 별 dict-key validation 은 Pydantic `Literal` 로 enum 수준만 검증.
+  key 강제는 Phase 2 (Frontend UX 확정 후).
+- plaintext 는 요청 body 에만, 응답은 `{id, name, type}` 만.
+- `credential_ref` 수집 범위는 **depth 1** — 모든 노드의 `config.credential_ref` 만 본다.
+  중첩 선언은 현재 허용 안 함.
+- Agent 모드 dispatch payload 는 본 PR 스코프 밖. Execution_Engine PLAN_08 에서 ADR-013
+  경로로 처리 (서버가 `retrieve_for_agent` 호출 결과를 WS 메시지에 묶어 Agent 에게 넘김).
+
+### Execution_Engine PLAN_08 [TODO]
+- credential_ref 해소 시점: 노드 호출 직전 (즉 `executor._run_node` 같은 지점) vs 실행
+  시작 시 일괄 (DAG 전체). **blueprint Q2 는 per-execution** 이므로 일괄이 원칙이나,
+  구현 편의로 per-node 도 허용 (메모리 수명 동일).
+- 해소 실패 시 노드 상태: `failed` 로 기록 + 평문 로그 금지.
+- Agent 경로 세부: 서버가 노드별 credential_ref 수집 → `retrieve_for_agent` 루프 →
+  WS 메시지에 `credential_payloads: list[{credential_id, AgentCredentialPayload}]` 포함
+  → Agent 가 VPC 내 `hybrid_decrypt` 후 동일 merge 로직 실행.
 
 ## 4. 테스트 불변식 (모든 PR 이 커버)
 
@@ -176,6 +211,7 @@ Execution_Engine 변경은 ②머지 후 확인하여 필요할 때만.
 
 ## 6. 파생 문서 위치
 
-- Database 구현 세부: `Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md` (신설 예정)
-- API_Server 구현 세부: `API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md` (신설 예정)
+- Database 구현 세부: `Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md` (PR #47 머지)
+- API_Server 구현 세부: `API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md` (PR #48 머지)
+- Execution_Engine 구현 세부: `Execution_Engine/plans/PLAN_08_CREDENTIAL_RESOLUTION.md` (신설 예정)
 - 본 청사진이 변경되면 ADR-016 Update 섹션으로 역-반영 검토
