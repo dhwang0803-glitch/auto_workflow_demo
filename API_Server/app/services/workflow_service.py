@@ -42,6 +42,7 @@ from app.models.workflow import (
     WorkflowSummary,
     WorkflowUpdate,
 )
+from app.services.credential_service import CredentialService
 from app.services.dag_validator import validate_dag
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class WorkflowService:
         user_repo: UserRepository | None = None,
         agent_repo: AgentRepository | None = None,
         agent_connections: dict | None = None,
+        credential_service: CredentialService | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
@@ -71,6 +73,7 @@ class WorkflowService:
         self._user_repo = user_repo
         self._agent_repo = agent_repo
         self._agent_connections = agent_connections or {}
+        self._credential_service = credential_service
 
     # ------------------------------------------------------------------ read
 
@@ -152,6 +155,20 @@ class WorkflowService:
             raise NotFoundError("workflow not found")
         if not wf.is_active:
             raise WorkflowNotActiveError("cannot execute inactive workflow")
+
+        # Credential validation — PLAN_07. Collect every credential_ref
+        # referenced by the graph and verify existence + ownership BEFORE
+        # an execution row is created. Plaintext is not injected here;
+        # the Worker (Execution_Engine PLAN_08) resolves at node-call
+        # time so plaintext never crosses the Celery broker.
+        if self._credential_service is not None:
+            ref_ids: list[UUID] = []
+            for node in wf.graph.get("nodes", []):
+                ref = (node.get("config") or {}).get("credential_ref")
+                if ref and "credential_id" in ref:
+                    ref_ids.append(UUID(ref["credential_id"]))
+            await self._credential_service.validate_refs(user, ref_ids)
+
         execution = Execution(
             id=uuid4(),
             workflow_id=wf.id,

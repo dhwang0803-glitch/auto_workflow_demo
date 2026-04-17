@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     agent_jwt_ttl_hours: int = 24
     celery_broker_url: str = ""
 
+    # Fernet master key (base64) for CredentialStore. ADR-004.
+    # Tests may generate an ephemeral key via Fernet.generate_key().
+    credential_master_key: str = ""
+
     @property
     def scheduler_jobstore_url(self) -> str:
         return self.database_url.replace("+asyncpg", "")

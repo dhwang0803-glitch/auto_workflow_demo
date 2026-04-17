@@ -14,7 +14,9 @@ import pytest_asyncio
 
 sqlalchemy = pytest.importorskip("sqlalchemy")
 asyncpg = pytest.importorskip("asyncpg")  # noqa: F841
+cryptography = pytest.importorskip("cryptography")
 
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
@@ -46,6 +48,8 @@ def _make_settings(**overrides) -> Settings:
         workflow_limit_light=3,
         workflow_limit_middle=5,
         workflow_limit_heavy=10,
+        # Ephemeral Fernet key per test session — blueprint §1.6 invariant 3.
+        credential_master_key=Fernet.generate_key().decode("utf-8"),
     )
     base.update(overrides)
     return Settings(**base)

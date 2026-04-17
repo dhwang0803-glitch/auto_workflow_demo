@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
 from auto_workflow_database.repositories.agent_repository import PostgresAgentRepository
+from auto_workflow_database.repositories.credential_store import FernetCredentialStore
 from auto_workflow_database.repositories.execution_repository import PostgresExecutionRepository
 from auto_workflow_database.repositories.user_repository import PostgresUserRepository
 from auto_workflow_database.repositories.webhook_registry import PostgresWebhookRegistry
@@ -18,6 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import Settings
 from app.services.auth_service import AuthService
+from app.services.credential_service import CredentialService
 from app.services.email_sender import EmailSender, make_email_sender
 from app.services.workflow_service import WorkflowService
 
@@ -39,6 +41,10 @@ class AppContainer:
         self.execution_repo = PostgresExecutionRepository(self.sessionmaker)
         self.webhook_registry = PostgresWebhookRegistry(self.sessionmaker)
         self.agent_repo = PostgresAgentRepository(self.sessionmaker)
+        self.credential_store = FernetCredentialStore(
+            self.sessionmaker,
+            master_key=settings.credential_master_key.encode("utf-8"),
+        )
 
         self.email_sender = email_sender or make_email_sender(settings)
         self.scheduler = AsyncIOScheduler(
@@ -52,6 +58,7 @@ class AppContainer:
             email_sender=self.email_sender,
             settings=settings,
         )
+        self.credential_service = CredentialService(store=self.credential_store)
         self.workflow_service = WorkflowService(
             repo=self.workflow_repo,
             execution_repo=self.execution_repo,
@@ -61,6 +68,7 @@ class AppContainer:
             user_repo=self.user_repo,
             agent_repo=self.agent_repo,
             agent_connections=self.agent_connections,
+            credential_service=self.credential_service,
         )
 
     async def dispose(self) -> None:
