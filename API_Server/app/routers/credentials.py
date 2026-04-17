@@ -37,6 +37,32 @@ async def create_credential(
     return CredentialResponse(id=cid, name=body.name, type=body.type)
 
 
+@router.get("", response_model=list[CredentialResponse])
+async def list_credentials(
+    user: User = Depends(get_current_user),
+    svc: CredentialService = Depends(get_credential_service),
+) -> list[CredentialResponse]:
+    rows = await svc.list(user)
+    return [
+        CredentialResponse(
+            id=r.id, name=r.name, type=r.type, created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/{credential_id}", response_model=CredentialResponse)
+async def get_credential(
+    credential_id: UUID,
+    user: User = Depends(get_current_user),
+    svc: CredentialService = Depends(get_credential_service),
+) -> CredentialResponse:
+    r = await svc.get(user, credential_id)
+    return CredentialResponse(
+        id=r.id, name=r.name, type=r.type, created_at=r.created_at,
+    )
+
+
 @router.delete("/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_credential(
     credential_id: UUID,
