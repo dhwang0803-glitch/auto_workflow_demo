@@ -69,6 +69,7 @@ class AppContainer:
             agent_repo=self.agent_repo,
             agent_connections=self.agent_connections,
             credential_service=self.credential_service,
+            credential_store=self.credential_store,
         )
 
     async def dispose(self) -> None:
