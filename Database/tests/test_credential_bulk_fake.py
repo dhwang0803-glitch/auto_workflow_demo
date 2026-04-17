@@ -66,3 +66,37 @@ async def test_fake_bulk_retrieve_empty_list(store):
     owner = uuid4()
     got = await store.bulk_retrieve([], owner_id=owner)
     assert got == {}
+
+
+# PLAN_10 — list_by_owner on fake
+
+
+async def test_fake_list_by_owner_happy(store):
+    import asyncio
+
+    owner = uuid4()
+    cid1 = await store.store(owner, "a", {"v": 1}, credential_type="smtp")
+    await asyncio.sleep(0.001)
+    cid2 = await store.store(owner, "b", {"v": 2}, credential_type="slack_webhook")
+
+    rows = await store.list_by_owner(owner)
+
+    assert [r.id for r in rows] == [cid2, cid1]  # DESC
+    assert [r.name for r in rows] == ["b", "a"]
+    assert [r.type for r in rows] == ["slack_webhook", "smtp"]
+
+
+async def test_fake_list_by_owner_empty(store):
+    rows = await store.list_by_owner(uuid4())
+    assert rows == []
+
+
+async def test_fake_list_by_owner_ownership_filter(store):
+    owner_a = uuid4()
+    owner_b = uuid4()
+    await store.store(owner_a, "a-secret", {"v": 1})
+    await store.store(owner_b, "b-secret", {"v": 2})
+
+    rows_a = await store.list_by_owner(owner_a)
+    assert len(rows_a) == 1
+    assert rows_a[0].name == "a-secret"

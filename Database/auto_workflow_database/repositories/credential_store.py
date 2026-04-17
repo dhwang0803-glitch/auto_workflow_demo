@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from auto_workflow_database.crypto.hybrid import hybrid_encrypt
 from auto_workflow_database.models.extras import Credential as CredentialORM
-from auto_workflow_database.repositories.base import AgentCredentialPayload, CredentialStore
+from auto_workflow_database.repositories.base import (
+    AgentCredentialPayload,
+    CredentialMetadata,
+    CredentialStore,
+)
 
 
 class FernetCredentialStore(CredentialStore):
@@ -78,6 +82,26 @@ class FernetCredentialStore(CredentialStore):
             # different owner would leak existence to a malicious caller.
             raise KeyError("missing credential(s)")
         return found
+
+    async def list_by_owner(
+        self, owner_id: UUID
+    ) -> list[CredentialMetadata]:
+        async with self._sm() as s:
+            stmt = (
+                select(CredentialORM)
+                .where(CredentialORM.owner_id == owner_id)
+                .order_by(CredentialORM.created_at.desc())
+            )
+            rows = (await s.execute(stmt)).scalars().all()
+        return [
+            CredentialMetadata(
+                id=row.id,
+                name=row.name,
+                type=row.type,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
 
     async def delete(self, credential_id: UUID) -> None:
         async with self._sm() as s, s.begin():
