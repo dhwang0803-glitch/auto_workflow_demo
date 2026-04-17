@@ -3,8 +3,8 @@
 > **성격**: cross-branch 청사진. 실제 구현 PLAN 은 각 브랜치 `plans/` 에 분리.
 > **근거 ADR**: [ADR-016](./decisions.md#adr-016--노드-자격증명-주입-파이프라인-별도-plan--후속-adr-로-설계-분리)
 > **저장/전송 연관 ADR**: ADR-004 (Fernet 저장), ADR-013 (Agent 전송)
-> **상태**: IN PROGRESS — PLAN_09 (PR #47) + PLAN_07 (PR #48) 머지. PLAN_08 (Execution_Engine) 차기.
-> **최종 갱신**: 2026-04-17 — §2 책임 분배 재정의 (아래 **Update** 참고)
+> **상태**: **COMPLETE (Serverless + Agent 전 세그먼트 end-to-end 동작)** — PRs #47 / #48 / #50 / #52 / #53 전부 머지. GET/LIST endpoint 만 deferred (§5).
+> **최종 갱신**: 2026-04-17 — Agent 경로 WS 프로토콜 + 운영 가이드 추가
 
 ## 0. 결정 요약
 
@@ -130,6 +130,13 @@ ALTER TABLE credentials
 >
 > 이 재분배로 평문이 **broker/DB 를 거치지 않음** — §1.6 불변식 1번 보장.
 
+> **Update (2026-04-17, Agent 경로 완결)** — Agent 모드는 서버가 WS 메시지에
+> `credential_payloads` 를 동봉해 Agent 에게 암호문 패스스루 → Agent 가 VPC 내
+> 개인키로 복호화 후 동일 merge. API_Server PLAN_08 (PR #52) + Execution_Engine
+> PLAN_10 (PR #53) 로 구현 완료. **Serverless 와 Agent 양쪽 모두 §1.6 불변식
+> 준수** (평문이 broker/DB/네트워크 전송 평문 어디에도 닿지 않음). 자세한 WS
+> 프로토콜은 §2.5, 운영 가이드는 §2.6.
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ ① Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md  [DONE]   │
@@ -139,33 +146,73 @@ ALTER TABLE credentials
                              │  (bulk_retrieve API 확정)
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ② API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md   [DONE]   │
-│    PR #48 머지 — credential CRUD + execute_workflow         │
-│    **validation only**. GET/LIST 는 deferred (§5 참고).      │
-│    ~400 LOC + 10 tests                                      │
+│ ② API_Server PLAN_07 (validation) + PLAN_08 (Agent payload) │
+│    PR #48 머지 — /credentials CRUD + execute validation     │
+│    PR #52 머지 — Agent execute WS 에 credential_payloads   │
+│    동봉 (retrieve_for_agent + b64). silent bug fix          │
+│    (agent_connections or {} → is not None).                 │
 └──────────────────────────────────────────────────────────────┘
-                             │  (validation 완결, 평문 주입은 아직)
-                             ▼
-┌──────────────────────────────────────────────────────────────┐
-│ ③ Execution_Engine/plans/PLAN_08_CREDENTIAL_RESOLUTION.md    │
-│    [TODO]                                                    │
-│    - WorkerContainer 에 CredentialStore 주입                 │
-│    - _execute() / executor: 노드 호출 직전 credential_ref    │
-│      수집 → bulk_retrieve(ids, owner_id) → config merge      │
-│      → credential_ref 키 삭제 → 노드에 평문 config 전달     │
-│    - Agent 경로: command_handler 가 서버 payload 의          │
-│      AgentCredentialPayload 리스트를 VPC 내에서 복호화 후    │
-│      동일 방식으로 config merge (ADR-013)                    │
-│    - 테스트: ref 해소 / 평문이 응답·로그 등에 노출 안 됨 /   │
-│      누락 ref → 실행 실패                                    │
-│    추정: ~80 LOC + 5 tests                                   │
-└──────────────────────────────────────────────────────────────┘
+                             │
+                   ┌─────────┴─────────┐
+                   ▼                   ▼
+┌────────────────────────┐  ┌──────────────────────────────────┐
+│ ③ Serverless 경로      │  │ ④ Agent 경로                     │
+│   Execution_Engine     │  │   Execution_Engine                │
+│   PLAN_08 [DONE]       │  │   PLAN_10 [DONE]                  │
+│   PR #50 머지          │  │   PR #53 머지                     │
+│   Worker DB 직접       │  │   VPC 내 hybrid_decrypt          │
+│   복호화 (FernetStore) │  │   (PreDecryptedStore 래퍼)       │
+│   → resolve_credential │  │   → 동일 resolve_credential      │
+│   _refs → 노드 평문    │  │   _refs 재사용                    │
+└────────────────────────┘  └──────────────────────────────────┘
 ```
 
-**PR 의존성**: ② 는 ① 의 `bulk_retrieve` 에 의존. ③ 은 ② 머지 후 착수 —
-②가 validation 까지만 책임지므로 ③ 이 머지되어야 end-to-end 실 주입이 동작한다.
-③ 머지 전까지 Email / DB Query / Slack 등 자격증명 사용 노드는 **단위 테스트 가능**
-하지만 **end-to-end 실행 불가** 상태 (PLAN_06/07/08 노드 PR 과 같은 맥락).
+### 2.5. Agent WS `execute` 메시지 확장 필드 (PR #52 + #53 확정)
+
+서버가 Agent 에게 `execute` 메시지를 보낼 때 기존 필드 (`type`, `execution_id`,
+`workflow_id`, `graph`) 외에 `credential_payloads` 배열을 동봉한다. 각 항목은
+ADR-013 하이브리드 암호화 envelope 의 base64 표현:
+
+```json
+{
+  "type": "execute",
+  "execution_id": "<uuid>",
+  "workflow_id": "<uuid>",
+  "graph": { ... },
+  "credential_payloads": [
+    {
+      "credential_id": "<uuid>",
+      "wrapped_key":   "<b64 RSA-OAEP-SHA256 wrapped AES-256 key>",
+      "nonce":         "<b64 12-byte AES-GCM nonce>",
+      "ciphertext":    "<b64 AES-GCM ciphertext of JSON plaintext>"
+    }
+  ]
+}
+```
+
+그래프에 `credential_ref` 가 없으면 `credential_payloads` 는 `[]` 로 보낸다.
+Agent 측에서 그래프에 ref 있지만 payloads 가 비었거나 개인키가 없으면 execution
+status 를 `failed` + generic `"credential resolution failed"` 메시지로 기록하고
+어느 credential_id 도 에러에 노출하지 않는다.
+
+### 2.6. Agent 배포 운영 가이드 (PLAN_10)
+
+Agent 데몬은 RSA 키페어를 고객 VPC 내부에서 생성한다:
+
+1. **키페어 생성** (고객 VPC 내 1회): RSA 2048 이상. 개인키는 VPC 파일 시스템
+   에 권한 600 으로 저장. 외부 노출 금지.
+2. **공개키 등록**: 고객이 `POST /api/v1/agents/register` 로 공개키 PEM 을
+   서버에 전송 → `agents.public_key` 컬럼에 저장 + JWT 발급. 서버는 이후
+   `retrieve_for_agent` 호출 시 이 공개키로 AES 키를 래핑.
+3. **데몬 실행**: `python scripts/agent_run.py --server-url <wss://...> --agent-token <JWT> --agent-private-key <PEM path>` — 개인키는 데몬 시작 시 1회 로드 후
+   프로세스 메모리에만 존재. 파일 경로 CLI 에만 등장.
+4. **키 회전** (Phase 2): 현재 회전 메커니즘 없음 — 키 교체 시 Agent 재등록
+   필요. 자동화는 후속 ADR.
+
+### PR 의존성 (확정됨)
+① (PR #47) → ② validation 측 (PR #48) → ③ Worker (PR #50) + ②' agent payload (PR #52) → ④ Agent (PR #53)
+
+이 순서로 5 PR 이 머지되면 Email / Slack / DB Query / 향후 LLM 노드 등 credential_ref 를 쓰는 모든 노드가 serverless + agent 양쪽에서 end-to-end 동작한다.
 
 ## 3. 각 브랜치 PLAN 이 답해야 할 질문
 
@@ -185,14 +232,28 @@ ALTER TABLE credentials
 - Agent 모드 dispatch payload 는 본 PR 스코프 밖. Execution_Engine PLAN_08 에서 ADR-013
   경로로 처리 (서버가 `retrieve_for_agent` 호출 결과를 WS 메시지에 묶어 Agent 에게 넘김).
 
-### Execution_Engine PLAN_08 [TODO]
-- credential_ref 해소 시점: 노드 호출 직전 (즉 `executor._run_node` 같은 지점) vs 실행
-  시작 시 일괄 (DAG 전체). **blueprint Q2 는 per-execution** 이므로 일괄이 원칙이나,
-  구현 편의로 per-node 도 허용 (메모리 수명 동일).
-- 해소 실패 시 노드 상태: `failed` 로 기록 + 평문 로그 금지.
-- Agent 경로 세부: 서버가 노드별 credential_ref 수집 → `retrieve_for_agent` 루프 →
-  WS 메시지에 `credential_payloads: list[{credential_id, AgentCredentialPayload}]` 포함
-  → Agent 가 VPC 내 `hybrid_decrypt` 후 동일 merge 로직 실행.
+### Execution_Engine PLAN_08 [RESOLVED — PR #50]
+- 해소 시점: **per-execution (`_execute()` 진입부에서 일괄)**. `resolve_credential_refs`
+  가 graph 복사 → bulk_retrieve → deep copy 후 inject 매핑대로 평문 주입 → credential_ref 키 제거.
+- 원본 `workflow.graph` 불변 — 재시도 / 로그에 평문 없음.
+- 해소 실패 (`KeyError` from bulk_retrieve): execution status `failed` + generic
+  `"credential resolution failed"` 메시지 (credential_id 미노출). `CredentialStore`
+  가 None 이고 graph 에 refs 있으면 `"credential store not configured"`.
+
+### Execution_Engine PLAN_10 (Agent 경로) [RESOLVED — PR #53]
+- Agent daemon 이 WS 메시지의 `credential_payloads` 를 `hybrid_decrypt` 로 복호화.
+- `PreDecryptedCredentialStore` 래퍼로 `resolve_credential_refs` 재사용 — owner_id 는
+  무시 (서버가 이미 필터).
+- 개인키는 `--agent-private-key <PEM path>` CLI 로 주입. 저장소/로그/응답에 노출 없음.
+- 복호화 실패 (wrong key, tampered ciphertext) → 동일 generic `"credential resolution failed"`
+  메시지 + credential_id 미노출.
+
+### API_Server PLAN_08 (Agent payload 동봉) [RESOLVED — PR #52]
+- `workflow_service.execute_workflow` agent 분기에서 `retrieve_for_agent` 루프로
+  Agent 공개키로 re-wrap → base64 → `credential_payloads` 로 WS 메시지에 포함.
+- 서버 평문은 re-wrap 루프 안에서만 존재. broker/DB/log/응답 어디에도 유출 안 됨.
+- **Silent bug fix**: `agent_connections or {}` 의 falsy 빈 dict 문제 교정 — 이 PR
+  전까지 Agent dispatch 는 사실상 동작하지 않았음. `if agent_connections is not None else {}`.
 
 ## 4. 테스트 불변식 (모든 PR 이 커버)
 
@@ -211,7 +272,9 @@ ALTER TABLE credentials
 
 ## 6. 파생 문서 위치
 
-- Database 구현 세부: `Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md` (PR #47 머지)
-- API_Server 구현 세부: `API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md` (PR #48 머지)
-- Execution_Engine 구현 세부: `Execution_Engine/plans/PLAN_08_CREDENTIAL_RESOLUTION.md` (신설 예정)
+- Database: `Database/plans/PLAN_09_CREDENTIAL_PIPELINE_DB.md` (PR #47 머지)
+- API_Server validation: `API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md` (PR #48 머지)
+- API_Server agent payload: `API_Server/plans/PLAN_08_AGENT_CREDENTIAL_PAYLOAD.md` (PR #52 머지)
+- Execution_Engine worker resolution: `Execution_Engine/plans/PLAN_08_CREDENTIAL_RESOLUTION.md` (PR #50 머지)
+- Execution_Engine agent decrypt: `Execution_Engine/plans/PLAN_10_AGENT_CREDENTIAL_DECRYPT.md` (PR #53 머지)
 - 본 청사진이 변경되면 ADR-016 Update 섹션으로 역-반영 검토
