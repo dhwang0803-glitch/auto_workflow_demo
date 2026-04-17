@@ -81,3 +81,7 @@ class PreDecryptedCredentialStore(CredentialStore):
 
     async def retrieve_for_agent(self, *args, **kwargs):
         raise NotImplementedError("agent does not re-wrap for itself")
+
+    async def list_by_owner(self, *args, **kwargs):
+        # Agent never enumerates credentials — metadata listing lives on the server side.
+        raise NotImplementedError("agent store is read-only")

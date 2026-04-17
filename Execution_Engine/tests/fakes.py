@@ -117,3 +117,21 @@ class InMemoryCredentialStore(CredentialStore):
         agent_public_key_pem: bytes,
     ) -> AgentCredentialPayload:
         raise NotImplementedError("agent path out of scope for PLAN_08 tests")
+
+    async def list_by_owner(self, owner_id: UUID):
+        # Metadata-only response (plaintext must never leak). owner_id filters.
+        from datetime import datetime, timezone
+
+        from auto_workflow_database.repositories.base import CredentialMetadata
+        out: list[CredentialMetadata] = []
+        for cid, (oid, _plaintext) in self._store.items():
+            if oid == owner_id:
+                out.append(
+                    CredentialMetadata(
+                        id=cid,
+                        name="",
+                        type="unknown",
+                        created_at=datetime.now(timezone.utc),
+                    )
+                )
+        return out
