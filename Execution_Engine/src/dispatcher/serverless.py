@@ -13,12 +13,14 @@ from uuid import UUID
 from celery import Celery
 
 from auto_workflow_database.repositories.base import (
+    CredentialStore,
     ExecutionRepository,
     WorkflowRepository,
 )
 
 from src.container import WorkerContainer
 from src.nodes.registry import NodeRegistry
+from src.runtime.credentials import graph_has_credential_refs, resolve_credential_refs
 from src.runtime.executor import run_workflow
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ def run_workflow_task(self, execution_id: str) -> None:
         exec_repo=c.exec_repo,
         wf_repo=c.wf_repo,
         node_registry=c.node_registry,
+        credential_store=c.credential_store,
     ))
 
 
@@ -53,6 +56,7 @@ async def _execute(
     exec_repo: ExecutionRepository,
     wf_repo: WorkflowRepository,
     node_registry: NodeRegistry,
+    credential_store: CredentialStore | None = None,
 ) -> None:
     eid = UUID(execution_id)
     execution = await exec_repo.get(eid)
@@ -71,4 +75,27 @@ async def _execute(
         )
         return
 
-    await run_workflow(workflow.graph, execution, exec_repo, node_registry)
+    # PLAN_08 — resolve credential_refs before node execution so plaintext
+    # stays inside this process. Runs once per execution (blueprint Q2).
+    try:
+        if credential_store is not None:
+            graph = await resolve_credential_refs(
+                workflow.graph, credential_store, workflow.owner_id
+            )
+        else:
+            graph = workflow.graph
+            if graph_has_credential_refs(graph):
+                await exec_repo.update_status(
+                    eid, "failed",
+                    error={"message": "credential store not configured"},
+                )
+                return
+    except KeyError:
+        # Race between API_Server validation and Worker pickup (credential
+        # was deleted in between). Generic message — no id leakage.
+        await exec_repo.update_status(
+            eid, "failed", error={"message": "credential resolution failed"},
+        )
+        return
+
+    await run_workflow(graph, execution, exec_repo, node_registry)
