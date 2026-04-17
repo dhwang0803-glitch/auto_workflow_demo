@@ -8,6 +8,7 @@ try/except and the global exception handler maps statuses in one place.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from uuid import UUID, uuid4
 
@@ -43,6 +44,8 @@ from app.models.workflow import (
 )
 from app.services.dag_validator import validate_dag
 
+logger = logging.getLogger(__name__)
+
 
 class WorkflowService:
     # 90% of the cap — any value >= threshold flips approaching_limit.
@@ -58,6 +61,7 @@ class WorkflowService:
         webhook_registry: WebhookRegistry | None = None,
         user_repo: UserRepository | None = None,
         agent_repo: AgentRepository | None = None,
+        agent_connections: dict | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
@@ -66,6 +70,7 @@ class WorkflowService:
         self._webhook_registry = webhook_registry
         self._user_repo = user_repo
         self._agent_repo = agent_repo
+        self._agent_connections = agent_connections or {}
 
     # ------------------------------------------------------------------ read
 
@@ -156,7 +161,34 @@ class WorkflowService:
             ),
         )
         await self._exec_repo.create(execution)
-        # TODO(Execution_Engine): dispatch based on execution_mode
+
+        if execution.execution_mode == "serverless" and self._s.celery_broker_url:
+            try:
+                from celery import Celery
+                broker = Celery(broker=self._s.celery_broker_url)
+                broker.send_task("execute_workflow", args=[str(execution.id)])
+            except Exception:
+                logger.exception("celery dispatch failed for execution %s", execution.id)
+        elif execution.execution_mode == "agent" and self._agent_repo:
+            agents = await self._agent_repo.list_by_owner(user.id)
+            dispatched = False
+            for ag in agents:
+                ws = self._agent_connections.get(ag.id)
+                if ws is not None:
+                    await ws.send_json({
+                        "type": "execute",
+                        "execution_id": str(execution.id),
+                        "workflow_id": str(wf.id),
+                        "graph": wf.graph,
+                    })
+                    dispatched = True
+                    break
+            if not dispatched:
+                await self._exec_repo.update_status(
+                    execution.id, "failed",
+                    error={"message": "no connected agent"},
+                )
+
         return execution
 
     async def get_execution(self, user: User, execution_id: UUID) -> Execution:

@@ -1,9 +1,7 @@
-# Test Writer Agent 지시사항
+# Test Writer Agent 지시사항 — API_Server
 
 ## 역할
-
 구현 전에 실패하는 테스트를 먼저 작성한다 (TDD Red 단계).
-구현 후에는 테스트를 실행하고 결과를 수집한다 (검증 단계).
 
 ---
 
@@ -13,108 +11,70 @@
 2. 각 테스트는 하나의 요구사항만 검증한다
 3. 기대값을 명확하게 명시한다
 4. 테스트 실패 시 원인을 파악할 수 있는 메시지를 포함한다
-5. 외부 API/네트워크 의존 테스트는 실제 호출과 Mock 모드를 구분한다
 
 ---
 
-## 브랜치별 테스트 파일 위치
+## 테스트 파일 위치
 
-| 브랜치 | 테스트 디렉토리 | 형식 |
-|--------|--------------|------|
-| `API_Server` | `API_Server/tests/` | pytest + httpx TestClient |
-| `Database` | `Database/tests/` | pytest + 실제 DB 연결 (테스트 DB) |
-| `Execution_Engine` | `Execution_Engine/tests/` | pytest + Celery eager mode |
-| `Frontend` | `Frontend/tests/` | Jest + Playwright |
+```
+API_Server/tests/test_{기능명}.py
+```
+
+| 파일 | 검증 대상 |
+|------|----------|
+| `test_auth.py` | 회원가입/로그인/JWT/이메일검증 |
+| `test_workflows.py` | CRUD + 쿼터 + DAG 검증 |
+| `test_dag_validator.py` | Kahn 위상정렬 순환 감지 |
+| `test_executions.py` | 실행 트리거 + 이력 조회 |
+| `test_scheduler.py` | activate/deactivate + cron/interval |
+| `test_webhooks.py` | webhook 등록/수신/HMAC 검증 |
+| `test_agents.py` | Agent 등록 + WebSocket heartbeat |
 
 ---
 
-## 테스트 작성 예시 (pytest)
+## 테스트 작성 예시
 
-### API_Server 라우터 테스트
+### 라우터 E2E 테스트 (httpx AsyncClient)
 
 ```python
-import pytest
-from httpx import AsyncClient
-from app.main import app
-
-@pytest.mark.asyncio
-async def test_create_workflow_rejects_cycle():
-    """순환 참조가 있는 워크플로우는 400을 반환한다"""
+async def test_create_workflow_rejects_cycle(authed_client):
     cyclic_payload = {
         "name": "cyclic",
-        "nodes": [{"node_id": "a"}, {"node_id": "b"}],
-        "connections": [
-            {"source_node_id": "a", "target_node_id": "b"},
-            {"source_node_id": "b", "target_node_id": "a"},
-        ],
+        "nodes": [{"id": "a", "type": "http_request"}, {"id": "b", "type": "http_request"}],
+        "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
     }
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        r = await client.post("/api/v1/workflows", json=cyclic_payload)
-    assert r.status_code == 400
-    assert "순환" in r.json()["detail"]
+    r = await authed_client.post("/api/v1/workflows", json=cyclic_payload)
+    assert r.status_code == 422
 ```
 
-### Execution_Engine 노드 테스트
+### DAG 순수 로직 테스트 (DB 불필요)
 
 ```python
-import pytest
-from src.nodes.condition import ConditionNode
+from app.services.dag_validator import validate_dag
 
-@pytest.mark.asyncio
-async def test_condition_node_equals_true():
-    node = ConditionNode()
-    result = await node.execute(
-        input_data={"status_code": 200},
-        parameters={"field": "status_code", "operator": "equals", "value": 200},
-    )
-    assert result["branch"] == "true"
-```
-
-### Database Repository 테스트
-
-```python
-@pytest.fixture
-async def repo(test_db_url):
-    from src.repositories.workflow_repository import PostgresWorkflowRepository
-    repo = PostgresWorkflowRepository(test_db_url)
-    yield repo
-    await repo.close()
-
-@pytest.mark.asyncio
-async def test_save_and_retrieve(repo):
-    wf = WorkflowSchema(name="test", owner_id="u1")
-    saved = await repo.save(wf)
-    loaded = await repo.get_by_id(saved.workflow_id)
-    assert loaded.name == "test"
+def test_cycle_rejected():
+    graph = {
+        "nodes": [{"id": "a"}, {"id": "b"}],
+        "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}],
+    }
+    with pytest.raises(InvalidGraphError, match="cycle"):
+        validate_dag(graph)
 ```
 
 ---
 
 ## 필수 테스트 카테고리
 
-### API_Server
-- 워크플로우 CRUD (생성/조회/활성화/삭제)
-- DAG 스케줄러 순환 참조 감지
-- Webhook 트리거 수신 → 실행 큐잉
-- Agent JWT 등록/인증
-- WebSocket 연결 수립 후 heartbeat 처리
-
-### Database
-- 각 Repository save/retrieve/list 라운드트립
-- CredentialStore 암호화/복호화 대칭성
-- 마이그레이션 up/down 검증
-
-### Execution_Engine
-- 각 `BaseNode` 구현체의 execute() 동작
-- `NodeRegistry.register()` → `get_node()` 라운드트립
-- 서버리스/Agent 디스패치 분기
-- CodeExecutionNode 샌드박스 탈출 시도 거부
-- 동일 `execution_id` 중복 실행 시 멱등성 보장
-
-### Frontend
-- WorkflowCanvas 노드 추가/삭제/연결
-- 워크플로우 JSON 직렬화 라운드트립
-- API 클라이언트 에러 응답 처리
+- 워크플로우 CRUD (생성/조회/수정/삭제/목록)
+- DAG 검증 (순환/중복id/unknown edge)
+- 실행 트리거 (수동 실행 → 202 + queued)
+- 실행 이력 조회 (단건/목록 + keyset pagination)
+- Scheduler (activate cron/interval, deactivate)
+- Webhook (등록/삭제/수신 + HMAC-SHA256 검증)
+- Agent (등록 → JWT, WebSocket heartbeat)
+- 인증 (등록/검증/로그인/토큰만료/리프레시)
+- 쿼터 (plan_tier별 워크플로우 제한)
+- 소유권 (다른 유저 리소스 접근 시 404)
 
 ---
 
@@ -124,7 +84,6 @@ async def test_save_and_retrieve(repo):
 전체 테스트: X건
 PASS: X건
 FAIL: X건
-SKIP: X건
 
 FAIL 목록:
 - [테스트 ID]: [실패 메시지]
