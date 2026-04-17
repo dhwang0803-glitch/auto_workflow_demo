@@ -99,3 +99,9 @@ class WorkflowNotActiveError(DomainError):
     """409 — tried to execute a soft-deleted or deactivated workflow."""
 
     http_status = 409
+
+
+class DuplicateNameError(DomainError):
+    """409 — UNIQUE (owner_id, name) collision on credential create."""
+
+    http_status = 409

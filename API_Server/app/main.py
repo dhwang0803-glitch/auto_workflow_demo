@@ -14,6 +14,7 @@ from app.container import AppContainer
 from app.errors import DomainError
 from app.routers.agents import router as agents_router
 from app.routers.auth import router as auth_router
+from app.routers.credentials import router as credentials_router
 from app.routers.executions import router as executions_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
@@ -42,6 +43,8 @@ def create_app(
         app.state.webhook_registry = c.webhook_registry
         app.state.agent_repo = c.agent_repo
         app.state.agent_connections = c.agent_connections
+        app.state.credential_store = c.credential_store
+        app.state.credential_service = c.credential_service
         app.state.workflow_service = c.workflow_service
         try:
             yield
@@ -77,6 +80,9 @@ def create_app(
     )
     app.include_router(
         agents_router, prefix="/api/v1/agents", tags=["agents"]
+    )
+    app.include_router(
+        credentials_router, prefix="/api/v1/credentials", tags=["credentials"]
     )
 
     @app.get("/health")
