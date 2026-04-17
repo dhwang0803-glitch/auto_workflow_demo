@@ -190,7 +190,13 @@ class WorkflowService:
             try:
                 from celery import Celery
                 broker = Celery(broker=self._s.celery_broker_url)
-                broker.send_task("execute_workflow", args=[str(execution.id)])
+                # Execution_Engine worker.py listens on the workflow_tasks queue;
+                # without this the task sits in the default "celery" queue forever.
+                broker.send_task(
+                    "execute_workflow",
+                    args=[str(execution.id)],
+                    queue="workflow_tasks",
+                )
             except Exception:
                 logger.exception("celery dispatch failed for execution %s", execution.id)
         elif execution.execution_mode == "agent" and self._agent_repo:
