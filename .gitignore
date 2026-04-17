@@ -40,6 +40,14 @@ data/
 *.log
 logs/
 
+# Education materials (not for git)
+docs/context_engineering_guide.md
+docs/context_engineering_guide.pptx
+docs/generate_ppt.py
+docs/harness_engineering_guide.md
+docs/harness_engineering_guide.pptx
+docs/generate_harness_ppt.py
+
 # OS / IDE
 .DS_Store
 Thumbs.db
