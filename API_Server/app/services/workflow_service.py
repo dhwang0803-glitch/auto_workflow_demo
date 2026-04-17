@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from uuid import UUID, uuid4
 
+import base64
 import hmac
 import hashlib
 import secrets
@@ -19,6 +20,7 @@ import secrets
 from auto_workflow_database.repositories.base import (
     Agent,
     AgentRepository,
+    CredentialStore,
     Execution,
     ExecutionRepository,
     User,
@@ -64,6 +66,7 @@ class WorkflowService:
         agent_repo: AgentRepository | None = None,
         agent_connections: dict | None = None,
         credential_service: CredentialService | None = None,
+        credential_store: CredentialStore | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
@@ -72,8 +75,12 @@ class WorkflowService:
         self._webhook_registry = webhook_registry
         self._user_repo = user_repo
         self._agent_repo = agent_repo
-        self._agent_connections = agent_connections or {}
+        # NOT `agent_connections or {}` — an empty dict is falsy so that
+        # pattern would swap in a new dict, disconnecting WorkflowService
+        # from the one the WS router appends to. Preserve the shared ref.
+        self._agent_connections = agent_connections if agent_connections is not None else {}
         self._credential_service = credential_service
+        self._credential_store = credential_store
 
     # ------------------------------------------------------------------ read
 
@@ -156,17 +163,17 @@ class WorkflowService:
         if not wf.is_active:
             raise WorkflowNotActiveError("cannot execute inactive workflow")
 
-        # Credential validation — PLAN_07. Collect every credential_ref
-        # referenced by the graph and verify existence + ownership BEFORE
-        # an execution row is created. Plaintext is not injected here;
-        # the Worker (Execution_Engine PLAN_08) resolves at node-call
-        # time so plaintext never crosses the Celery broker.
-        if self._credential_service is not None:
-            ref_ids: list[UUID] = []
-            for node in wf.graph.get("nodes", []):
-                ref = (node.get("config") or {}).get("credential_ref")
-                if ref and "credential_id" in ref:
-                    ref_ids.append(UUID(ref["credential_id"]))
+        # Collect credential_ref ids up front — reused for validation AND
+        # (agent mode) credential_payloads assembly below.
+        ref_ids: list[UUID] = []
+        for node in wf.graph.get("nodes", []):
+            ref = (node.get("config") or {}).get("credential_ref")
+            if ref and "credential_id" in ref:
+                ref_ids.append(UUID(ref["credential_id"]))
+
+        # Validate ownership + existence. Plaintext is not retained here —
+        # Worker (serverless) or Agent (agent mode) does the final resolution.
+        if ref_ids and self._credential_service is not None:
             await self._credential_service.validate_refs(user, ref_ids)
 
         execution = Execution(
@@ -192,11 +199,28 @@ class WorkflowService:
             for ag in agents:
                 ws = self._agent_connections.get(ag.id)
                 if ws is not None:
+                    # ADR-013 — re-wrap each credential for THIS agent's
+                    # public key. Server plaintext lives only inside this
+                    # loop; the WS frame carries only AES-GCM + RSA-OAEP
+                    # ciphertext. Agent decrypts in-VPC (EE follow-up PR).
+                    credential_payloads: list[dict] = []
+                    if ref_ids and self._credential_store is not None:
+                        for cid in ref_ids:
+                            envelope = await self._credential_store.retrieve_for_agent(
+                                cid, agent_public_key_pem=ag.public_key.encode("utf-8"),
+                            )
+                            credential_payloads.append({
+                                "credential_id": str(cid),
+                                "wrapped_key": base64.b64encode(envelope.wrapped_key).decode(),
+                                "nonce": base64.b64encode(envelope.nonce).decode(),
+                                "ciphertext": base64.b64encode(envelope.ciphertext).decode(),
+                            })
                     await ws.send_json({
                         "type": "execute",
                         "execution_id": str(execution.id),
                         "workflow_id": str(wf.id),
                         "graph": wf.graph,
+                        "credential_payloads": credential_payloads,
                     })
                     dispatched = True
                     break
