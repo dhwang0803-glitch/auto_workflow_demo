@@ -28,26 +28,30 @@ logger = logging.getLogger(__name__)
 celery_app = Celery("execution_engine")
 celery_app.config_from_object("config.celery_config")
 
-_container: WorkerContainer | None = None
-
-
-def _ensure_container() -> WorkerContainer:
-    global _container
-    if _container is None:
-        _container = WorkerContainer()
-    return _container
-
 
 @celery_app.task(name="execute_workflow", bind=True, max_retries=0)
 def run_workflow_task(self, execution_id: str) -> None:
-    c = _ensure_container()
-    asyncio.run(_execute(
-        execution_id,
-        exec_repo=c.exec_repo,
-        wf_repo=c.wf_repo,
-        node_registry=c.node_registry,
-        credential_store=c.credential_store,
-    ))
+    # Build a fresh container per task. A module-level cached container
+    # holds an AsyncEngine whose connection pool is bound to the event
+    # loop of the first asyncio.run() call; subsequent tasks get new
+    # event loops and the pool's asyncpg transports go stale
+    # ("'NoneType' object has no attribute 'send'"). The pool-setup
+    # overhead is negligible compared to node execution time.
+    asyncio.run(_run_task(execution_id))
+
+
+async def _run_task(execution_id: str) -> None:
+    c = WorkerContainer()
+    try:
+        await _execute(
+            execution_id,
+            exec_repo=c.exec_repo,
+            wf_repo=c.wf_repo,
+            node_registry=c.node_registry,
+            credential_store=c.credential_store,
+        )
+    finally:
+        await c.dispose()
 
 
 async def _execute(
