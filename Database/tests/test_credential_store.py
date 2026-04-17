@@ -163,3 +163,55 @@ async def test_bulk_retrieve_empty_list(sm):
     store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
     got = await store.bulk_retrieve([], owner_id=user.id)
     assert got == {}
+
+
+# ---------------------------------------------------------------------------
+# PLAN_10 — list_by_owner (metadata-only, no plaintext exposure)
+# ---------------------------------------------------------------------------
+
+
+async def test_list_by_owner_happy(sm):
+    import asyncio
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    # Store 3 credentials with a tiny sleep to guarantee created_at ordering.
+    cid1 = await store.store(user.id, "first", {"a": 1}, credential_type="smtp")
+    await asyncio.sleep(0.01)
+    cid2 = await store.store(user.id, "second", {"b": 2}, credential_type="http_bearer")
+    await asyncio.sleep(0.01)
+    cid3 = await store.store(user.id, "third", {"c": 3}, credential_type="slack_webhook")
+
+    try:
+        rows = await store.list_by_owner(user.id)
+        assert [r.id for r in rows] == [cid3, cid2, cid1]  # DESC by created_at
+        assert [r.name for r in rows] == ["third", "second", "first"]
+        assert [r.type for r in rows] == ["slack_webhook", "http_bearer", "smtp"]
+        # Plaintext must not leak through DTO — dataclass has no such field.
+        assert not any(hasattr(r, "plaintext") or hasattr(r, "encrypted_data") for r in rows)
+    finally:
+        for cid in (cid1, cid2, cid3):
+            await store.delete(cid)
+
+
+async def test_list_by_owner_empty(sm):
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    rows = await store.list_by_owner(user.id)
+    assert rows == []
+
+
+async def test_list_by_owner_ownership_filter(sm):
+    user_a = await _seed_user(sm)
+    user_b = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid_a = await store.store(user_a.id, "a-only", {"v": 1})
+
+    try:
+        rows_b = await store.list_by_owner(user_b.id)
+        assert rows_b == []
+        rows_a = await store.list_by_owner(user_a.id)
+        assert len(rows_a) == 1
+        assert rows_a[0].id == cid_a
+    finally:
+        await store.delete(cid_a)

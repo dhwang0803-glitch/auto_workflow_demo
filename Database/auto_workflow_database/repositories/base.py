@@ -277,6 +277,20 @@ class ExecutionRepository(ABC):
 
 
 @dataclass
+class CredentialMetadata:
+    """Plaintext-free view of a credentials row — safe to echo via API.
+
+    DO NOT extend with an `encrypted_data` field; API_Server uses this DTO
+    directly as the response shape for `GET /api/v1/credentials`.
+    """
+
+    id: UUID
+    name: str
+    type: str
+    created_at: datetime
+
+
+@dataclass
 class AgentCredentialPayload:
     """PLAN_05 / ADR-013 — hybrid RSA-AES credential envelope for Agent transport.
 
@@ -327,6 +341,18 @@ class CredentialStore(ABC):
 
         Returned dicts must only live inside the caller's scope —
         do not cache or log.
+        """
+        ...
+
+    @abstractmethod
+    async def list_by_owner(
+        self, owner_id: UUID
+    ) -> list[CredentialMetadata]:
+        """Metadata-only listing for the caller's credentials.
+
+        Returns rows sorted by `created_at` DESC (most recent first).
+        Empty list when the owner has no credentials. Never leaks
+        plaintext — encryption is never touched on this path.
         """
         ...
 

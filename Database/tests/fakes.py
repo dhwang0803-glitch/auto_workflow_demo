@@ -22,6 +22,7 @@ from auto_workflow_database.repositories.base import (
     AgentRepository,
     ApprovalNotification,
     ApprovalNotificationRepository,
+    CredentialMetadata,
     CredentialStore,
     Execution,
     ExecutionNodeLog,
@@ -167,8 +168,8 @@ class InMemoryCredentialStore(CredentialStore):
     """Unit-test double. Skips encryption entirely — never use in prod."""
 
     def __init__(self) -> None:
-        # (owner_id, name, credential_type, plaintext)
-        self._store: dict[UUID, tuple[UUID, str, str, dict]] = {}
+        # (owner_id, name, credential_type, plaintext, created_at)
+        self._store: dict[UUID, tuple[UUID, str, str, dict, datetime]] = {}
 
     async def store(
         self,
@@ -179,11 +180,14 @@ class InMemoryCredentialStore(CredentialStore):
         credential_type: str = "unknown",
     ) -> UUID:
         cid = uuid4()
-        self._store[cid] = (owner_id, name, credential_type, deepcopy(plaintext))
+        self._store[cid] = (
+            owner_id, name, credential_type, deepcopy(plaintext),
+            datetime.now(timezone.utc),
+        )
         return cid
 
     async def retrieve(self, credential_id: UUID) -> dict:
-        _, _, _, pt = self._store[credential_id]
+        _, _, _, pt, _ = self._store[credential_id]
         return deepcopy(pt)
 
     async def bulk_retrieve(
@@ -203,6 +207,17 @@ class InMemoryCredentialStore(CredentialStore):
         if len(found) != len(set(credential_ids)):
             raise KeyError("missing credential(s)")
         return found
+
+    async def list_by_owner(
+        self, owner_id: UUID
+    ) -> list[CredentialMetadata]:
+        rows = [
+            CredentialMetadata(id=cid, name=name, type=ctype, created_at=created)
+            for cid, (oid, name, ctype, _pt, created) in self._store.items()
+            if oid == owner_id
+        ]
+        rows.sort(key=lambda m: m.created_at, reverse=True)
+        return rows
 
     async def delete(self, credential_id: UUID) -> None:
         self._store.pop(credential_id, None)
