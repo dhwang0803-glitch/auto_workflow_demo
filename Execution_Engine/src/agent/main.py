@@ -30,6 +30,7 @@ async def run_agent(
     *,
     node_registry: NodeRegistry | None = None,
     heartbeat_interval: int = 15,
+    agent_private_key_pem: bytes | None = None,
 ) -> None:
     reg = node_registry or default_registry
     uri = f"{server_url}?token={token}"
@@ -47,7 +48,10 @@ async def run_agent(
                 if msg_type == "heartbeat_ack":
                     continue
                 elif msg_type == "execute":
-                    asyncio.create_task(handle_execute(ws, msg, reg))
+                    asyncio.create_task(handle_execute(
+                        ws, msg, reg,
+                        agent_private_key_pem=agent_private_key_pem,
+                    ))
                 elif msg_type == "credential":
                     logger.debug("credential response received")
                 elif msg_type == "error":
