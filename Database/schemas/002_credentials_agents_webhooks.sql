@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS credentials (
     id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id        uuid         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name            text         NOT NULL,
+    type            text         NOT NULL DEFAULT 'unknown'
+        CHECK (type IN ('smtp', 'postgres_dsn', 'slack_webhook', 'http_bearer', 'unknown')),
     encrypted_data  bytea        NOT NULL,
     created_at      timestamptz  NOT NULL DEFAULT now(),
     CONSTRAINT credentials_owner_name_uq UNIQUE (owner_id, name)

@@ -63,3 +63,103 @@ async def test_wrong_key_rejects_ciphertext(sm):
         await store_b.retrieve(cid)
 
     await store_a.delete(cid)
+
+
+# ---------------------------------------------------------------------------
+# PLAN_09 — credential pipeline (type column + bulk_retrieve)
+# ---------------------------------------------------------------------------
+
+
+async def test_store_with_type_persists_to_column(sm):
+    from sqlalchemy import text as sql_text
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store(
+        user.id, "smtp-primary", {"user": "u", "password": "p"},
+        credential_type="smtp",
+    )
+    async with sm() as s:
+        row = await s.execute(
+            sql_text("SELECT type FROM credentials WHERE id = :cid"),
+            {"cid": cid},
+        )
+        assert row.scalar() == "smtp"
+
+    await store.delete(cid)
+
+
+async def test_store_default_type_is_unknown(sm):
+    from sqlalchemy import text as sql_text
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store(user.id, "legacy", {"k": "v"})
+    async with sm() as s:
+        row = await s.execute(
+            sql_text("SELECT type FROM credentials WHERE id = :cid"),
+            {"cid": cid},
+        )
+        assert row.scalar() == "unknown"
+
+    await store.delete(cid)
+
+
+async def test_store_rejects_invalid_type(sm):
+    from sqlalchemy.exc import IntegrityError
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    with pytest.raises(IntegrityError):
+        await store.store(
+            user.id, "bad", {"v": 1}, credential_type="definitely_not_allowed",
+        )
+
+
+async def test_bulk_retrieve_happy(sm):
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid1 = await store.store(user.id, "a", {"v": 1}, credential_type="smtp")
+    cid2 = await store.store(user.id, "b", {"v": 2}, credential_type="slack_webhook")
+    cid3 = await store.store(user.id, "c", {"v": 3}, credential_type="http_bearer")
+
+    try:
+        got = await store.bulk_retrieve([cid1, cid2, cid3], owner_id=user.id)
+        assert got == {cid1: {"v": 1}, cid2: {"v": 2}, cid3: {"v": 3}}
+    finally:
+        for cid in (cid1, cid2, cid3):
+            await store.delete(cid)
+
+
+async def test_bulk_retrieve_ownership_filter(sm):
+    user_a = await _seed_user(sm)
+    user_b = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid_a = await store.store(user_a.id, "mine", {"v": "a"})
+
+    try:
+        with pytest.raises(KeyError, match="missing credential"):
+            await store.bulk_retrieve([cid_a], owner_id=user_b.id)
+    finally:
+        await store.delete(cid_a)
+
+
+async def test_bulk_retrieve_missing_id_raises(sm):
+    from uuid import uuid4 as _uuid4
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid_real = await store.store(user.id, "real", {"v": 1})
+
+    try:
+        with pytest.raises(KeyError, match="missing credential"):
+            await store.bulk_retrieve([cid_real, _uuid4()], owner_id=user.id)
+    finally:
+        await store.delete(cid_real)
+
+
+async def test_bulk_retrieve_empty_list(sm):
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    got = await store.bulk_retrieve([], owner_id=user.id)
+    assert got == {}
