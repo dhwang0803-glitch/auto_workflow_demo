@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from auto_workflow_database.repositories.base import CredentialStore, User
+from auto_workflow_database.repositories.base import (
+    CredentialMetadata,
+    CredentialStore,
+    User,
+)
 from sqlalchemy.exc import IntegrityError
 
 from app.errors import DuplicateNameError, NotFoundError
@@ -40,6 +44,19 @@ class CredentialService:
         except KeyError:
             raise NotFoundError("credential not found")
         await self._store.delete(credential_id)
+
+    async def list(self, user: User) -> list[CredentialMetadata]:
+        return await self._store.list_by_owner(user.id)
+
+    async def get(self, user: User, credential_id: UUID) -> CredentialMetadata:
+        # 2-query path (list + filter). Simpler than adding a dedicated
+        # get_metadata(id, owner_id) to the Database ABC — credential
+        # counts per user are small (dozens) so the cost is noise.
+        # ownership is enforced by list_by_owner's WHERE filter.
+        for row in await self._store.list_by_owner(user.id):
+            if row.id == credential_id:
+                return row
+        raise NotFoundError("credential not found")
 
     async def validate_refs(
         self, user: User, credential_ids: list[UUID]
