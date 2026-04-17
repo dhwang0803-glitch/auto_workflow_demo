@@ -1,10 +1,12 @@
 """InMemory fakes for Execution_Engine tests."""
 from auto_workflow_database.repositories.base import (
+    AgentCredentialPayload,
+    CredentialStore,
     Execution, ExecutionRepository, ExecutionStatus,
     Workflow, WorkflowRepository,
 )
 from copy import deepcopy
-from uuid import UUID
+from uuid import UUID, uuid4
 
 
 class InMemoryExecutionRepository(ExecutionRepository):
@@ -63,3 +65,55 @@ class InMemoryWorkflowRepository(WorkflowRepository):
 
     async def delete(self, workflow_id):
         self._store.pop(workflow_id, None)
+
+
+class InMemoryCredentialStore(CredentialStore):
+    """Minimal fake mirroring the Database branch's contract — unit tests only."""
+
+    def __init__(self) -> None:
+        # credential_id -> (owner_id, plaintext)
+        self._store: dict[UUID, tuple[UUID, dict]] = {}
+
+    async def store(
+        self,
+        owner_id: UUID,
+        name: str,
+        plaintext: dict,
+        *,
+        credential_type: str = "unknown",
+    ) -> UUID:
+        cid = uuid4()
+        self._store[cid] = (owner_id, deepcopy(plaintext))
+        return cid
+
+    async def retrieve(self, credential_id: UUID) -> dict:
+        return deepcopy(self._store[credential_id][1])
+
+    async def bulk_retrieve(
+        self,
+        credential_ids: list[UUID],
+        *,
+        owner_id: UUID,
+    ) -> dict[UUID, dict]:
+        if not credential_ids:
+            return {}
+        found: dict[UUID, dict] = {}
+        for cid in credential_ids:
+            row = self._store.get(cid)
+            if row is None or row[0] != owner_id:
+                continue
+            found[cid] = deepcopy(row[1])
+        if len(found) != len(set(credential_ids)):
+            raise KeyError("missing credential(s)")
+        return found
+
+    async def delete(self, credential_id: UUID) -> None:
+        self._store.pop(credential_id, None)
+
+    async def retrieve_for_agent(
+        self,
+        credential_id: UUID,
+        *,
+        agent_public_key_pem: bytes,
+    ) -> AgentCredentialPayload:
+        raise NotImplementedError("agent path out of scope for PLAN_08 tests")
