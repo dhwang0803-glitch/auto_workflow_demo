@@ -92,9 +92,12 @@ resource "google_secret_manager_secret_iam_member" "api_database_url" {
 # ---- Cloud Run service ------------------------------------------------------
 #
 # Two containers:
-#   1. api       — our API_Server image (default: gcr.io/cloudrun/hello so first
-#                  `terraform apply` succeeds before any image has been pushed).
-#                  CI/manual deploy overrides image to AR URI.
+#   1. api       — our API_Server image. var.api_image_uri is REQUIRED (no
+#                  default); the earlier gcr.io/cloudrun/hello bootstrap was
+#                  dropped because it fails the /health startup_probe below.
+#                  Bootstrap flow lives in variables.tf. After first apply, CI
+#                  updates the image out-of-band; ignore_changes prevents
+#                  Terraform from reverting it on the next plan.
 #   2. cloudsql-proxy — the Auth Proxy sidecar. App talks to localhost:5432.
 
 locals {
