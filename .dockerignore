@@ -1,0 +1,62 @@
+# VCS + editor
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+
+# Python caches
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/*.egg-info
+**/.tox
+
+# Virtualenvs
+.venv
+venv
+env
+**/.venv
+
+# Node/frontend (if any future dirs appear)
+**/node_modules
+
+# Secrets & local env
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+
+# Local proxy/binary cache
+.tmp/
+
+# Test artifacts
+**/htmlcov
+**/coverage.xml
+**/.coverage
+
+# Plans/docs/ADRs — not needed at runtime
+**/plans
+docs
+_agent_templates
+_claude_templates
+
+# Tests — not shipped into image
+**/tests
+
+# Terraform state
+**/*.tfstate
+**/*.tfstate.*
+**/.terraform
+**/terraform.tfvars
+**/environments/*.tfvars
+!**/environments/*.tfvars.example
+
+# Misc
+README.md
+**/CLAUDE.md
