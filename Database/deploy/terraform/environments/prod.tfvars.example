@@ -1,0 +1,14 @@
+# Copy to prod.tfvars and edit. prod.tfvars is gitignored (real values).
+project_id  = "auto-workflow-prod-REPLACE"
+region      = "asia-northeast3"
+environment = "prod"
+
+# Prod typically goes through Cloud SQL Auth Proxy or Private IP — leave
+# public authorized_networks empty.
+authorized_networks = []
+
+deletion_protection = true
+
+# When prod traffic starts, bump this:
+# db_tier         = "db-custom-2-7680"
+# db_disk_size_gb = 50

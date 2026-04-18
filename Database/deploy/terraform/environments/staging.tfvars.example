@@ -1,0 +1,14 @@
+# Copy to staging.tfvars and edit. staging.tfvars is gitignored (real values).
+project_id  = "auto-workflow-staging-REPLACE"
+region      = "asia-northeast3"
+environment = "staging"
+
+# Narrow to the IPs that actually need Cloud SQL public access (devs, CI).
+# Once Cloud Run + Private IP is wired, drop this list to [] and route
+# through the Auth Proxy instead.
+authorized_networks = [
+  # { name = "dev-home", value = "203.0.113.10/32" },
+]
+
+# Safe to destroy staging on a whim; prod keeps the default true.
+deletion_protection = false
