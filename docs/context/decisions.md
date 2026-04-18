@@ -1012,6 +1012,99 @@ ADR-007/008/016 은 LLM/자격증명 등 노드 실행 *메커니즘* 을 다뤘
 
 ---
 
+## ADR-018 — GCP Cloud SQL 관리형 Postgres + Secret Manager + Terraform IaC
+
+**상태**: Accepted · **날짜**: 2026-04-19
+
+**Context**
+
+2026-04-18 E2E 스모크 테스트를 통과하며 시연 가능 수준의 MVP 에 도달 (ADR-017 21 노드 + credential pipeline + Agent 경로 전부 동작). 그러나 지금까지 모든 환경이 **로컬 Docker pgvector 컨테이너 하나에 dev / test 가 섞여 있고, 시크릿은 env 변수** 에 담겨 있다. 다음 실무 마일스톤 — 시연회 + 체험 고객 온보딩 — 을 위해서는 운영 수준으로 승격이 필요하다:
+
+- **공유 DB 오염 문제**: PR #63 이 `test_schema_loads` 의 destructive 테스트를 패치했으나, dev ↔ 테스트 격리가 구조적으로 안 돼 있어 동류 이슈 재발 가능성 상존.
+- **시크릿 누출 리스크**: Fernet 마스터 키가 env 파일 / 메모장 / 터미널 히스토리에 산재. 유출 시 credentials 테이블 전체 복호화 가능 (ADR-004).
+- **체험 고객 시연 불가**: 로컬 호스트 Postgres 를 외부 유저가 볼 방법이 없음. 배포 가능한 엔드포인트 필요.
+- **재현성**: 인스턴스 하나 더 만들려면 (예: staging) 수작업 반복 → 편차 발생.
+
+**Decision**
+
+### 1. 엔진 — Cloud SQL for PostgreSQL (AlloyDB 기각, Phase 2 재검토)
+
+- **엔진**: Cloud SQL PostgreSQL 16 + pgvector 확장 (ADR-010 MVP 선탑재와 호환)
+- **머신 타입**: `db-g1-small` 수준 (1 vCPU, 1.7 GB RAM) — MVP/시연 용도. 체험 고객 볼륨 증가 시 `db-custom` tier 로 수직 확장.
+- **스토리지**: SSD 10 GB 시작, auto-resize 활성. 자동 백업 daily 7일 보존.
+- **가용성**: 단일 존 (HA 비활성). 시연 단계에서 SLA 보증 대상 아님. Heavy 유저 실수요 시 regional HA 로 승격.
+- **AlloyDB 기각 이유**: 최소 월 ~$400 (2 vCPU 강제), 현 시점 Heavy LLM 쿼리 수요 0. ADR-008 `Inference_Service` 가동 시 벡터 쿼리 볼륨 급증하면 그때 승격 논의 (별도 ADR).
+
+### 2. 환경 분리 — 3-tier (dev / staging / prod)
+
+| 환경 | Postgres | 용도 |
+|---|---|---|
+| **dev** | 로컬 Docker `pgvector:pg16` (포트 5435) | 개발자 로컬, 빠른 반복, 비용 0 |
+| **staging** | Cloud SQL `auto-workflow-staging` | 시연회, 체험 고객 초대, CI 통합 테스트 후단 |
+| **prod** | Cloud SQL `auto-workflow-prod` | 실사용 고객 (아직 없음, MVP 출시 후) |
+
+`DATABASE_URL` 환경변수로 분기. 코드 변경 없음 — 현재 이미 env-based.
+
+**dev 는 로컬 유지**: 클라우드 왕복 비용·지연 없이 TDD 반복이 가능해야 함. 로컬 schema/migration 은 `Database/scripts/migrate.py` 가 양쪽 모두 지원.
+
+### 3. IaC — Terraform (gcloud CLI / 콘솔 기각)
+
+- **위치**: `Database/deploy/terraform/`
+- **이유**: staging ↔ prod 동일 모듈 재사용, diff-리뷰 가능한 변경 이력, `terraform destroy` 로 비용 즉시 정리 (시연 끝난 뒤).
+- **범위**: Cloud SQL 인스턴스·DB·유저, Secret Manager 시크릿, 필요한 API 활성화 (sqladmin, secretmanager, servicenetworking). VPC / Cloud Run / IAM 정책은 본 ADR 범위 외 (후속 배포 ADR).
+- **state 저장**: 초기엔 로컬 state 파일 (gitignore). 팀 단위 작업 전 GCS backend 전환은 별개 작업.
+- **gcloud CLI 스크립트 기각 이유**: 수동 적용은 drift 추적 안 됨. 콘솔 조작은 재현 0.
+
+### 4. 시크릿 — Secret Manager (env 파일 병용 안 함)
+
+**보관 대상 (3종)**:
+- `credential-master-key` — ADR-004 Fernet 키. 유출 시 파괴적.
+- `jwt-secret` — ADR-015 JWT 서명 키. 유출 시 세션 탈취 가능.
+- `db-password` — Cloud SQL `auto_workflow` 유저 패스워드.
+
+**접근 경로**:
+- **Terraform**: 시크릿 리소스 자체는 정의하되, **값은 placeholder** 로 생성. 실제 값은 콘솔/CLI 로 수동 주입 (Terraform state 에 secret 값이 찍히는 것 방지).
+- **애플리케이션 (Cloud Run 배포 이후)**: `--set-secrets` 로 env 에 주입 또는 SDK (`google-cloud-secret-manager`) 직접 호출.
+- **현 MVP 단계**: 로컬 개발은 `.env.local` (gitignore), staging/prod 만 Secret Manager 사용.
+
+**env 파일과 병용하지 않는 이유**: 동일 시크릿이 두 곳에 있으면 어느 쪽이 진실인지 모호해지고, git 에 들어갈 위험이 실질적으로 감소하지 않음.
+
+### 5. 연결 경로 — 개발·CI 는 Public IP + Authorized Networks, Cloud Run 은 Private IP (후속)
+
+- **MVP**: 지정 CIDR (개발자 IP) 만 public IP 접근 허용.
+- **Phase 2**: VPC Peering + Private IP + Cloud SQL Auth Proxy (Cloud Run 배포 시 필수).
+- **로컬 → staging**: `cloud-sql-proxy` CLI 로 localhost 포워딩. 배포 README 에 가이드.
+
+### 6. 마이그레이션 실행 — 기존 `migrate.py` 재사용
+
+`Database/scripts/migrate.py` 는 `DATABASE_URL_SYNC` 만 보면 되는 구조. Terraform apply 후 사용자가:
+```bash
+DATABASE_URL_SYNC="postgresql://..." python Database/scripts/migrate.py
+```
+한 줄로 schema + 7 migrations 적용. 별도 Cloud SQL용 migration runner 불필요.
+
+**Consequences**
+
+- (+) **환경 격리**: dev 로컬 / staging 클라우드 → 테스트 오염 재발 불가
+- (+) **시연 가능 엔드포인트**: staging 인스턴스 public IP + authorized dev IP → 시연회에서 고객 브라우저/API 호출 가능 (Frontend 붙이면)
+- (+) **시크릿 중앙화**: 유출 시 즉각 rotate 가능 (Secret Manager version bump). env 파일 회수 불가능 대비 큰 개선
+- (+) **재현성**: `terraform apply -var-file=staging.tfvars` 한 줄로 인스턴스 복제
+- (+) **운영 비용 명확**: 시연 종료 후 `terraform destroy` → 다음날부터 $0
+- (−) **월 고정비 발생**: Cloud SQL `db-g1-small` ~$25/month + 스토리지 + egress → 체감 $35~50/month (staging 한 개 기준)
+- (−) **Terraform 학습 곡선**: 팀에 HCL 초심자 있으면 초기 기여 장벽. README 로 완화.
+- (−) **Secret Manager 접근 IAM 설정 필요**: Cloud Run 연동 때 service account + role 바인딩 추가 단계
+- (−) **AlloyDB 승격 시 비용 변동 준비**: 현 Cloud SQL 경로가 2 ~ 3 개월 내 AlloyDB 로 바뀌면 Terraform 모듈 재작성 필요 (migration 자체는 pg_dump/restore 로 가능)
+
+**Related**
+
+- Refines: ADR-004 (Fernet 마스터 키 — 보관 위치를 env 에서 Secret Manager 로), ADR-015 (JWT 시크릿 — 동일)
+- Extends: ADR-010 (pgvector MVP 선탑재 — Cloud SQL 이 pgvector 지원해야 함)
+- Defers: ADR-008 (`Inference_Service` GPU 인프라) 는 별도 Terraform 모듈 — 본 ADR 은 DB 레이어만
+- Affects branches: `docs` (본 ADR), `Database` (`deploy/terraform/`, `deploy/README.md`)
+- Next ADR (예정): `ADR-019 — OAuth credential_type 설계 및 토큰 갱신 플로우` (Phase 2, 기존 계획 유지. 본 ADR 이 018 슬롯을 먼저 쓴 이유는 운영 DB 승격이 시연회 블로커이기 때문)
+
+---
+
 ## 관련 문서
 
 - 전체 아키텍처: [`architecture.md`](./architecture.md)
