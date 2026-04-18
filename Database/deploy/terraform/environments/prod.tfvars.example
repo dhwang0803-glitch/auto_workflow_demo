@@ -22,6 +22,11 @@ api_max_instances = 10
 api_cpu    = "2"
 api_memory = "1Gi"
 
+# ADR-020 §6 — REQUIRED. No default. Set to the exact image tag promoted
+# from staging. CI `release` branch push is what normally bumps this in
+# practice (via gcloud), but first prod apply still needs a real URI here.
+api_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/api:REPLACE-TAG"
+
 # Set to the real prod Cloud Run HTTPS URL (or custom domain) and re-apply.
 app_base_url = "https://api.example.com"
 

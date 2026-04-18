@@ -18,10 +18,15 @@ authorized_networks = [
 # on your corp/home network if you ever tunnel in.
 cloudrun_subnet_cidr = "10.60.0.0/28"
 
-# ADR-020 §6 — image URI defaults to gcr.io/cloudrun/hello so the first
-# apply works before any image exists in Artifact Registry. CI/manual
-# deploy overrides this with the real <region>-docker.pkg.dev/... URI.
-# api_image_uri = "asia-northeast3-docker.pkg.dev/<project>/auto-workflow/api:<tag>"
+# ADR-020 §6 — REQUIRED. No default. The hello bootstrap image was dropped
+# because it fails the /health startup_probe. Bootstrap flow:
+#   1. terraform apply -target=google_project_service.runtime_apis \
+#        -target=google_artifact_registry_repository.images
+#   2. docker build + push to AR
+#   3. set the line below to the real tag and full `terraform apply`
+# After that, CI updates images out-of-band (ignore_changes protects against
+# revert), so this value stays as "the last image Terraform itself applied".
+api_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/api:REPLACE-TAG"
 
 # Scale-to-zero by default (free at rest, ~2s cold start). Bump to 1 for
 # demos / user tests — adds ~$7/month.

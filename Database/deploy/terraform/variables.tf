@@ -63,9 +63,31 @@ variable "cloudrun_subnet_cidr" {
 # ---- Cloud Run (ADR-020 §6) -------------------------------------------------
 
 variable "api_image_uri" {
-  description = "Container image URI for the API_Server. Default is a Google-hosted hello so a fresh `terraform apply` succeeds with no image pushed yet. Override with `<region>-docker.pkg.dev/<project>/auto-workflow/api:<tag>` on real deploys — CI does this, so the default only matters pre-bootstrap."
+  description = <<-EOT
+    Container image URI for the API_Server. Required — no default.
+
+    The earlier `gcr.io/cloudrun/hello` default was dropped because `hello`
+    serves `/` but not `/health`, so the startup_probe below would reject the
+    first revision. Forcing an explicit image means every apply lands a real,
+    probe-compatible service.
+
+    Bootstrap (before any image exists in AR):
+      terraform apply -var-file=... \
+        -target=google_project_service.runtime_apis \
+        -target=google_artifact_registry_repository.images
+      # build + push real image to AR
+      # then full apply with api_image_uri = "<region>-docker.pkg.dev/<project>/auto-workflow/api:<tag>"
+
+    Steady state: CI `gcloud run deploy --image=...` updates the image
+    out-of-band; `lifecycle.ignore_changes` on the image attribute stops
+    subsequent `terraform apply` from reverting that.
+  EOT
   type        = string
-  default     = "gcr.io/cloudrun/hello"
+
+  validation {
+    condition     = length(var.api_image_uri) > 0
+    error_message = "api_image_uri must be set — see variable description for the bootstrap flow."
+  }
 }
 
 variable "cloudsql_proxy_image" {
