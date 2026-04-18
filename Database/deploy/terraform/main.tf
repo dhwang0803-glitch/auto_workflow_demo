@@ -50,6 +50,9 @@ resource "google_sql_database_instance" "main" {
   deletion_protection = var.deletion_protection
 
   settings {
+    # ENTERPRISE edition only — ENTERPRISE_PLUS rejects shared-core tiers
+    # (db-g1-small etc.) and starts at db-perf-optimized-N-1 (~$400+/mo).
+    edition           = "ENTERPRISE"
     tier              = var.db_tier
     disk_type         = "PD_SSD"
     disk_size         = var.db_disk_size_gb
