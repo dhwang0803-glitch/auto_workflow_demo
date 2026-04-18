@@ -3,12 +3,39 @@ project_id  = "auto-workflow-staging-REPLACE"
 region      = "asia-northeast3"
 environment = "staging"
 
-# Narrow to the IPs that actually need Cloud SQL public access (devs, CI).
-# Once Cloud Run + Private IP is wired, drop this list to [] and route
-# through the Auth Proxy instead.
+# ADR-020 §2 — Cloud SQL runs on Private IP; Cloud Run reaches it through
+# the peered VPC + Auth Proxy sidecar. Flip `public_ip_enabled = true` only
+# if you need a dev laptop to hit the instance without Auth Proxy (rare).
+public_ip_enabled = false
+
+# authorized_networks only applies when public_ip_enabled = true.
 authorized_networks = [
   # { name = "dev-home", value = "203.0.113.10/32" },
 ]
+
+# Cloud Run Direct VPC Egress subnet. Keep this non-overlapping with the
+# services peering range (/16 allocated automatically) and with anything
+# on your corp/home network if you ever tunnel in.
+cloudrun_subnet_cidr = "10.60.0.0/28"
+
+# ADR-020 §6 — image URI defaults to gcr.io/cloudrun/hello so the first
+# apply works before any image exists in Artifact Registry. CI/manual
+# deploy overrides this with the real <region>-docker.pkg.dev/... URI.
+# api_image_uri = "asia-northeast3-docker.pkg.dev/<project>/auto-workflow/api:<tag>"
+
+# Scale-to-zero by default (free at rest, ~2s cold start). Bump to 1 for
+# demos / user tests — adds ~$7/month.
+api_min_instances = 0
+api_max_instances = 3
+
+# APP_BASE_URL — set to the Cloud Run HTTPS URL after the first apply, then
+# re-apply so email verification links point at the real host.
+app_base_url = "http://localhost:8080"
+
+# Public invoker — required for browsers / external webhooks to reach the
+# API without an IAM token. Flip false once the Frontend is gated behind
+# IAM-authenticated proxy / Identity-Aware Proxy.
+api_allow_unauthenticated = true
 
 # Safe to destroy staging on a whim; prod keeps the default true.
 deletion_protection = false

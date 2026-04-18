@@ -46,6 +46,70 @@ variable "authorized_networks" {
   default = []
 }
 
+variable "public_ip_enabled" {
+  description = "Whether the Cloud SQL instance exposes a public IPv4. Default false (ADR-020 §2 — Private IP only). Flip true on staging only if you need laptop-direct access without Auth Proxy."
+  type        = bool
+  default     = false
+}
+
+# ---- VPC (ADR-020 §2) -------------------------------------------------------
+
+variable "cloudrun_subnet_cidr" {
+  description = "Subnet CIDR used by Cloud Run Direct VPC Egress. /28 is the min Cloud Run accepts. Pick a block that does NOT overlap the services peering range (default 10.60.0.0/28)."
+  type        = string
+  default     = "10.60.0.0/28"
+}
+
+# ---- Cloud Run (ADR-020 §6) -------------------------------------------------
+
+variable "api_image_uri" {
+  description = "Container image URI for the API_Server. Default is a Google-hosted hello so a fresh `terraform apply` succeeds with no image pushed yet. Override with `<region>-docker.pkg.dev/<project>/auto-workflow/api:<tag>` on real deploys — CI does this, so the default only matters pre-bootstrap."
+  type        = string
+  default     = "gcr.io/cloudrun/hello"
+}
+
+variable "cloudsql_proxy_image" {
+  description = "Auth Proxy sidecar image (ADR-020 §3). Pin a specific tag so the sidecar doesn't move unexpectedly under us."
+  type        = string
+  default     = "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4"
+}
+
+variable "api_min_instances" {
+  description = "Cloud Run min instances. 0 = scale-to-zero (free at rest, ~2s cold start). Use 1 for demos (ADR-020 §Consequences, ~$7/month)."
+  type        = number
+  default     = 0
+}
+
+variable "api_max_instances" {
+  description = "Cloud Run max instances. MVP cap kept low to bound blast radius / cost."
+  type        = number
+  default     = 3
+}
+
+variable "api_cpu" {
+  description = "CPU allocation per instance (Cloud Run v2 resource.limits)."
+  type        = string
+  default     = "1"
+}
+
+variable "api_memory" {
+  description = "Memory per instance."
+  type        = string
+  default     = "512Mi"
+}
+
+variable "app_base_url" {
+  description = "APP_BASE_URL the API advertises for email verification links etc. Post-apply, set this to the Cloud Run HTTPS URL and re-apply."
+  type        = string
+  default     = "http://localhost:8080"
+}
+
+variable "api_allow_unauthenticated" {
+  description = "When true, grants roles/run.invoker to allUsers so the service is reachable without GCP IAM. MVP / demo default. Flip false to require IAM-authenticated requests."
+  type        = bool
+  default     = true
+}
+
 variable "db_name" {
   description = "Application database name (matches what migrate.py writes to)."
   type        = string
