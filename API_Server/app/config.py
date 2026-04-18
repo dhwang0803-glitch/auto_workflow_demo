@@ -44,7 +44,11 @@ class Settings(BaseSettings):
 
     @property
     def scheduler_jobstore_url(self) -> str:
-        return self.database_url.replace("+asyncpg", "")
+        # APScheduler's SQLAlchemyJobStore is sync. Route it to psycopg3 sync
+        # (shipped via Database's `psycopg[binary]` dep) instead of SQLAlchemy's
+        # default psycopg2, which we don't depend on — a fresh pip install from
+        # pyproject.toml has no psycopg2 and startup would ImportError.
+        return self.database_url.replace("+asyncpg", "+psycopg")
 
     workflow_limit_light: int = Field(default=100, ge=1)
     workflow_limit_middle: int = Field(default=200, ge=1)
