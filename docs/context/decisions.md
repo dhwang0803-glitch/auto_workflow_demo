@@ -1105,6 +1105,157 @@ DATABASE_URL_SYNC="postgresql://..." python Database/scripts/migrate.py
 
 ---
 
+## ADR-020 — API_Server 배포: Cloud Run + VPC Peering + Private IP + Cloud SQL Auth Proxy 사이드카 + 전용 IAM SA
+
+**상태**: Accepted (설계) · **날짜**: 2026-04-18
+
+**Context**
+
+ADR-018 로 Cloud SQL + Secret Manager + Terraform 이 staging 에서 E2E 검증됨 (PR #64, #65). 시크릿 주입, 마이그레이션 (pgvector 포함), 59 통합 테스트, Cloud SQL Auth Proxy, API_Server HTTP 스모크까지 전 경로 통과 후 destroy. 남은 건 "배포".
+
+현 시점 API_Server 는 로컬 uvicorn 으로만 실행 가능 — 외부에서 접근할 endpoint 가 없어 시연회·체험 고객 온보딩 불가. 배포 타깃 후보는 Cloud Run / GKE / Compute Engine. MVP 단계 (트래픽 소규모, 운영 인력 0) 에서 선택이 필요하다.
+
+ADR-018 staging 검증 시점에 이미 **ADR-020 의 기술 리스크 대부분이 선제 해소됨**: Auth Proxy 경로, Secret Manager ↔ 앱 env 주입, pgvector on Cloud SQL 16. 즉 본 ADR 은 "어떻게 조립할지" 결정하면 된다.
+
+**Decision**
+
+### 1. 배포 타깃 — Cloud Run (GKE / Compute Engine 기각)
+
+- **Cloud Run**: 컨테이너 이미지만 올리면 됨, 0~N 자동 스케일, TLS/HTTPS 기본, IAM 인증 옵션, 요청 기반 과금. 트래픽 0 이면 월요금 거의 0.
+- **GKE 기각**: control plane $72/month 고정, 노드풀/업그레이드/k8s 지식 오버헤드. 단일 서비스에 과잉.
+- **Compute Engine 기각**: OS 패치·systemd·오토스케일 전부 수작업. Cloud Run 이 주는 이점 모두 상실.
+
+### 2. 네트워크 — VPC Peering + Private IP + Direct VPC Egress (Serverless VPC Connector 기각)
+
+- Cloud SQL 은 **Private IP only** (public IP 제거). 노출 표면 최소화, authorized_networks 관리 불필요.
+- Cloud Run → Cloud SQL: **Direct VPC Egress** (2024 GA). Serverless VPC Connector 1세대는 커넥터 인스턴스 상시 비용 + 스루풋 캡 → 기각.
+- VPC Peering 은 Cloud SQL 이 Google-managed producer VPC 에 살기 때문에 필수. `google_service_networking_connection` + `/24` allocated range. 사내 CIDR 과 겹치지 않게 선점.
+
+### 3. DB 연결 — Cloud SQL Auth Proxy 사이드카 (Private IP 직결 기각)
+
+- Cloud Run 서비스에 **2번째 컨테이너**로 Auth Proxy 를 배포 → App 은 `localhost:5432` 로만 붙으면 됨.
+- Private IP 직결도 가능하지만 Auth Proxy 는 (a) IAM SA 로 자동 인증, (b) TLS 자동, (c) staging 에서 이미 검증됨 → 재검증 불필요.
+- 검증 레퍼런스: 2026-04-18 staging 세션에서 `localhost:5434` ↔ Cloud SQL 동작 확인.
+
+### 4. 권한 — 전용 IAM Service Account + 최소 권한 (default compute SA 재사용 기각)
+
+- SA: `auto-workflow-api@<project>.iam.gserviceaccount.com` (API_Server 전용)
+- 필요 role:
+  - `roles/cloudsql.client` — Auth Proxy 인증
+  - `roles/secretmanager.secretAccessor` — 3 시크릿 read only (`credential-master-key`, `jwt-secret`, `db-password`)
+  - `roles/logging.logWriter`, `roles/monitoring.metricWriter` — 관측
+- default compute SA 기각: role 과도, 전 서비스 공유 → blast radius 큼.
+
+### 5. 시크릿 주입 — `--set-secrets` (SDK 호출 기각)
+
+- Cloud Run deploy flag: `--set-secrets=JWT_SECRET=jwt-secret:latest,CREDENTIAL_MASTER_KEY=credential-master-key:latest,DB_PASSWORD=db-password:latest` → env 자동 마운트.
+- 앱 코드 변경 0 (pydantic-settings 가 이미 env 에서 읽음).
+- SDK 호출 기각: GCP 의존성 코드 침투 + 로컬 dev 복잡화.
+
+### 6. 컨테이너 이미지 규약
+
+- **base**: `python:3.13-slim` multi-stage (builder → runtime). libpq5 만 런타임에 남김.
+- **user**: `uid=10001 appuser` (non-root)
+- **포트**: `$PORT` (Cloud Run 이 8080 주입). `exec uvicorn ... --host 0.0.0.0 --port ${PORT}` 로 PID 1 시그널 전파.
+- **빌드 컨텍스트**: repo root (Database 패키지 동시 설치 위해). `.dockerignore` 로 tests/plans/secrets 제외.
+- **관련 수정** (PR #66, `API_Server` 브랜치): `scheduler_jobstore_url` 이 SQLAlchemy 기본 psycopg2 를 찾던 버그 → `+psycopg` (psycopg3 sync, Database 가 이미 의존) 으로 교정. 본 ADR 과는 별 PR 로 분리 (모듈 레이어 버그 성격 → API_Server 브랜치 소유).
+
+### 7. 이미지 레지스트리·CI — 환경별 브랜치 기반 배포 (push-on-main 자동 배포 기각)
+
+**환경 ↔ 브랜치 매핑** (ADR-018 의 staging/prod 슬롯 재사용):
+
+| 배포 브랜치 | 대상 환경 | 배포 방식 | GH Actions |
+|---|---|---|---|
+| `development` | 개발 서버 (ADR-018 staging) | **수동 배포** (gcloud / terraform) | 트리거 없음 |
+| `release` | 운영 서버 (ADR-018 prod) | **자동** — build + AR push + Cloud Run deploy | `ff-only` 머지에만 발동 |
+
+**승격 흐름**:
+
+```
+module 브랜치 (API_Server, infra, …)
+    ↓ PR
+main                         # 통합 / 리뷰 완료
+    ↓ 수동 merge
+development                  # 개발 서버 수동 배포로 검증·디버깅
+    ↓ ff-only merge (검증 통과 시)
+release                      # GH Actions 자동 배포 → 운영 서버
+```
+
+**이유**:
+- `main` 직접 자동 배포 기각: 통합 직후 prod 로 가면 디버깅/관측 창 없음. dev 환경에서 먼저 거르는 게이트 필요.
+- development 수동 유지: 배포 타이밍을 사람이 통제 (데이터 점검·로그 추적·부분 피처 토글과 동시 진행). 자동화 가치 < 통제 가치인 구간.
+- release 를 **ff-only 로 강제**: merge commit 금지 → 운영 이력이 development 의 선형 확장으로만 증가. rollback/diff 가 명확해지고, 사고 발생 시 "무엇이 들어갔는가" 가 git log 로 바로 보인다. non-ff push 는 CI 에서 실패시키거나 branch protection 으로 차단.
+- 로컬 push 기각 (기존 유지): 재현성 0, credential leak, reviewer 가 뭘 배포되는지 검증 불가.
+
+**GH Actions trigger (개요)**:
+```yaml
+on:
+  push:
+    branches: [release]
+```
+ff-only 강제는 branch protection rule (`Require linear history`) 으로 보완.
+
+### 7-a. 개발 서버 수동 배포 runbook (Phase 3 에서 README 로 구체화)
+
+- `development` 브랜치 체크아웃 → 로컬에서 `gcloud builds submit` 또는 `docker build && docker push` → `gcloud run deploy <service> --image=...` 한 줄
+- 서비스 이름·리전·SA·시크릿 세트는 terraform 출력 값 참조
+- 배포 실패 / 회귀 발견 시: development 쪽에서 revert commit → 재배포. release 로는 승격 안 함.
+
+### 8. Execution_Engine — 본 ADR 범위 외 (ADR-021 에서 결정)
+
+- Cloud Run 은 request-driven. Celery worker 는 long-running queue puller → 모델 맞지 않음.
+- ADR-021 후보:
+  - (A) Cloud Run Worker Pools (2024 공개, HTTP 리스너 없는 long-running 컨테이너) — 가장 자연스러움
+  - (B) Cloud Run Jobs + Cloud Tasks — queue-depth 기반, 실행당 컨테이너
+  - (C) GKE Autopilot — 복잡도↑
+- 본 ADR 은 API_Server 만 배포. Execution_Engine 은 이미지만 확보 (본 PR) 후 ADR-021.
+
+### 9. Broker (Redis) — Memorystore, 그러나 Phase 2 후
+
+- ADR-003 Redis broker 유지. Memorystore Redis 인스턴스는 EE 를 배포할 때 필요 → ADR-021 과 함께 Terraform 추가.
+- 본 ADR 은 선언만, 비용·리소스 아직 만들지 않음.
+
+### 10. Frontend · 관측 — 범위 외
+
+- Frontend 배포는 브랜치 착수 시 별도 ADR (Cloud Storage + CDN vs Cloud Run 정적 호스팅).
+- Cloud Monitoring 대시보드·알림은 실사용자 투입 전까지 Cloud Run 기본 로그 + Error Reporting 으로 충분.
+
+**Consequences**
+
+- (+) **외부 접근 HTTPS 엔드포인트 확보**: 시연회·체험 고객·Frontend 개발 병행 가능
+- (+) **비용 $0 근접**: Cloud Run 트래픽 0 ≈ 과금 0. 기반 고정비는 Cloud SQL `db-g1-small` ~$25/month 만 유지 (EE/Redis 는 ADR-021 이후).
+- (+) **보안 표면 축소**: Cloud SQL public IP 제거, 전용 SA 최소 권한, 시크릿 중앙화
+- (+) **재현성**: Terraform 모듈로 staging ↔ prod 동일 배포
+- (+) **기술 리스크 선제 해소됨**: Auth Proxy·Secret Manager·pgvector 전부 staging 검증 완료
+- (−) **복잡도 추가**: VPC / Peering / SA / AR / 사이드카 / Direct VPC Egress → 운영 이해 곡선
+- (−) **Cold start**: min-instances=0 이면 첫 요청 ~2s. 시연에는 min=1 권장 (~$7/month 추가)
+- (−) **Execution_Engine 미포함**: Serverless 실행 모드 미가용. Agent 경로만 활성. 전 기능 배포는 ADR-021 완료 후
+- (−) **VPC Peering allocated range 선점 필요**: 사내/다른 VPC 와 `10.x` 충돌 가능성 → `/24` 신중 선택
+- (−) **APScheduler sync driver 의존**: PR #66 으로 psycopg3 sync 로 교정했으나, 향후 APScheduler 4.x (async jobstore) 로 이관 시 config 재조정 필요
+- (+) **prod 배포 이력 선형성**: `release` ff-only 강제 → 운영 서버에 반영된 변경을 git log 로 단일 체인에서 추적 가능. rollback = `git revert` + push.
+- (−) **승격 수동 오버헤드**: main → development (수동) → release (ff-only) 3단 게이팅. 작은 변경도 2회 merge. 긴급 hotfix 는 별도 runbook 필요 (Phase 3).
+
+**Phase 진행 상태**
+
+| Phase | 범위 | 상태 |
+|---|---|---|
+| 0 | `API_Server/Dockerfile`, `Execution_Engine/Dockerfile`, `.dockerignore` + 로컬 build & run 스모크 | ✅ 본 PR |
+| 1 | ADR-020 설계 문서 | ✅ 본 PR |
+| 2 | `Database/deploy/terraform/cloud_run.tf` (Artifact Registry + SA + IAM + VPC + Cloud Run 서비스) | ⏳ 다음 PR |
+| 3 | 배포 브랜치 2종 신설 (`development`, `release`) + branch protection (release 는 ff-only, linear history) + 개발 서버 수동 배포 runbook (README) + `release` push 트리거 GH Actions workflow (OIDC → AR push → Cloud Run prod deploy) | ⏳ 다음 PR |
+| 4 | 실제 apply + 개발 서버 수동 배포 스모크 + release 승격 1회 dry-run + destroy | ⏳ 사용자 결정 시 |
+
+**Related**
+
+- Builds on: ADR-018 (Cloud SQL + Secret Manager + Terraform) — 본 ADR 은 그 위에 Cloud Run 배포 레이어
+- Uses: ADR-004 (Fernet 마스터 키), ADR-015 (JWT 시크릿) — 주입 경로 구체화
+- Defers: ADR-021 (Execution_Engine 배포 — Cloud Run Worker Pools vs Cloud Tasks, Memorystore Redis)
+- Supersedes (부분): ADR-003 의 배포 관련 구체화는 ADR-021 로 이관 (broker 자체는 Redis 유지)
+- Affects branches: `docs` (본 ADR), `infra` (Dockerfile / terraform / CI). `API_Server` 의 psycopg3 sync 교정은 PR #66 으로 분리 머지.
+- Next ADR (예정): `ADR-021 — Execution_Engine 배포 (Cloud Run Worker Pools vs Cloud Tasks) + Memorystore Redis`
+
+---
+
 ## 관련 문서
 
 - 전체 아키텍처: [`architecture.md`](./architecture.md)
