@@ -1160,11 +1160,46 @@ ADR-018 staging 검증 시점에 이미 **ADR-020 의 기술 리스크 대부분
 - **빌드 컨텍스트**: repo root (Database 패키지 동시 설치 위해). `.dockerignore` 로 tests/plans/secrets 제외.
 - **관련 수정** (PR #66, `API_Server` 브랜치): `scheduler_jobstore_url` 이 SQLAlchemy 기본 psycopg2 를 찾던 버그 → `+psycopg` (psycopg3 sync, Database 가 이미 의존) 으로 교정. 본 ADR 과는 별 PR 로 분리 (모듈 레이어 버그 성격 → API_Server 브랜치 소유).
 
-### 7. 이미지 레지스트리·CI — GitHub Actions → Artifact Registry (로컬 push 기각)
+### 7. 이미지 레지스트리·CI — 환경별 브랜치 기반 배포 (push-on-main 자동 배포 기각)
 
-- **Phase 3 (후속 PR)**: GH Actions 가 `main` merge 시 build → AR push → Cloud Run deploy. OIDC 로 GCP 인증 (서비스 계정 키 파일 X).
-- **Phase 0 (본 PR)**: Dockerfile 과 로컬 스모크만. AR repo 생성·CI 는 다음 PR.
-- 로컬 push 기각: 재현성 0, 누가 언제 빌드했는지 불분명, 인증 credential 취급 개인 장비 의존.
+**환경 ↔ 브랜치 매핑** (ADR-018 의 staging/prod 슬롯 재사용):
+
+| 배포 브랜치 | 대상 환경 | 배포 방식 | GH Actions |
+|---|---|---|---|
+| `development` | 개발 서버 (ADR-018 staging) | **수동 배포** (gcloud / terraform) | 트리거 없음 |
+| `release` | 운영 서버 (ADR-018 prod) | **자동** — build + AR push + Cloud Run deploy | `ff-only` 머지에만 발동 |
+
+**승격 흐름**:
+
+```
+module 브랜치 (API_Server, infra, …)
+    ↓ PR
+main                         # 통합 / 리뷰 완료
+    ↓ 수동 merge
+development                  # 개발 서버 수동 배포로 검증·디버깅
+    ↓ ff-only merge (검증 통과 시)
+release                      # GH Actions 자동 배포 → 운영 서버
+```
+
+**이유**:
+- `main` 직접 자동 배포 기각: 통합 직후 prod 로 가면 디버깅/관측 창 없음. dev 환경에서 먼저 거르는 게이트 필요.
+- development 수동 유지: 배포 타이밍을 사람이 통제 (데이터 점검·로그 추적·부분 피처 토글과 동시 진행). 자동화 가치 < 통제 가치인 구간.
+- release 를 **ff-only 로 강제**: merge commit 금지 → 운영 이력이 development 의 선형 확장으로만 증가. rollback/diff 가 명확해지고, 사고 발생 시 "무엇이 들어갔는가" 가 git log 로 바로 보인다. non-ff push 는 CI 에서 실패시키거나 branch protection 으로 차단.
+- 로컬 push 기각 (기존 유지): 재현성 0, credential leak, reviewer 가 뭘 배포되는지 검증 불가.
+
+**GH Actions trigger (개요)**:
+```yaml
+on:
+  push:
+    branches: [release]
+```
+ff-only 강제는 branch protection rule (`Require linear history`) 으로 보완.
+
+### 7-a. 개발 서버 수동 배포 runbook (Phase 3 에서 README 로 구체화)
+
+- `development` 브랜치 체크아웃 → 로컬에서 `gcloud builds submit` 또는 `docker build && docker push` → `gcloud run deploy <service> --image=...` 한 줄
+- 서비스 이름·리전·SA·시크릿 세트는 terraform 출력 값 참조
+- 배포 실패 / 회귀 발견 시: development 쪽에서 revert commit → 재배포. release 로는 승격 안 함.
 
 ### 8. Execution_Engine — 본 ADR 범위 외 (ADR-021 에서 결정)
 
@@ -1197,6 +1232,8 @@ ADR-018 staging 검증 시점에 이미 **ADR-020 의 기술 리스크 대부분
 - (−) **Execution_Engine 미포함**: Serverless 실행 모드 미가용. Agent 경로만 활성. 전 기능 배포는 ADR-021 완료 후
 - (−) **VPC Peering allocated range 선점 필요**: 사내/다른 VPC 와 `10.x` 충돌 가능성 → `/24` 신중 선택
 - (−) **APScheduler sync driver 의존**: PR #66 으로 psycopg3 sync 로 교정했으나, 향후 APScheduler 4.x (async jobstore) 로 이관 시 config 재조정 필요
+- (+) **prod 배포 이력 선형성**: `release` ff-only 강제 → 운영 서버에 반영된 변경을 git log 로 단일 체인에서 추적 가능. rollback = `git revert` + push.
+- (−) **승격 수동 오버헤드**: main → development (수동) → release (ff-only) 3단 게이팅. 작은 변경도 2회 merge. 긴급 hotfix 는 별도 runbook 필요 (Phase 3).
 
 **Phase 진행 상태**
 
@@ -1205,8 +1242,8 @@ ADR-018 staging 검증 시점에 이미 **ADR-020 의 기술 리스크 대부분
 | 0 | `API_Server/Dockerfile`, `Execution_Engine/Dockerfile`, `.dockerignore` + 로컬 build & run 스모크 | ✅ 본 PR |
 | 1 | ADR-020 설계 문서 | ✅ 본 PR |
 | 2 | `Database/deploy/terraform/cloud_run.tf` (Artifact Registry + SA + IAM + VPC + Cloud Run 서비스) | ⏳ 다음 PR |
-| 3 | GitHub Actions CI/CD workflow (OIDC → AR push → Cloud Run deploy) | ⏳ 다음 PR |
-| 4 | 실제 apply + HTTPS 스모크 + destroy | ⏳ 사용자 결정 시 |
+| 3 | 배포 브랜치 2종 신설 (`development`, `release`) + branch protection (release 는 ff-only, linear history) + 개발 서버 수동 배포 runbook (README) + `release` push 트리거 GH Actions workflow (OIDC → AR push → Cloud Run prod deploy) | ⏳ 다음 PR |
+| 4 | 실제 apply + 개발 서버 수동 배포 스모크 + release 승격 1회 dry-run + destroy | ⏳ 사용자 결정 시 |
 
 **Related**
 
