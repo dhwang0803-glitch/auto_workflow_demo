@@ -71,9 +71,13 @@ resource "google_sql_database_instance" "main" {
     }
 
     ip_configuration {
-      ipv4_enabled = true
-      # authorized_networks = [] in default var keeps the instance reachable
-      # only via Cloud SQL Auth Proxy until explicit CIDRs are added.
+      # ADR-020 §2: prod keeps public IP off. staging may opt in via var to
+      # allow dev laptops to hit the instance directly while Cloud Run path
+      # is being validated. Auth Proxy works in either case.
+      ipv4_enabled                                  = var.public_ip_enabled
+      private_network                               = google_compute_network.vpc.id
+      enable_private_path_for_google_cloud_services = true
+
       dynamic "authorized_networks" {
         for_each = var.authorized_networks
         content {
@@ -95,7 +99,10 @@ resource "google_sql_database_instance" "main" {
     }
   }
 
-  depends_on = [google_project_service.apis]
+  depends_on = [
+    google_project_service.apis,
+    google_service_networking_connection.private_vpc_connection,
+  ]
 }
 
 # pgvector extension: instance-level flag is unavailable; extension is created
@@ -171,4 +178,24 @@ resource "google_secret_manager_secret_version" "jwt_secret_placeholder" {
   lifecycle {
     ignore_changes = [secret_data]
   }
+}
+
+# Composed DSN for Cloud Run. The app reads DATABASE_URL as-is (ADR-020 §5 +
+# PR #66: psycopg3 sync derived from +asyncpg). Host is fixed at 127.0.0.1
+# because the Auth Proxy sidecar (cloud_run.tf) listens there.
+# Keeping db-password as a separate secret too so ops scripts (migrate.py
+# via a laptop-side Auth Proxy) can fetch just the password.
+resource "google_secret_manager_secret" "database_url" {
+  secret_id = "database-url-${var.environment}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "database_url" {
+  secret      = google_secret_manager_secret.database_url.id
+  secret_data = "postgresql+asyncpg://${google_sql_user.app.name}:${random_password.db_app.result}@127.0.0.1:5432/${google_sql_database.app.name}"
 }
