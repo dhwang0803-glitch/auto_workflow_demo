@@ -114,6 +114,10 @@ resource "google_cloud_run_v2_service" "api" {
   name     = "auto-workflow-api-${var.environment}"
   location = var.region
 
+  # Reuse the Cloud SQL deletion_protection flag — in practice we tear both
+  # down together (demo / staging) or keep both (prod).
+  deletion_protection = var.deletion_protection
+
   # INGRESS_TRAFFIC_ALL lets the public internet hit the service; auth/authz
   # is handled by the app itself. For internal-only deployments, switch to
   # INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER.
