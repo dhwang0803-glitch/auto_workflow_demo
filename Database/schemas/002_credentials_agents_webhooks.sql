@@ -10,8 +10,14 @@ CREATE TABLE IF NOT EXISTS credentials (
     owner_id        uuid         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name            text         NOT NULL,
     type            text         NOT NULL DEFAULT 'unknown'
-        CHECK (type IN ('smtp', 'postgres_dsn', 'slack_webhook', 'http_bearer', 'unknown')),
+        CHECK (type IN (
+            'smtp', 'postgres_dsn', 'slack_webhook', 'http_bearer',
+            'google_oauth', 'unknown'
+        )),
     encrypted_data  bytea        NOT NULL,
+    -- ADR-019: present only for type='google_oauth'. Holds access_token +
+    -- expiry + scopes + account_email + client_id_hash + needs_reauth flag.
+    oauth_metadata  jsonb        NULL,
     created_at      timestamptz  NOT NULL DEFAULT now(),
     CONSTRAINT credentials_owner_name_uq UNIQUE (owner_id, name)
 );

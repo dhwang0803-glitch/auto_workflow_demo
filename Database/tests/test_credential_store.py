@@ -215,3 +215,171 @@ async def test_list_by_owner_ownership_filter(sm):
         assert rows_a[0].id == cid_a
     finally:
         await store.delete(cid_a)
+
+
+# ---------------------------------------------------------------------------
+# ADR-019 — Google OAuth2 lifecycle (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _oauth_metadata(**overrides) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    base = {
+        "provider": "google",
+        "account_email": "user@example.com",
+        "scopes": ["gmail.send"],
+        "access_token": "ya29.access-v1",
+        "token_expires_at": (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+        "client_id_hash": "sha256:abc",
+    }
+    base.update(overrides)
+    return base
+
+
+async def test_store_google_oauth_persists_type_and_metadata(sm):
+    from sqlalchemy import text as sql_text
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store_google_oauth(
+        user.id, "gmail-primary",
+        refresh_token="1//refresh-token",
+        oauth_metadata=_oauth_metadata(),
+    )
+
+    try:
+        async with sm() as s:
+            row = (await s.execute(
+                sql_text("SELECT type, oauth_metadata FROM credentials WHERE id = :cid"),
+                {"cid": cid},
+            )).first()
+            assert row.type == "google_oauth"
+            assert row.oauth_metadata["account_email"] == "user@example.com"
+            assert row.oauth_metadata["access_token"] == "ya29.access-v1"
+    finally:
+        await store.delete(cid)
+
+
+async def test_retrieve_google_oauth_enriches_with_metadata(sm):
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store_google_oauth(
+        user.id, "gmail",
+        refresh_token="1//rt-xyz",
+        oauth_metadata=_oauth_metadata(),
+    )
+
+    try:
+        got = await store.retrieve(cid)
+        assert got["refresh_token"] == "1//rt-xyz"
+        assert got["oauth_metadata"]["scopes"] == ["gmail.send"]
+    finally:
+        await store.delete(cid)
+
+
+async def test_retrieve_non_oauth_has_no_metadata_key(sm):
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store(
+        user.id, "slack", {"token": "xoxb"}, credential_type="slack_webhook",
+    )
+    try:
+        got = await store.retrieve(cid)
+        assert "oauth_metadata" not in got
+    finally:
+        await store.delete(cid)
+
+
+async def test_update_oauth_tokens_refreshes_access_token(sm):
+    from datetime import datetime, timedelta, timezone
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store_google_oauth(
+        user.id, "gmail",
+        refresh_token="1//rt-original",
+        oauth_metadata=_oauth_metadata(access_token="stale"),
+    )
+
+    try:
+        new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        await store.update_oauth_tokens(
+            cid,
+            access_token="ya29.fresh",
+            token_expires_at=new_expiry,
+        )
+        got = await store.retrieve(cid)
+        assert got["refresh_token"] == "1//rt-original"
+        assert got["oauth_metadata"]["access_token"] == "ya29.fresh"
+        assert got["oauth_metadata"]["token_expires_at"] == new_expiry.isoformat()
+    finally:
+        await store.delete(cid)
+
+
+async def test_update_oauth_tokens_rotates_refresh_token(sm):
+    from datetime import datetime, timedelta, timezone
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store_google_oauth(
+        user.id, "gmail",
+        refresh_token="1//rt-old",
+        oauth_metadata=_oauth_metadata(),
+    )
+
+    try:
+        await store.update_oauth_tokens(
+            cid,
+            access_token="new",
+            token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            refresh_token="1//rt-rotated",
+        )
+        got = await store.retrieve(cid)
+        assert got["refresh_token"] == "1//rt-rotated"
+    finally:
+        await store.delete(cid)
+
+
+async def test_mark_needs_reauth_and_clear_via_refresh(sm):
+    from datetime import datetime, timedelta, timezone
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store_google_oauth(
+        user.id, "gmail",
+        refresh_token="1//rt",
+        oauth_metadata=_oauth_metadata(),
+    )
+
+    try:
+        await store.mark_needs_reauth(cid)
+        got = await store.retrieve(cid)
+        assert got["oauth_metadata"]["needs_reauth"] is True
+
+        await store.update_oauth_tokens(
+            cid,
+            access_token="after-reauth",
+            token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            refresh_token="1//rt-reissued",
+        )
+        got = await store.retrieve(cid)
+        assert "needs_reauth" not in got["oauth_metadata"]
+    finally:
+        await store.delete(cid)
+
+
+async def test_invalid_type_still_rejected(sm):
+    """Regression: adding 'google_oauth' must not widen the CHECK beyond the
+    allow-list. Unknown custom types still fail.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    with pytest.raises(IntegrityError):
+        await store.store(
+            user.id, "bogus", {"v": 1}, credential_type="some_new_provider",
+        )

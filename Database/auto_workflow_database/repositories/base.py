@@ -306,7 +306,15 @@ class AgentCredentialPayload:
 
 
 class CredentialStore(ABC):
-    """ADR-004 Fernet-at-rest. See `FernetCredentialStore` for the impl."""
+    """ADR-004 Fernet-at-rest. See `FernetCredentialStore` for the impl.
+
+    For `type='google_oauth'` (ADR-019): `encrypted_data` holds the
+    Fernet-encrypted `{"refresh_token": ...}`. The short-lived access_token
+    and scopes/expiry/account metadata live in the `oauth_metadata` JSONB
+    column. `retrieve()` enriches the returned dict with `oauth_metadata`
+    so Execution_Engine nodes can call `ensure_fresh_token` without a second
+    round-trip.
+    """
 
     @abstractmethod
     async def store(
@@ -319,7 +327,14 @@ class CredentialStore(ABC):
     ) -> UUID: ...
 
     @abstractmethod
-    async def retrieve(self, credential_id: UUID) -> dict: ...
+    async def retrieve(self, credential_id: UUID) -> dict:
+        """Plaintext credential dict.
+
+        For `type='google_oauth'` the returned dict includes an extra
+        `oauth_metadata` key (the JSONB column value) alongside the
+        Fernet-decrypted payload (`{"refresh_token": ...}`).
+        """
+        ...
 
     @abstractmethod
     async def bulk_retrieve(
@@ -372,6 +387,58 @@ class CredentialStore(ABC):
         Agent's RSA public key (PEM) — typically via `AgentRepository`.
         Implementations must stay side-effect free w.r.t. caching so a
         future in-process cache decorator can wrap this method.
+        """
+        ...
+
+    # ------------------------------------------------------------------
+    # ADR-019 — Google OAuth2 credential lifecycle
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def store_google_oauth(
+        self,
+        owner_id: UUID,
+        name: str,
+        *,
+        refresh_token: str,
+        oauth_metadata: dict,
+    ) -> UUID:
+        """Persist a newly-minted Google OAuth credential.
+
+        `refresh_token` is the long-lived secret — Fernet-encrypted into
+        `encrypted_data`. `oauth_metadata` is stored as-is in the JSONB
+        column and must contain at minimum: `provider`, `account_email`,
+        `scopes`, `access_token`, `token_expires_at`, `client_id_hash`.
+        `type` is forced to `'google_oauth'`.
+        """
+        ...
+
+    @abstractmethod
+    async def update_oauth_tokens(
+        self,
+        credential_id: UUID,
+        *,
+        access_token: str,
+        token_expires_at: datetime,
+        refresh_token: str | None = None,
+    ) -> None:
+        """Apply a successful Google `/token` refresh result.
+
+        Merges `access_token` + `token_expires_at` into `oauth_metadata`
+        and clears `needs_reauth` if set. When Google rotates the
+        refresh_token (occasional but contract-allowed), the caller passes
+        the new value and `encrypted_data` is re-encrypted.
+        """
+        ...
+
+    @abstractmethod
+    async def mark_needs_reauth(self, credential_id: UUID) -> None:
+        """Flag an OAuth credential as requiring user re-consent.
+
+        Called from the refresh path after Google returns `invalid_grant`
+        (user revoked access, refresh_token expired past 6-month idle
+        window, or client secret rotated). Sets `oauth_metadata.needs_reauth`
+        = true so the UI can surface a re-connect prompt.
         """
         ...
 

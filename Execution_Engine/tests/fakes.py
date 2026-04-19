@@ -6,6 +6,7 @@ from auto_workflow_database.repositories.base import (
     Workflow, WorkflowRepository,
 )
 from copy import deepcopy
+from datetime import datetime
 from uuid import UUID, uuid4
 
 
@@ -153,3 +154,19 @@ class InMemoryCredentialStore(CredentialStore):
                     )
                 )
         return out
+
+    # ADR-019 — OAuth methods stubbed (Phase 4 GoogleWorkspaceNode will wire
+    # these through a dedicated fake when EE-side tests land).
+    async def store_google_oauth(
+        self, owner_id: UUID, name: str, *, refresh_token: str, oauth_metadata: dict,
+    ) -> UUID:
+        raise NotImplementedError("google_oauth path out of scope for current EE tests")
+
+    async def update_oauth_tokens(
+        self, credential_id: UUID, *, access_token: str,
+        token_expires_at: datetime, refresh_token: str | None = None,
+    ) -> None:
+        raise NotImplementedError("google_oauth path out of scope for current EE tests")
+
+    async def mark_needs_reauth(self, credential_id: UUID) -> None:
+        raise NotImplementedError("google_oauth path out of scope for current EE tests")

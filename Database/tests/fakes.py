@@ -168,8 +168,9 @@ class InMemoryCredentialStore(CredentialStore):
     """Unit-test double. Skips encryption entirely — never use in prod."""
 
     def __init__(self) -> None:
-        # (owner_id, name, credential_type, plaintext, created_at)
-        self._store: dict[UUID, tuple[UUID, str, str, dict, datetime]] = {}
+        # Rows hold owner_id, name, credential_type, plaintext payload,
+        # created_at, and (for google_oauth) oauth_metadata.
+        self._store: dict[UUID, dict] = {}
 
     async def store(
         self,
@@ -180,15 +181,22 @@ class InMemoryCredentialStore(CredentialStore):
         credential_type: str = "unknown",
     ) -> UUID:
         cid = uuid4()
-        self._store[cid] = (
-            owner_id, name, credential_type, deepcopy(plaintext),
-            datetime.now(timezone.utc),
-        )
+        self._store[cid] = {
+            "owner_id": owner_id,
+            "name": name,
+            "type": credential_type,
+            "plaintext": deepcopy(plaintext),
+            "created_at": datetime.now(timezone.utc),
+            "oauth_metadata": None,
+        }
         return cid
 
     async def retrieve(self, credential_id: UUID) -> dict:
-        _, _, _, pt, _ = self._store[credential_id]
-        return deepcopy(pt)
+        row = self._store[credential_id]
+        result = deepcopy(row["plaintext"])
+        if row["oauth_metadata"] is not None:
+            result["oauth_metadata"] = deepcopy(row["oauth_metadata"])
+        return result
 
     async def bulk_retrieve(
         self,
@@ -201,9 +209,9 @@ class InMemoryCredentialStore(CredentialStore):
         found: dict[UUID, dict] = {}
         for cid in credential_ids:
             row = self._store.get(cid)
-            if row is None or row[0] != owner_id:
+            if row is None or row["owner_id"] != owner_id:
                 continue
-            found[cid] = deepcopy(row[3])
+            found[cid] = deepcopy(row["plaintext"])
         if len(found) != len(set(credential_ids)):
             raise KeyError("missing credential(s)")
         return found
@@ -212,9 +220,12 @@ class InMemoryCredentialStore(CredentialStore):
         self, owner_id: UUID
     ) -> list[CredentialMetadata]:
         rows = [
-            CredentialMetadata(id=cid, name=name, type=ctype, created_at=created)
-            for cid, (oid, name, ctype, _pt, created) in self._store.items()
-            if oid == owner_id
+            CredentialMetadata(
+                id=cid, name=row["name"], type=row["type"],
+                created_at=row["created_at"],
+            )
+            for cid, row in self._store.items()
+            if row["owner_id"] == owner_id
         ]
         rows.sort(key=lambda m: m.created_at, reverse=True)
         return rows
@@ -233,10 +244,58 @@ class InMemoryCredentialStore(CredentialStore):
             json.dumps(plaintext).encode("utf-8"), agent_public_key_pem
         )
 
+    # ADR-019 — Google OAuth2 lifecycle
+
+    async def store_google_oauth(
+        self,
+        owner_id: UUID,
+        name: str,
+        *,
+        refresh_token: str,
+        oauth_metadata: dict,
+    ) -> UUID:
+        cid = uuid4()
+        self._store[cid] = {
+            "owner_id": owner_id,
+            "name": name,
+            "type": "google_oauth",
+            "plaintext": {"refresh_token": refresh_token},
+            "created_at": datetime.now(timezone.utc),
+            "oauth_metadata": deepcopy(oauth_metadata),
+        }
+        return cid
+
+    async def update_oauth_tokens(
+        self,
+        credential_id: UUID,
+        *,
+        access_token: str,
+        token_expires_at: datetime,
+        refresh_token: str | None = None,
+    ) -> None:
+        row = self._store.get(credential_id)
+        if row is None:
+            raise KeyError(f"credential {credential_id} not found")
+        md = dict(row["oauth_metadata"] or {})
+        md["access_token"] = access_token
+        md["token_expires_at"] = token_expires_at.isoformat()
+        md.pop("needs_reauth", None)
+        row["oauth_metadata"] = md
+        if refresh_token is not None:
+            row["plaintext"] = {"refresh_token": refresh_token}
+
+    async def mark_needs_reauth(self, credential_id: UUID) -> None:
+        row = self._store.get(credential_id)
+        if row is None:
+            raise KeyError(f"credential {credential_id} not found")
+        md = dict(row["oauth_metadata"] or {})
+        md["needs_reauth"] = True
+        row["oauth_metadata"] = md
+
     # Test-only peek — returns the stored credential_type without going
     # through ABC. Lets tests assert the `type` was persisted correctly.
     def _peek_type(self, credential_id: UUID) -> str:
-        return self._store[credential_id][2]
+        return self._store[credential_id]["type"]
 
 
 class InMemoryWebhookRegistry(WebhookRegistry):

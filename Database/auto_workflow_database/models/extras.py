@@ -35,6 +35,7 @@ class Credential(Base):
         String, nullable=False, server_default=text("'unknown'")
     )
     encrypted_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    oauth_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
