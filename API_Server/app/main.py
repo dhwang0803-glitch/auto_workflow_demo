@@ -16,6 +16,7 @@ from app.routers.agents import router as agents_router
 from app.routers.auth import router as auth_router
 from app.routers.credentials import router as credentials_router
 from app.routers.executions import router as executions_router
+from app.routers.oauth_google import router as oauth_google_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
 from app.services.email_sender import EmailSender
@@ -45,6 +46,8 @@ def create_app(
         app.state.agent_connections = c.agent_connections
         app.state.credential_store = c.credential_store
         app.state.credential_service = c.credential_service
+        app.state.oauth_state_signer = c.oauth_state_signer
+        app.state.google_oauth_client = c.google_oauth_client
         app.state.workflow_service = c.workflow_service
         try:
             yield
@@ -83,6 +86,9 @@ def create_app(
     )
     app.include_router(
         credentials_router, prefix="/api/v1/credentials", tags=["credentials"]
+    )
+    app.include_router(
+        oauth_google_router, prefix="/api/v1/oauth/google", tags=["oauth"]
     )
 
     @app.get("/health")

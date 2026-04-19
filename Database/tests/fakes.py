@@ -211,7 +211,10 @@ class InMemoryCredentialStore(CredentialStore):
             row = self._store.get(cid)
             if row is None or row["owner_id"] != owner_id:
                 continue
-            found[cid] = deepcopy(row["plaintext"])
+            pt = deepcopy(row["plaintext"])
+            if row["oauth_metadata"] is not None:
+                pt["oauth_metadata"] = deepcopy(row["oauth_metadata"])
+            found[cid] = pt
         if len(found) != len(set(credential_ids)):
             raise KeyError("missing credential(s)")
         return found

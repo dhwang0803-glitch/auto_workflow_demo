@@ -50,6 +50,12 @@ def _make_settings(**overrides) -> Settings:
         workflow_limit_heavy=10,
         # Ephemeral Fernet key per test session — blueprint §1.6 invariant 3.
         credential_master_key=Fernet.generate_key().decode("utf-8"),
+        # ADR-019 OAuth — values are non-empty so the container builds a
+        # real GoogleOAuthClient. Individual tests swap its http_client
+        # for an httpx.MockTransport, so no network I/O ever happens.
+        google_oauth_client_id="test-client-id",
+        google_oauth_client_secret="test-client-secret",
+        google_oauth_redirect_uri="http://testserver/api/v1/oauth/google/callback",
     )
     base.update(overrides)
     return Settings(**base)
