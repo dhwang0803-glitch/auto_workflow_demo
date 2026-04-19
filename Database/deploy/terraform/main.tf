@@ -26,6 +26,16 @@ locals {
     "sqladmin.googleapis.com",
     "secretmanager.googleapis.com",
     "servicenetworking.googleapis.com",
+    # ADR-019 — enabled in the client project so OAuth-driven calls from our
+    # Workspace nodes land against a quota this project owns. Discovered
+    # during Phase 6 E2E when gmail.googleapis.com/send returned 403 until
+    # enabled.
+    "gmail.googleapis.com",
+    "drive.googleapis.com",
+    "sheets.googleapis.com",
+    "docs.googleapis.com",
+    "slides.googleapis.com",
+    "calendar-json.googleapis.com",
   ]
 }
 

@@ -16,6 +16,7 @@ dependencies = [
     "pyjwt>=2.8",
     "bcrypt>=4.1",
     "python-multipart>=0.0.9",  # FastAPI OAuth2PasswordRequestForm
+    "httpx>=0.27",  # ADR-019 Phase 3 — Google OAuth /token client
     "celery[redis]>=5.3",
     "apscheduler>=3.10,<4",
     "auto-workflow-database",    # editable local install: `pip install -e ../Database`
