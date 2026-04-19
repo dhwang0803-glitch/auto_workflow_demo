@@ -152,8 +152,17 @@ resource "google_secret_manager_secret" "credential_master_key" {
 }
 
 resource "google_secret_manager_secret_version" "credential_master_key_placeholder" {
-  secret      = google_secret_manager_secret.credential_master_key.id
-  secret_data = "REPLACE_ME_WITH_Fernet_generate_key"
+  secret = google_secret_manager_secret.credential_master_key.id
+
+  # VALID-BUT-PLACEHOLDER Fernet key: 44-char URL-safe base64 of 32 bytes.
+  # Chosen so Fernet.__init__ in the app container doesn't crash on first
+  # deploy (that crash was the root cause of the 2026-04-19 prod bootstrap
+  # /health failure when this was "REPLACE_ME_WITH_Fernet_generate_key").
+  # Crucially, this key MUST be rotated before any real credential is
+  # stored — the "PLACEHOLDER" substring makes that intent visible to
+  # anyone who sees the secret value. Rotation: see deploy/README.md
+  # "시크릿 R/W 패턴" section.
+  secret_data = "PLACEHOLDERPLACEHOLDERPLACEHOLDERPLACEHOLDE="
 
   lifecycle {
     # Prevent terraform from overwriting a real key injected out-of-band.
@@ -172,8 +181,12 @@ resource "google_secret_manager_secret" "jwt_secret" {
 }
 
 resource "google_secret_manager_secret_version" "jwt_secret_placeholder" {
-  secret      = google_secret_manager_secret.jwt_secret.id
-  secret_data = "REPLACE_ME_WITH_openssl_rand_base64_48"
+  secret = google_secret_manager_secret.jwt_secret.id
+
+  # Valid placeholder so API_Server's JWT init doesn't reject it. 64 chars
+  # of explicit "PLACEHOLDER" signalling — rotate before issuing real
+  # tokens. See deploy/README.md "시크릿 R/W 패턴" section.
+  secret_data = "PLACEHOLDER_JWT_SECRET_REPLACE_BEFORE_REAL_TRAFFIC_XXXXXXXXXXXXX"
 
   lifecycle {
     ignore_changes = [secret_data]

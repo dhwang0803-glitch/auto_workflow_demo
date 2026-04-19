@@ -15,8 +15,9 @@ authorized_networks = [
 
 # Cloud Run Direct VPC Egress subnet. Keep this non-overlapping with the
 # services peering range (/16 allocated automatically) and with anything
-# on your corp/home network if you ever tunnel in.
-cloudrun_subnet_cidr = "10.60.0.0/28"
+# on your corp/home network if you ever tunnel in. /26 minimum — /28 runs
+# out of assignable IPs under min_instance_count > 0 (see variables.tf).
+cloudrun_subnet_cidr = "10.60.0.0/26"
 
 # ADR-020 §6 — REQUIRED. No default. The hello bootstrap image was dropped
 # because it fails the /health startup_probe. Bootstrap flow:

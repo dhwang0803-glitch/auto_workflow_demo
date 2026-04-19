@@ -36,21 +36,57 @@ terraform apply -var-file=environments/staging.tfvars
 
 최초 apply 는 5~8 분 (Cloud SQL 인스턴스 기동 + API enablement).
 
-## 시크릿 실값 주입
+## 시크릿 R/W 패턴
 
-Terraform 은 credential 마스터 키와 JWT 시크릿을 **placeholder 로** 생성한다. 실제 값을 넣어야 한다.
+**규칙 한 줄**: 시크릿 값을 **사람 눈에 보이는 stdout 에 절대 내보내지 않는다**. 쓸 때는 파이프, 읽을 때는 쉘 변수 캡처.
+
+### 쓰기 — 시크릿 실값 주입
+
+Terraform 은 credential 마스터 키와 JWT 시크릿을 **valid-but-placeholder 로** 생성한다 (이전에는 `REPLACE_ME_*` 평문이었으나 컨테이너 Fernet 초기화가 실패해서 base64-valid 더미로 전환). 실제 값을 넣어야 한다.
 
 ```bash
-# Fernet 마스터 키 (ADR-004)
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" | \
+# Fernet 마스터 키 (ADR-004) — 생성 결과를 절대 print/echo 하지 말고 바로 파이프
+python -c "from cryptography.fernet import Fernet; import sys; sys.stdout.write(Fernet.generate_key().decode())" | \
   gcloud secrets versions add credential-master-key-staging --data-file=-
 
 # JWT 서명 키 (ADR-015)
-openssl rand -base64 48 | \
+python -c "import secrets, sys; sys.stdout.write(secrets.token_urlsafe(48))" | \
   gcloud secrets versions add jwt-secret-staging --data-file=-
 ```
 
 **주의**: 이 두 시크릿을 이후 재발급하면 기존 저장 자격증명이 전부 복호화 불가, 기존 JWT 전부 무효. prod 에서는 rotate 시 의도적 downtime 계획 필요.
+
+### 읽기 — 시크릿 재사용 시
+
+`gcloud secrets versions access latest --secret=<id>` 의 **stdout 을 터미널에 그대로 뿌리면** 평문이 스크롤백, 셸 히스토리, 에이전트 대화 로그(JSONL) 까지 모두 잔존한다. 무조건 `$(...)` 로 쉘 변수에 캡처해서 바로 다음 명령의 env 로 넘긴다.
+
+```bash
+# ❌ 나쁜 패턴 — 비밀번호가 스크롤백에 남는다
+gcloud secrets versions access latest --secret=db-password-prod
+# → gsAW6wOy4dgugAKCrhqunqT27tIMENu8   ← 영구 보존
+
+# ✅ 좋은 패턴 — 변수에만 담고 바로 소비
+PW="$(gcloud secrets versions access latest --secret=db-password-prod --project=$P)"
+export DATABASE_URL_SYNC="postgresql://auto_workflow:${PW}@127.0.0.1:15432/auto_workflow"
+python Database/scripts/migrate.py
+unset PW
+```
+
+migrate 는 래퍼 스크립트를 쓰면 위 패턴이 이미 물리화돼 있다:
+```bash
+Database/deploy/scripts/migrate_via_proxy.sh prod --status
+Database/deploy/scripts/migrate_via_proxy.sh prod          # apply pending
+```
+이 래퍼는 proxy 기동 → 시크릿 변수 캡처 → migrate 실행 → proxy cleanup 을 모두 처리하며 DB 비밀번호를 stdout/argv/로그 어디에도 남기지 않는다.
+
+### 개발자 workstation 위생
+
+시크릿 값이 터미널에 한 번이라도 찍혔다면 다음을 고려:
+- **PowerShell**: `Clear-History` + `Remove-Item (Get-PSReadlineOption).HistorySavePath`
+- **bash/zsh**: `history -c && history -w` + `shred -u ~/.bash_history ~/.zsh_history`
+- **터미널 스크롤백**: 터미널 종료/재시작
+- **에이전트 로그**: Claude Code / Copilot 등은 JSONL 에 full transcript 보존 — 해당 세션 파일 삭제 필요 (동기화 폴더에 걸려 있으면 그쪽도)
+- **노출이 prod 시크릿이었으면**: 즉시 rotate. Cloud Run 은 `value_source.secret_key_ref` 의 `version = "latest"` 를 cold start 에서 픽업하므로 새 버전 추가 후 revision 강제 재배포.
 
 ## 애플리케이션 접속 설정
 
@@ -111,6 +147,23 @@ Cloud Run 배포 시 (후속 ADR) 는 `--set-secrets=DATABASE_URL=...,CREDENTIAL
   ```bash
   gcloud sql instances patch auto-workflow-staging --activation-policy=NEVER
   ```
+
+### Destroy 소요 시간 예산
+
+`terraform destroy` 는 과금 리소스 (Cloud SQL, Cloud Run, AR, secrets) 는 2~5분이면 끝나지만 **Cloud Run Direct VPC Egress 가 남기는 `serverless-ipv4-*` 주소 예약 GC 때문에 VPC/subnet/service-networking 해제가 10~30분 걸린다** (GCP 내부 reconciler 의존, CLI 강제 해제 경로 없음). 시연 중간에 destroy 를 끼워넣지 말 것 — 라이브 데모 직전 또는 직후 시간 예산 **45분** 잡고 진행.
+
+증상: `subnetwork ... is already being used by .../addresses/serverless-ipv4-*` 또는 `Service Networking Connection: Producer services are still using this connection`.
+
+우회: 폴링 스크립트로 재시도.
+```bash
+# 주소가 해제될 때까지 재시도 (최대 ~40분)
+for i in $(seq 1 40); do
+  gcloud compute addresses delete "serverless-ipv4-*" \
+    --region="$REGION" --project="$PROJECT" --quiet 2>/dev/null && break
+  sleep 60
+done
+terraform destroy -var-file=environments/prod.tfvars  # 남은 VPC/peering 마감
+```
 
 ## 트러블슈팅
 
