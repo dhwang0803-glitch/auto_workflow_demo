@@ -1,0 +1,102 @@
+# ADR-020 §7 — prod auto-deploy, triggered ONLY by push to `release`.
+#
+# Flow: module branch → PR → main → development (manual deploy to staging
+# project) → ff-only merge to release → this workflow runs.
+#
+# `Require linear history` branch protection on `release` stops merge commits
+# from landing; the guard job below is a belt-and-suspenders check.
+#
+# Secrets expected (Settings → Secrets → Actions):
+#   GCP_WIF_PROVIDER         — projects/<n>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#   GCP_WIF_SERVICE_ACCOUNT  — SA email impersonated via WIF (Cloud Run admin + AR writer + iam.SAUser)
+#
+# Variables expected (Settings → Variables → Actions):
+#   GCP_PROJECT_ID_PROD      — prod GCP project id
+#   GCP_REGION               — e.g. asia-northeast3
+#
+# The Cloud Run service name + AR repo match Terraform defaults; change here
+# only if you changed the corresponding Terraform variables.
+
+name: Deploy API to Cloud Run (prod)
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: read
+  id-token: write  # required for Workload Identity Federation
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false  # serialize prod rollouts — never cancel in-flight
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_PROD }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      AR_REPO: auto-workflow
+      SERVICE: auto-workflow-api-prod
+
+    steps:
+      - name: Checkout (full history for linearity check)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard — release must be linear (no merge commits)
+        run: |
+          parents="$(git log -1 --pretty=%P)"
+          count=$(echo "$parents" | wc -w)
+          if [ "$count" -gt 1 ]; then
+            echo "::error::HEAD has $count parents — release must be ff-only. Branch protection should have blocked this."
+            exit 1
+          fi
+
+      - name: Auth to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker auth for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Resolve image URI
+        id: image
+        run: |
+          IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/api:${GITHUB_SHA}"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Build API image
+        run: docker build -f API_Server/Dockerfile -t "$IMAGE" .
+
+      - name: Push API image to Artifact Registry
+        run: docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        # Terraform owns the service spec (env vars, sidecar, VPC, secrets,
+        # probes). --image is the only mutable field CI touches; ignore_changes
+        # on the Terraform side prevents revert on next plan.
+        # gcloud waits for the new revision to become ready; if startup_probe
+        # fails, this step exits non-zero and the deploy is rolled back.
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image="$IMAGE" \
+            --region="$GCP_REGION" \
+            --project="$GCP_PROJECT_ID" \
+            --quiet
+
+      - name: Summary
+        run: |
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- service: \`${SERVICE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- image: \`${IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
