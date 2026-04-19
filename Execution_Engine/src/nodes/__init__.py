@@ -40,3 +40,11 @@ from src.nodes import hubspot_create_contact  # noqa: F401
 from src.nodes import linear_create_issue  # noqa: F401
 from src.nodes import notion_create_page  # noqa: F401
 from src.nodes import notion_query_database  # noqa: F401
+
+# Google Workspace (ADR-019) — all share GoogleWorkspaceNode base class
+from src.nodes import gmail_send  # noqa: F401
+from src.nodes import google_calendar_create_event  # noqa: F401
+from src.nodes import google_docs_append_text  # noqa: F401
+from src.nodes import google_drive_upload_file  # noqa: F401
+from src.nodes import google_sheets_append_row  # noqa: F401
+from src.nodes import google_slides_create_presentation  # noqa: F401

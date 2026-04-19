@@ -16,7 +16,9 @@ def test_registry_contains_all_node_files():
     from src.nodes.registry import registry
 
     nodes_dir = Path(__file__).resolve().parents[1] / "src" / "nodes"
-    excluded = {"__init__.py", "base.py", "registry.py"}
+    # google_workspace.py is the shared ADR-019 base class, not a concrete
+    # node — its subclasses (gmail_send.py etc.) register themselves.
+    excluded = {"__init__.py", "base.py", "registry.py", "google_workspace.py"}
     node_files = {
         p.stem for p in nodes_dir.glob("*.py") if p.name not in excluded
     }

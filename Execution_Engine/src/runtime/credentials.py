@@ -51,6 +51,14 @@ async def resolve_credential_refs(
         cid = UUID(ref["credential_id"])
         plaintext = decrypted[cid]
         for src_key, dst_key in ref.get("inject", {}).items():
-            cfg[dst_key] = plaintext[src_key]
+            # ADR-019 — OAuth nodes don't pull plaintext fields (refresh
+            # is deferred to node execution), but still need the credential_id
+            # to call store.retrieve() / _ensure_fresh_token. The "credential_id"
+            # src key is the one escape hatch; all other keys must exist in
+            # the decrypted dict or the bulk_retrieve-ownership check is moot.
+            if src_key == "credential_id":
+                cfg[dst_key] = str(cid)
+            else:
+                cfg[dst_key] = plaintext[src_key]
         cfg.pop("credential_ref", None)
     return resolved
