@@ -212,3 +212,74 @@ resource "google_secret_manager_secret_version" "database_url" {
   secret      = google_secret_manager_secret.database_url.id
   secret_data = "postgresql+asyncpg://${google_sql_user.app.name}:${random_password.db_app.result}@127.0.0.1:5432/${google_sql_database.app.name}"
 }
+
+# ---- Google OAuth2 (ADR-019 Phase 6) ---------------------------------------
+#
+# Three secrets for Google Workspace integration. Values CANNOT be generated
+# by Terraform — they come from the GCP Console "OAuth 2.0 Client IDs" page
+# (manual registration per-project; see deploy/README_oauth.md). We only
+# reserve the secret names + IAM bindings here; placeholder versions exist so
+# the Cloud Run secret_key_ref doesn't 404 before the operator uploads real
+# values. Real values are injected via `gcloud secrets versions add`.
+
+resource "google_secret_manager_secret" "google_oauth_client_id" {
+  secret_id = "google-oauth-client-id-${var.environment}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "google_oauth_client_id_placeholder" {
+  secret      = google_secret_manager_secret.google_oauth_client_id.id
+  secret_data = "PLACEHOLDER_GOOGLE_OAUTH_CLIENT_ID_UPLOAD_FROM_GCP_CONSOLE"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret" "google_oauth_client_secret" {
+  secret_id = "google-oauth-client-secret-${var.environment}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "google_oauth_client_secret_placeholder" {
+  secret      = google_secret_manager_secret.google_oauth_client_secret.id
+  secret_data = "PLACEHOLDER_GOOGLE_OAUTH_CLIENT_SECRET_UPLOAD_FROM_GCP_CONSOLE"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# redirect_uri is a URL, not strictly secret — but we route it through
+# Secret Manager too so all three OAuth values share one injection path,
+# and so switching redirect URIs (e.g., Phase 2 custom domain migration
+# noted in ADR-019) is a one-command secret-version update without a
+# Terraform apply.
+resource "google_secret_manager_secret" "google_oauth_redirect_uri" {
+  secret_id = "google-oauth-redirect-uri-${var.environment}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "google_oauth_redirect_uri_placeholder" {
+  secret      = google_secret_manager_secret.google_oauth_redirect_uri.id
+  secret_data = "PLACEHOLDER_HTTPS_RUN_APP_URL_PLUS_API_V1_OAUTH_GOOGLE_CALLBACK"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}

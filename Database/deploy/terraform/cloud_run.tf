@@ -89,6 +89,27 @@ resource "google_secret_manager_secret_iam_member" "api_database_url" {
   member    = "serviceAccount:${google_service_account.api.email}"
 }
 
+# ADR-019 Phase 6 — OAuth secrets. Read by API_Server's Settings on boot;
+# missing values make GoogleOAuthClient None, which makes /oauth/google/*
+# return 503. Test containers bypass these via env overrides.
+resource "google_secret_manager_secret_iam_member" "api_google_oauth_client_id" {
+  secret_id = google_secret_manager_secret.google_oauth_client_id.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "api_google_oauth_client_secret" {
+  secret_id = google_secret_manager_secret.google_oauth_client_secret.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "api_google_oauth_redirect_uri" {
+  secret_id = google_secret_manager_secret.google_oauth_redirect_uri.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
 # ---- Cloud Run service ------------------------------------------------------
 #
 # Two containers:
@@ -188,6 +209,41 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      # ADR-019 Phase 6 — Google OAuth2. Upload real values via
+      # `gcloud secrets versions add` after registering a client in the
+      # GCP Console (see deploy/README_oauth.md). The API keeps serving
+      # non-OAuth traffic if these stay at placeholder values; only the
+      # /oauth/google/* routes and google_oauth credential_type break.
+      env {
+        name = "GOOGLE_OAUTH_CLIENT_ID"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.google_oauth_client_id.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "GOOGLE_OAUTH_CLIENT_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.google_oauth_client_secret.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "GOOGLE_OAUTH_REDIRECT_URI"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.google_oauth_redirect_uri.secret_id
+            version = "latest"
+          }
+        }
+      }
+
       resources {
         limits = {
           cpu    = var.api_cpu
@@ -236,6 +292,9 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_iam_member.api_database_url,
     google_secret_manager_secret_iam_member.api_credential_master_key,
     google_secret_manager_secret_iam_member.api_jwt_secret,
+    google_secret_manager_secret_iam_member.api_google_oauth_client_id,
+    google_secret_manager_secret_iam_member.api_google_oauth_client_secret,
+    google_secret_manager_secret_iam_member.api_google_oauth_redirect_uri,
   ]
 
   lifecycle {
