@@ -155,18 +155,39 @@ class InMemoryCredentialStore(CredentialStore):
                 )
         return out
 
-    # ADR-019 — OAuth methods stubbed (Phase 4 GoogleWorkspaceNode will wire
-    # these through a dedicated fake when EE-side tests land).
+    # ADR-019 — Google OAuth lifecycle. Mirrors the Postgres impl's shape:
+    # refresh_token stays in plaintext[ "refresh_token" ] (simulating the
+    # Fernet-encrypted encrypted_data column), mutable tokens live on
+    # plaintext["oauth_metadata"] (JSONB in prod).
     async def store_google_oauth(
         self, owner_id: UUID, name: str, *, refresh_token: str, oauth_metadata: dict,
     ) -> UUID:
-        raise NotImplementedError("google_oauth path out of scope for current EE tests")
+        cid = uuid4()
+        self._store[cid] = (
+            owner_id,
+            {"refresh_token": refresh_token, "oauth_metadata": deepcopy(oauth_metadata)},
+        )
+        return cid
 
     async def update_oauth_tokens(
         self, credential_id: UUID, *, access_token: str,
         token_expires_at: datetime, refresh_token: str | None = None,
     ) -> None:
-        raise NotImplementedError("google_oauth path out of scope for current EE tests")
+        owner_id, plaintext = self._store[credential_id]
+        md = dict(plaintext.get("oauth_metadata") or {})
+        md["access_token"] = access_token
+        md["token_expires_at"] = token_expires_at.isoformat()
+        md.pop("needs_reauth", None)
+        plaintext = dict(plaintext)
+        plaintext["oauth_metadata"] = md
+        if refresh_token is not None:
+            plaintext["refresh_token"] = refresh_token
+        self._store[credential_id] = (owner_id, plaintext)
 
     async def mark_needs_reauth(self, credential_id: UUID) -> None:
-        raise NotImplementedError("google_oauth path out of scope for current EE tests")
+        owner_id, plaintext = self._store[credential_id]
+        md = dict(plaintext.get("oauth_metadata") or {})
+        md["needs_reauth"] = True
+        plaintext = dict(plaintext)
+        plaintext["oauth_metadata"] = md
+        self._store[credential_id] = (owner_id, plaintext)
