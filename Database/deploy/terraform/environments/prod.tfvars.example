@@ -10,8 +10,9 @@ authorized_networks = []
 deletion_protection = true
 
 # Non-overlapping CIDR for Cloud Run egress. Keep distinct from staging if
-# both environments ever peer into the same org-wide network.
-cloudrun_subnet_cidr = "10.70.0.0/28"
+# both environments ever peer into the same org-wide network. /26 minimum
+# (see variables.tf — /28 runs out of IPs with min_instance_count > 0).
+cloudrun_subnet_cidr = "10.70.0.0/26"
 
 # Min 1 to avoid cold starts on real traffic (~$7/month). Max scales with
 # load; revisit once we have a sense of demand.

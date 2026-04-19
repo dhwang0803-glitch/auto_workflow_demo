@@ -55,9 +55,18 @@ variable "public_ip_enabled" {
 # ---- VPC (ADR-020 §2) -------------------------------------------------------
 
 variable "cloudrun_subnet_cidr" {
-  description = "Subnet CIDR used by Cloud Run Direct VPC Egress. /28 is the min Cloud Run accepts. Pick a block that does NOT overlap the services peering range (default 10.60.0.0/28)."
+  description = <<-EOT
+    Subnet CIDR used by Cloud Run Direct VPC Egress. /26 (64 IPs) is the
+    practical minimum: /28 technically satisfies the API but ran out of
+    assignable IPs under min_instance_count > 0 + the region's internal
+    reservations, leaving revisions stuck with "no sufficient IP addresses
+    in VPC network" (observed during 2026-04-19 prod bootstrap).
+
+    Pick a block that does NOT overlap the services peering range
+    (default 10.60.0.0/26).
+  EOT
   type        = string
-  default     = "10.60.0.0/28"
+  default     = "10.60.0.0/26"
 }
 
 # ---- Cloud Run (ADR-020 §6) -------------------------------------------------

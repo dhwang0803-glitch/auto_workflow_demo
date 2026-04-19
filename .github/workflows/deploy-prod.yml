@@ -31,6 +31,11 @@ concurrency:
   group: deploy-prod
   cancel-in-progress: false  # serialize prod rollouts — never cancel in-flight
 
+# Opt into Node.js 24 runtime for all JS actions. Default becomes Node 24 on
+# 2026-06-02; this flag surfaces any runtime issues before the forced switch.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -42,6 +47,32 @@ jobs:
       SERVICE: auto-workflow-api-prod
 
     steps:
+      - name: Validate inputs (no trailing whitespace)
+        # A single stray space in a GitHub Actions Variable value propagates
+        # into docker tag / gcloud args and fails with opaque errors like
+        # `invalid reference format`. Observed 2026-04-19 when GCP_REGION
+        # was saved as "asia-northeast3 " from the UI. Fail fast with a
+        # clear message instead of wasting a 30-second image build.
+        run: |
+          for pair in \
+            "GCP_PROJECT_ID:${GCP_PROJECT_ID}" \
+            "GCP_REGION:${GCP_REGION}" \
+            "AR_REPO:${AR_REPO}" \
+            "SERVICE:${SERVICE}"
+          do
+            name="${pair%%:*}"
+            val="${pair#*:}"
+            if [ -z "$val" ]; then
+              echo "::error::$name is empty — check Settings → Variables/Secrets"
+              exit 1
+            fi
+            trimmed=$(printf '%s' "$val" | tr -d '[:space:]')
+            if [ "$val" != "$trimmed" ]; then
+              echo "::error::$name contains whitespace ('$val') — fix via: gh variable set $name --body '<no-spaces>'"
+              exit 1
+            fi
+          done
+
       - name: Checkout (full history for linearity check)
         uses: actions/checkout@v4
         with:
