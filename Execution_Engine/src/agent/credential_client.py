@@ -85,3 +85,16 @@ class PreDecryptedCredentialStore(CredentialStore):
     async def list_by_owner(self, *args, **kwargs):
         # Agent never enumerates credentials — metadata listing lives on the server side.
         raise NotImplementedError("agent store is read-only")
+
+    # ADR-019 — OAuth lifecycle happens server-side only. Refresh rotation,
+    # persistence, and reauth flags are all DB writes, which the Agent has
+    # no path to perform. Execution_Engine on the agent side receives an
+    # already-fresh access_token inside the decrypted payload.
+    async def store_google_oauth(self, *args, **kwargs) -> UUID:
+        raise NotImplementedError("agent store is read-only")
+
+    async def update_oauth_tokens(self, *args, **kwargs) -> None:
+        raise NotImplementedError("agent does not persist token refreshes")
+
+    async def mark_needs_reauth(self, *args, **kwargs) -> None:
+        raise NotImplementedError("agent does not persist reauth flags")
