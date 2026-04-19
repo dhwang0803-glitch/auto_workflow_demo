@@ -70,6 +70,10 @@ if [ -z "$PROXY" ]; then
 fi
 
 PROXY_LOG="$(mktemp)"
+# No --private-ip: from a dev machine outside the VPC, the proxy needs the
+# public-IP path. For prod (private-only instance per ADR-020 §2) run this
+# from inside the VPC — Cloud Run Job, Cloud Shell w/ Private Google Access,
+# or a GCE bastion — and pass --private-ip there.
 "$PROXY" --port="$PORT" "$INSTANCE" > "$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 cleanup() {
