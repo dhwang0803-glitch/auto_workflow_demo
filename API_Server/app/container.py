@@ -21,6 +21,8 @@ from app.config import Settings
 from app.services.auth_service import AuthService
 from app.services.credential_service import CredentialService
 from app.services.email_sender import EmailSender, make_email_sender
+from app.services.google_oauth_client import GoogleOAuthClient
+from app.services.oauth_state import OAuthStateSigner
 from app.services.workflow_service import WorkflowService
 
 
@@ -59,6 +61,21 @@ class AppContainer:
             settings=settings,
         )
         self.credential_service = CredentialService(store=self.credential_store)
+        # ADR-019 — OAuth state signature reuses JWT_SECRET; no separate key
+        # to rotate. Google client is None when env vars aren't set, so
+        # /authorize and /callback 503 instead of crashing at import time.
+        self.oauth_state_signer = OAuthStateSigner(secret=settings.jwt_secret)
+        self.google_oauth_client = (
+            GoogleOAuthClient(
+                client_id=settings.google_oauth_client_id,
+                client_secret=settings.google_oauth_client_secret,
+                redirect_uri=settings.google_oauth_redirect_uri,
+            )
+            if settings.google_oauth_client_id
+            and settings.google_oauth_client_secret
+            and settings.google_oauth_redirect_uri
+            else None
+        )
         self.workflow_service = WorkflowService(
             repo=self.workflow_repo,
             execution_repo=self.execution_repo,

@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     # Tests may generate an ephemeral key via Fernet.generate_key().
     credential_master_key: str = ""
 
+    # ADR-019 — Google OAuth2 (Authorization Code + Refresh Token). Client
+    # registered in GCP Console; redirect_uri must match exactly (Cloud Run
+    # run.app URL in testing mode).
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""
+
     @property
     def scheduler_jobstore_url(self) -> str:
         # APScheduler's SQLAlchemyJobStore is sync. Route it to psycopg3 sync

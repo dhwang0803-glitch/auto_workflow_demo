@@ -77,10 +77,14 @@ class FernetCredentialStore(CredentialStore):
                 CredentialORM.id.in_(credential_ids),
             )
             rows = (await s.execute(stmt)).scalars().all()
-        found = {
-            row.id: json.loads(self._f.decrypt(row.encrypted_data).decode("utf-8"))
-            for row in rows
-        }
+        found = {}
+        for row in rows:
+            pt = json.loads(self._f.decrypt(row.encrypted_data).decode("utf-8"))
+            # Mirror `retrieve()` — OAuth rows carry access_token + expiry
+            # in oauth_metadata that the caller needs for refresh/reauth.
+            if row.oauth_metadata is not None:
+                pt["oauth_metadata"] = row.oauth_metadata
+            found[row.id] = pt
         if len(found) != len(set(credential_ids)):
             # Intentionally generic — enumerating which ids belong to a
             # different owner would leak existence to a malicious caller.
