@@ -141,6 +141,69 @@ variable "api_allow_unauthenticated" {
   default     = true
 }
 
+# ---- Execution_Engine Worker Pool (ADR-021) --------------------------------
+
+variable "ee_image_uri" {
+  description = <<-EOT
+    Container image URI for the Execution_Engine worker. Required — same
+    bootstrap flow as var.api_image_uri (ADR-020 §6-a):
+      terraform apply -target=google_artifact_registry_repository.images
+      # build + push worker image
+      terraform apply with ee_image_uri = "<region>-docker.pkg.dev/<project>/auto-workflow/worker:<tag>"
+    Steady state: CI updates out-of-band; `lifecycle.ignore_changes` on
+    the worker pool's image attribute prevents Terraform from reverting.
+  EOT
+  type        = string
+
+  validation {
+    condition     = length(var.ee_image_uri) > 0
+    error_message = "ee_image_uri must be set — see variable description for bootstrap."
+  }
+}
+
+variable "ee_worker_max_instances" {
+  description = "Worker Pools max_instance_count. MVP cap kept low; bump after observing queue depth in staging."
+  type        = number
+  default     = 5
+}
+
+variable "ee_worker_resources" {
+  description = "Worker container resource limits. 0.5 CPU / 512Mi is enough for the current node mix (HTTP-heavy Workspace calls). Bump memory if future ML/embedding nodes run on the same pool."
+  type = object({
+    cpu    = string
+    memory = string
+  })
+  default = {
+    cpu    = "0.5"
+    memory = "512Mi"
+  }
+}
+
+# ---- Memorystore Redis broker (ADR-021) ------------------------------------
+
+variable "broker_tier" {
+  description = "Memorystore tier. BASIC (single node, no failover) for staging; STANDARD_HA for prod (ADR-021 §9 — revisit at prod entry)."
+  type        = string
+  default     = "BASIC"
+
+  validation {
+    condition     = contains(["BASIC", "STANDARD_HA"], var.broker_tier)
+    error_message = "broker_tier must be BASIC or STANDARD_HA."
+  }
+}
+
+variable "broker_memory_size_gb" {
+  description = "Memorystore memory size. 1GB is the minimum BASIC shape (~$35/mo in asia-northeast3). Celery queue + SETNX keys fit comfortably under 100MB at MVP scale."
+  type        = number
+  default     = 1
+}
+
+variable "broker_redis_version" {
+  description = "Memorystore Redis version. Pinned so provider upgrades don't silently flip. Bump via PR alongside an ADR-021 Update note."
+  type        = string
+  default     = "REDIS_7_2"
+}
+
 variable "db_name" {
   description = "Application database name (matches what migrate.py writes to)."
   type        = string

@@ -17,6 +17,13 @@ provider "google" {
   region  = var.region
 }
 
+# ADR-021 — google-beta mirrors the google provider. Only worker.tf resources
+# reference it (Worker Pools v2 is beta-only until GA).
+provider "google-beta" {
+  project = var.project_id
+  region  = var.region
+}
+
 # ---- API enablement ---------------------------------------------------------
 # Explicit so `terraform apply` on a fresh project doesn't error on the first
 # resource that needs an un-enabled API.
