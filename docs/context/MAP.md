@@ -19,6 +19,8 @@ auto_workflow_demo/
 
 `docs` 브랜치는 **위키 전용**: `docs/context/*` 편집만 허용되며, 코드 브랜치는 이 위키를 읽기 전용으로 참조한다. 자세한 규칙은 [`_claude_templates/CLAUDE_docs.md`](../../_claude_templates/CLAUDE_docs.md) 참고.
 
+`infra` 브랜치는 **인프라 전용** (2026-04-20 신설, 장기 유지): Terraform HCL, 배포/runbook 스크립트, GCP IAM, CI/CD workflow 등 크로스 모듈 operational 파일을 전담. 모듈 1개에만 속한 operational 파일(예: 단일 브랜치 Dockerfile)은 해당 모듈 브랜치에 둔다. 임시 `feat/xxx`, `fix/xxx` 브랜치 양산 금지 — 인프라 변경은 `infra` 브랜치에서 직접 PR.
+
 ## 브랜치별 구조
 
 ### `API_Server` (Core Layer — FastAPI)
@@ -74,6 +76,24 @@ Inference_Service/
 └── tests/               서빙 헬스체크, structured output 검증
 ```
 세부 템플릿(`_claude_templates/CLAUDE_Inference_Service.md`)과 post-checkout 훅 case 분기는 **후속 작업**. 현재는 ADR-008 초안 기반 예상 구조.
+
+### `infra` (Infrastructure Layer — Terraform + GCP)
+```
+infra/
+├── terraform/          Cloud SQL / Cloud Run / Secret Manager / VPC / IAM HCL
+│   ├── main.tf         cloud sql + secret manager
+│   ├── cloud_run.tf    Cloud Run v2 + AR + SA + IAM + Auth Proxy 사이드카
+│   ├── network.tf      VPC + 서비스 네트워킹 피어링
+│   ├── variables.tf    outputs.tf / versions.tf
+│   └── environments/   staging.tfvars.example / prod.tfvars.example (실값은 gitignore)
+├── scripts/            inject_oauth_secrets.sh / migrate_via_proxy.sh / run_e2e_workspace_node.sh
+├── docs/               README.md (Cloud Run 배포 runbook) / README_oauth.md (OAuth runbook)
+├── agents/             infra TDD 역할 에이전트 (ORCHESTRATOR/DEVELOPER/TESTER/...)
+├── plans/              ADR Phase 별 실행 PLAN
+├── reports/            Phase 완료 결과 보고서
+└── tests/              bats 단위 테스트 (정적 + plan 검증)
+```
+관련 ADR: ADR-018 (Cloud SQL), ADR-019 (Google OAuth), ADR-020 (Cloud Run 배포). 세부: [`infra/CLAUDE.md`](../../infra/CLAUDE.md)
 
 ### `Frontend` (Frontend Layer — Next.js)
 ```
