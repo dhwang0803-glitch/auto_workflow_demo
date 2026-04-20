@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from typing import Any
 from uuid import UUID
 
 from celery import Celery
@@ -29,6 +31,26 @@ celery_app = Celery("execution_engine")
 celery_app.config_from_object("config.celery_config")
 
 
+# ADR-021 §5 — SETNX idempotency. 24h TTL: workflow runtimes are measured
+# in seconds; 24h is long enough to absorb any pathological Celery retry
+# window and short enough that Redis memory stays bounded. Values:
+# "running" while in-flight, "completed" after finalize.
+IDEMPOTENCY_KEY_TEMPLATE = "execution:{execution_id}"
+IDEMPOTENCY_TTL_SECONDS = 86400
+
+
+def _make_redis_client() -> Any:
+    """Build an async Redis client from CELERY_BROKER_URL.
+
+    Factored out so tests can monkeypatch it to return fakeredis. decode_responses
+    is True so SETNX return values + stored sentinels round-trip as str, not bytes.
+    """
+    import redis.asyncio as redis_async
+
+    url = os.environ["CELERY_BROKER_URL"]
+    return redis_async.from_url(url, decode_responses=True)
+
+
 @celery_app.task(name="execute_workflow", bind=True, max_retries=0)
 def run_workflow_task(self, execution_id: str) -> None:
     # Build a fresh container per task. A module-level cached container
@@ -41,17 +63,47 @@ def run_workflow_task(self, execution_id: str) -> None:
 
 
 async def _run_task(execution_id: str) -> None:
-    c = WorkerContainer()
+    # ADR-021 §5 — SETNX dedup guards against:
+    #   1. Celery `task_acks_late=True` + worker crash → task redelivery
+    #   2. API_Server double-enqueue on the same execution_id (e.g., a
+    #      retry-on-timeout in the caller pattern)
+    # execution_id is a UUID, so the "same id collides across users" case
+    # can't happen. Lock release transitions the value to "completed"
+    # rather than DEL so a late redeliver still sees the sentinel and
+    # skips (instead of re-acquiring because the key expired between our
+    # DEL and the redeliver).
+    redis_client = _make_redis_client()
+    key = IDEMPOTENCY_KEY_TEMPLATE.format(execution_id=execution_id)
     try:
-        await _execute(
-            execution_id,
-            exec_repo=c.exec_repo,
-            wf_repo=c.wf_repo,
-            node_registry=c.node_registry,
-            credential_store=c.credential_store,
+        acquired = await redis_client.set(
+            key, "running", nx=True, ex=IDEMPOTENCY_TTL_SECONDS,
         )
+        if not acquired:
+            logger.info(
+                "execution %s already in-flight or completed, skipping duplicate",
+                execution_id,
+            )
+            return
+
+        c = WorkerContainer()
+        try:
+            await _execute(
+                execution_id,
+                exec_repo=c.exec_repo,
+                wf_repo=c.wf_repo,
+                node_registry=c.node_registry,
+                credential_store=c.credential_store,
+            )
+        finally:
+            await c.dispose()
+            await redis_client.set(
+                key, "completed", ex=IDEMPOTENCY_TTL_SECONDS,
+            )
     finally:
-        await c.dispose()
+        # redis.asyncio clients hold a connection pool that survives past
+        # the event loop unless explicitly closed, leading to "Task was
+        # destroyed but it is pending" warnings in the Celery log.
+        await redis_client.aclose()
 
 
 async def _execute(
