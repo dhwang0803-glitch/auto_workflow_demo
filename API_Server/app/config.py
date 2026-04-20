@@ -38,6 +38,22 @@ class Settings(BaseSettings):
     agent_jwt_ttl_hours: int = 24
     celery_broker_url: str = ""
 
+    # ADR-021 §5 stopgap — "inline" runs the DAG in-process via
+    # Execution_Engine._execute (bypasses Celery) so the e2e path works in
+    # environments without a Worker Pool. "celery" is the steady state.
+    # PLAN_21 Phase 6 removes this field + the inline branch.
+    serverless_execution_mode: Literal["celery", "inline"] = "celery"
+
+    # ADR-021 §5-b — Cloud Run Worker Pools wake-up. Empty values disable
+    # the patch call (local/CI). Terraform outputs plug these in prod.
+    gcp_project_id: str = ""
+    gcp_region: str = ""
+    worker_pool_name: str = ""
+    # 30s covers typical burst-execute patterns without hammering the Admin
+    # API (quota: 60 writes/min/project as of 2026-04). Tune via env if
+    # observed traffic justifies a lower ceiling.
+    worker_wake_throttle_seconds: float = 30.0
+
     # Fernet master key (base64) for CredentialStore. ADR-004.
     # Tests may generate an ephemeral key via Fernet.generate_key().
     credential_master_key: str = ""
