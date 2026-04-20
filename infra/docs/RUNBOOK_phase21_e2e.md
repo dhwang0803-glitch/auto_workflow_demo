@@ -20,7 +20,7 @@ PROJECT="$(gcloud config get-value project)"
 TAG="phase21-$(git rev-parse --short HEAD)"
 IMG="${REGION}-docker.pkg.dev/${PROJECT}/auto-workflow/worker:${TAG}"
 
-docker build -t "$IMG" -f Execution_Engine/Dockerfile Execution_Engine/
+docker build -t "$IMG" -f Execution_Engine/Dockerfile .
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 docker push "$IMG"
 echo "$IMG"  # ← 다음 step 의 ee_image_uri 로 사용

@@ -246,10 +246,23 @@ resource "google_cloud_run_v2_service" "api" {
 
       # ADR-021 — wake-up target + broker URL. Both non-secret. WORKER_POOL_NAME
       # is the bare name (not the fully-qualified resource path); wake_worker.py
-      # composes `projects/<project>/locations/<region>/workerPools/<name>`.
+      # composes `projects/<project>/locations/<region>/workerPools/<name>` from
+      # the three GCP_* env vars below. All three are required — wake_worker's
+      # `_configured()` check short-circuits to a no-op if any is empty, which
+      # silently disables the wake path in a deployed environment.
       env {
         name  = "WORKER_POOL_NAME"
         value = google_cloud_run_v2_worker_pool.ee.name
+      }
+
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
+
+      env {
+        name  = "GCP_REGION"
+        value = var.region
       }
 
       env {

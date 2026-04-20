@@ -54,13 +54,20 @@ EE_POOL="auto-workflow-ee-${ENV_NAME}"
 # pulls the workflow graph from DB, not from request body.
 execute_once() {
   local resp
+  # Empty JSON body required — GCLB in front of Cloud Run rejects POST without
+  # Content-Length header (HTTP 411). Worker pulls the workflow graph from DB,
+  # not from request body, so `{}` is semantically fine.
   resp="$(curl -sS -X POST \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
     --fail-with-body \
+    -d '{}' \
     "${API_BASE}/api/v1/workflows/${WF_ID}/execute")"
   # Tolerate both {"id":"..."} (current contract) and {"execution_id":"..."}.
-  echo "$resp" | python -c "import json,sys;d=json.load(sys.stdin);print(d.get('id') or d.get('execution_id'))"
+  # UUID-only extraction — no python dependency (Git Bash on Windows often
+  # lacks python on PATH). grep-first-UUID avoids sed's greedy `.*` tripping
+  # over later `"id"` fields (node ids inside the graph body, etc.).
+  echo "$resp" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1
 }
 
 # Poll /executions/{id} until status is a terminal value, timeout 120s.
@@ -71,7 +78,7 @@ wait_terminal() {
     local status
     status="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
       "${API_BASE}/api/v1/executions/${exec_id}" \
-      | python -c "import json,sys;print(json.load(sys.stdin).get('status',''))")"
+      | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
     case "$status" in
       success|failed|error) echo "$status"; return 0 ;;
       "") echo "unknown-response" >&2; return 1 ;;

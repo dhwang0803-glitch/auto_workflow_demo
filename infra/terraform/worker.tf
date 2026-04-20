@@ -171,6 +171,30 @@ resource "google_cloud_run_v2_worker_pool" "ee" {
         }
       }
     }
+
+    # Cloud SQL Auth Proxy sidecar — mirrors cloud_run.tf pattern so worker
+    # can reach Postgres via the same DATABASE_URL shape (localhost:5432)
+    # that API_Server already uses. Without this the worker gets
+    # `ConnectionRefusedError: ('127.0.0.1', 5432)` on every Celery task
+    # because the secret URL assumes a proxy listening on localhost.
+    containers {
+      name  = "cloudsql-proxy"
+      image = var.cloudsql_proxy_image
+
+      args = [
+        "--private-ip",
+        "--structured-logs",
+        "--port=5432",
+        google_sql_database_instance.main.connection_name,
+      ]
+
+      resources {
+        limits = {
+          cpu    = "1"
+          memory = "256Mi"
+        }
+      }
+    }
   }
 
   depends_on = [
@@ -215,4 +239,36 @@ resource "google_cloud_run_v2_worker_pool_iam_member" "api_wake_permission" {
   name     = google_cloud_run_v2_worker_pool.ee.name
   role     = "roles/run.developer"
   member   = "serviceAccount:${google_service_account.api.email}"
+}
+
+# actAs bindings required by Cloud Run Admin API's workerPools.patch.
+#
+# Even when `update_mask = ["scaling.manual_instance_count"]`, the gRPC
+# server validates `iam.serviceAccounts.actAs` on the service account the
+# pool runs as AND on the project's compute default SA (observed 2026-04-20
+# — PermissionDenied until both bindings were granted). The compute-default
+# check appears to be triggered by proto3 default-initialized `template.
+# service_account=""` in the partial WorkerPool the client sends; server
+# resolves "" to the compute default SA and checks actAs before applying
+# the mask-scoped update.
+#
+# Follow-up (PLAN_21 post-Phase-6): patch wake_worker.py to read-modify-write
+# the full WorkerPool so `template.service_account` is always set explicitly,
+# then drop the compute-default binding. Until then, both are required for
+# reproducible terraform apply — without them the first wake call after a
+# fresh apply 403s and the pool stays cold.
+resource "google_service_account_iam_member" "api_actas_ee_runtime" {
+  service_account_id = google_service_account.ee_runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.api.email}"
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+resource "google_service_account_iam_member" "api_actas_compute_default" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${data.google_project.current.number}-compute@developer.gserviceaccount.com"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.api.email}"
 }
