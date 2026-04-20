@@ -1,0 +1,12 @@
+# gitleaks false-positive allowlist — fingerprint form:
+# <commit-sha>:<path>:<rule>:<line>
+#
+# Scope: only for documented example strings inside agent instruction files
+# or ADR/docs, where the "secret-looking" literal is an illustration of a
+# FAIL pattern. Real secrets must never be added here — always rotate.
+
+# SECURITY_AUDITOR.md example "api_key = \"abcd1234efgh\"" — fake literal
+# used as a Python "Before (FAIL)" illustration. Removed in a follow-up
+# commit (chore(infra): optimize agents), but the original add in the
+# brand-scaffold commit is still scanned. Not a real key.
+2545e66658f4a5d37a3b8290032068c0e07d5148:infra/agents/SECURITY_AUDITOR.md:generic-api-key:316
