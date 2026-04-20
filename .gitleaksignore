@@ -10,3 +10,7 @@
 # commit (chore(infra): optimize agents), but the original add in the
 # brand-scaffold commit is still scanned. Not a real key.
 2545e66658f4a5d37a3b8290032068c0e07d5148:infra/agents/SECURITY_AUDITOR.md:generic-api-key:316
+# Same fake literal re-added when PR-a moved agents/ into the new infra/
+# brand directory (infra scaffold commit). Still the same "Before (FAIL)"
+# illustration line — not a real key.
+3902aa37af4858e5f4104f1a76b1363ceb23257a:infra/agents/SECURITY_AUDITOR.md:generic-api-key:316
