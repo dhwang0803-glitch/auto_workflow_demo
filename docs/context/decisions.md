@@ -1339,6 +1339,11 @@ OAuth 설계 공간은 넓다 — 플로우 종류, 토큰 저장 방식, refres
 
 - **최소 권한**: `gmail` 풀스코프 대신 `gmail.send` + `gmail.readonly` 로 분리. `drive` 풀스코프 대신 `drive.file` (앱이 만든 파일만) → Google verification 통과 난이도 대폭 감소.
 - **Incremental consent**: 사용자가 Gmail 노드만 쓰다가 나중에 Sheets 노드를 추가하면 `/authorize` 요청 시 `include_granted_scopes=true` 로 기존 동의를 유지하며 추가 scope 만 요청. Refresh token 은 그대로 재사용.
+- **구현 메커니즘** (Phase 6 hardening, 2026-04-20):
+  - `POST /authorize` 가 `extends_credential_id: UUID | None` 파라미터를 받는다. 설정 시 `credential_name` 은 무시(기존 row 사용) — Pydantic xor 검증.
+  - 라우터가 owner 검증 (`bulk_retrieve(owner_id=user.id)`) 후 기존 `oauth_metadata.granted_scopes` 와 새 요청 scope 의 합집합을 계산해 consent URL 에 explicit 하게 실어 보낸다 (`include_granted_scopes=true` 만 의지하면 state 의 scope 와 Google 응답 scope 가 어긋남).
+  - 콜백의 `existing_credential_id` 분기는 (a) `refresh_token` 이 없어도 정상 처리 — Google 은 incremental 시 신규 refresh token 을 반환하지 않는 게 정상 동작이고, 기존 stored token 을 그대로 재사용한다. (b) `update_oauth_tokens(granted_scopes=token_resp.scope.split())` 로 Google 의 권위 있는 scope 응답을 `oauth_metadata.{scopes,granted_scopes}` 양쪽에 REPLACE.
+  - 첫 consent 분기는 종전대로 `refresh_token` 필수 — 없으면 `oauth=error&reason=no_refresh_token` 으로 redirect (Google testing mode 에서 sensitive scope 미체크 등 진단 신호).
 - **기각**: "전 스코프 한 번에 동의" 패턴 — consent screen 이 길어지고 verification 부담 ↑, 체험 고객 거부감 ↑.
 
 ### 3. 저장 스키마 — `credentials.oauth_metadata JSONB` 컬럼 (별도 `oauth_tokens` 테이블 기각)
