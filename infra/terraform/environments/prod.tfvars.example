@@ -1,0 +1,40 @@
+# Copy to prod.tfvars and edit. prod.tfvars is gitignored (real values).
+project_id  = "auto-workflow-prod-REPLACE"
+region      = "asia-northeast3"
+environment = "prod"
+
+# ADR-020 §2 — prod never has public IP. Cloud Run + Auth Proxy only.
+public_ip_enabled   = false
+authorized_networks = []
+
+deletion_protection = true
+
+# Non-overlapping CIDR for Cloud Run egress. Keep distinct from staging if
+# both environments ever peer into the same org-wide network. /26 minimum
+# (see variables.tf — /28 runs out of IPs with min_instance_count > 0).
+cloudrun_subnet_cidr = "10.70.0.0/26"
+
+# Min 1 to avoid cold starts on real traffic (~$7/month). Max scales with
+# load; revisit once we have a sense of demand.
+api_min_instances = 1
+api_max_instances = 10
+
+# Bigger shape for prod workloads.
+api_cpu    = "2"
+api_memory = "1Gi"
+
+# ADR-020 §6 — REQUIRED. No default. Set to the exact image tag promoted
+# from staging. CI `release` branch push is what normally bumps this in
+# practice (via gcloud), but first prod apply still needs a real URI here.
+api_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/api:REPLACE-TAG"
+
+# Set to the real prod Cloud Run HTTPS URL (or custom domain) and re-apply.
+app_base_url = "https://api.example.com"
+
+# Prod starts private; flip to false once an authenticated frontend or IAP
+# sits in front.
+api_allow_unauthenticated = false
+
+# When prod traffic starts, bump this:
+# db_tier         = "db-custom-2-7680"
+# db_disk_size_gb = 50
