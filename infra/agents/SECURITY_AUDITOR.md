@@ -1,349 +1,284 @@
-# Security Auditor Agent 지시사항
+# Security Auditor Agent — infra 브랜치 지시사항
 
 ## 역할
-코드 작성 후 실행 전, 또는 git commit 직전에 호출된다.
-**개인식별 정보·자격증명·실제 인프라 정보**가 코드나 스테이징 영역에 노출되었는지 점검하고,
-위반 항목이 있으면 즉시 차단한다.
 
-API_Server, Database, Execution_Engine, Frontend 등 **모든 브랜치에 적용**한다.
+Terraform / bash 스크립트 / GitHub Actions 변경 직후·커밋 직전에 호출된다.
+**자격증명·실제 인프라 식별자·권한 설정·상태 파일**이 코드나 스테이징 영역에
+노출됐는지 점검하고, 위반이 있으면 즉시 차단한다.
+
+루트 `CLAUDE.md` 보안 규칙과 `infra/CLAUDE.md` "보안 주의사항"의 실행기다 —
+동일 규칙을 코드/CI 관점에서 기계적으로 검증한다.
+
+Python 코드 규칙(하드코딩 자격증명, N+1 등)은 이 에이전트의 범위가 아니다.
+해당 점검은 각 브랜치의 SECURITY_AUDITOR 가 담당한다.
 
 ---
 
 ## 실행 시점
 
-1. **코드 작성/수정 직후, 실행 전** — 파일에 자격증명이 들어갔는지 확인
-2. **git commit 직전** — 스테이징 영역 전수 검사 후 커밋 허용 여부 결정
+1. **Terraform/스크립트/워크플로우 수정 직후**: `*.tf`, `infra/scripts/*.sh`,
+   `.github/workflows/*.yml`, `infra/terraform/environments/*.tfvars*` 중
+   하나라도 수정됐다면 실행.
+2. **git commit 직전**: 스테이징 영역 전수 검사 후 커밋 허용 여부 결정.
 
 ---
 
 ## 점검 절차
 
-### Step 0. 점검 대상 파일 수집
+### Step 0. 점검 대상 수집
 
 ```bash
-# 방법 A: 스테이징된 파일 (커밋 직전)
-git diff --cached --name-only --diff-filter=ACM
+STAGED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
+MODIFIED=$(git diff HEAD --name-only --diff-filter=ACM 2>/dev/null)
+TARGETS=$(echo -e "${STAGED}\n${MODIFIED}" | sort -u | grep -v '^$')
 
-# 방법 B: 최근 수정된 파일 (실행 전 점검)
-git diff HEAD --name-only --diff-filter=ACM
-# 없으면 마지막 커밋 기준
-git diff HEAD~1 HEAD --name-only --diff-filter=ACM
+TF_FILES=$(echo "$TARGETS" | grep -E '\.tf$|\.tfvars$' || true)
+SH_FILES=$(echo "$TARGETS" | grep -E '\.sh$' || true)
+WF_FILES=$(echo "$TARGETS" | grep -E '^\.github/workflows/.+\.ya?ml$' || true)
 ```
-
-수집한 파일 목록을 기준으로 이하 체크를 실행한다.
 
 ---
 
-### [S01] 하드코딩 자격증명 탐지 — FAIL 시 즉시 차단
+### [I01] tfvars 실값 커밋 — FAIL 시 즉시 차단
 
-점검 대상: 수집된 `.py` 파일 전체
+`*.tfvars` 는 로컬 전용, `*.tfvars.example` 만 커밋 가능.
 
 ```bash
-grep -rn --include="*.py" \
-  -iE "(api_key|password|secret|token|passwd|pwd)\s*=\s*['\"][^'\"]{6,}['\"]" \
-  <대상 파일들>
+git diff --cached --name-only | grep -E '\.tfvars$' | grep -v '\.example$'
 ```
 
-**판정 기준**:
-- 매칭 라인이 있으면 → **FAIL**
-- 예외: `os.getenv(...)`, `dotenv_values(...)`, `config.get(...)` 형태는 PASS
-- 예외: 변수명에 `example`, `sample`, `test`, `placeholder` 포함 시 PASS
+매칭 → **FAIL**. 조치: `git rm --cached <file>` + `.gitignore` 에 `*.tfvars` 추가 확인.
 
 ---
 
-### [S02] os.getenv() 실제 인프라 기본값 탐지 — FAIL 시 즉시 차단
+### [I02] tfstate 커밋 — FAIL 시 즉시 차단
+
+ADR-020 상 remote backend 미적용. state 는 로컬에만.
 
 ```bash
-grep -rn --include="*.py" \
-  -E "os\.getenv\s*\([^)]+,\s*['\"][^'\"]+['\"]" \
-  <대상 파일들>
+git ls-files | grep -E 'terraform\.tfstate(\.backup)?$|\.terraform/'
+git diff --cached --name-only | grep -E 'terraform\.tfstate|\.terraform/'
 ```
 
-추출된 라인에서 기본값(두 번째 인자)이 아래에 해당하면 **FAIL**:
-- 실제 IP 패턴: `\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`
-- DB명 패턴: `localhost`, `postgres` 이외의 특정 DB명 (예: `myapp_db`, `prod_db` 등 프로젝트 전용 DB명)
-- 사용자명 패턴: `postgres` 이외의 특정 사용자명 (예: `admin`, `dbadmin` 등 기본값이 아닌 사용자명)
-
-허용되는 기본값(PASS):
-- `"localhost"`, `"5432"`, `"postgres"`, `""`, `"http://localhost:11434"`, `"0.0.0.0"`
+매칭 → **FAIL**.
 
 ---
 
-### [S03] env.get() / dict.get() 실제 인프라 기본값 탐지 — FAIL 시 차단
+### [I03] Terraform 코드 내 자격증명 하드코딩 — FAIL 시 차단
+
+Terraform 리소스/변수 기본값에 실제 시크릿 값이 들어갔는지 확인.
 
 ```bash
-grep -rn --include="*.py" \
-  -E "env\.get\s*\([^)]+,\s*['\"][^'\"]+['\"]" \
-  <대상 파일들>
+echo "$TF_FILES" | xargs grep -nE \
+  '(secret_data|password|client_secret|api_key|token)\s*=\s*"[^"$]{12,}"' 2>/dev/null \
+  | grep -viE 'PLACEHOLDER|REPLACE_ME|example|var\.|random_password|data\.'
 ```
 
-S02와 동일한 기준으로 기본값 판정.
+예외(PASS):
+- `secret_data = "PLACEHOLDER..."` — 의도된 플레이스홀더
+- `secret_data = random_password.X.result` — Terraform 생성값
+- `secret_data = var.foo` / `data.X.Y` — 참조
+- `.example` 확장자 파일
+
+매칭 → **FAIL**. `var.` 로 빼거나 Secret Manager 참조로 전환.
 
 ---
 
-### [S04] 실제 IP 주소 하드코딩 탐지 — FAIL 시 차단
+### [I04] 실제 GCP 프로젝트 ID / 인스턴스 / 버킷 하드코딩 — FAIL 시 차단
+
+`infra/scripts/*.sh` 는 `gcloud config get-value project` 또는
+`terraform output` 으로 동적 조회해야 한다. 실제 식별자 박제 금지.
 
 ```bash
-grep -rn --include="*.py" \
-  -E "\"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\"" \
-  <대상 파일들>
+echo "$SH_FILES $TF_FILES" | xargs grep -nE \
+  '"autoworkflowdemo"|"auto-workflow-(staging|prod)"|"gs://auto-workflow' 2>/dev/null \
+  | grep -vE '(^\s*#|var\.|locals\.|example)'
 ```
 
-**판정 기준**:
-- `"127.0.0.1"`, `"0.0.0.0"` → PASS (루프백/와일드카드)
-- 그 외 실제 IP → **FAIL**
+예외:
+- `environments/*.tfvars.example` (예시 목적 명시)
+- 주석 (`# ...`)
+- 변수 선언부 (`variable "project_id" { default = "autoworkflowdemo" }` 은 **FAIL** — 기본값 비우기)
+
+매칭 → **FAIL**.
 
 ---
 
-### [S05] .env 파일 스테이징 여부 — FAIL 시 즉시 차단
+### [I05] gcloud 시크릿 값 stdout 유출 — FAIL 시 차단
 
+`feedback_secret_read_pipe` 메모리 + `infra/CLAUDE.md` 보안 §1.
+
+금지 패턴:
 ```bash
-git diff --cached --name-only | grep -E "(^|/)\.env(\.|$)"
+gcloud secrets versions access latest --secret=X                    # stdout 로 평문
+echo "$DB_PASS"                                                      # 쉘 변수라도 echo 금지
+gcloud secrets versions access ... | tee ...                         # 파일에도 평문
+gcloud secrets versions access ... > /tmp/x                          # 파일 리다이렉트
 ```
 
-`.env`, `.env.local`, `.env.production` 등이 staged → **FAIL**
-`.env.example` → PASS
+점검:
+```bash
+echo "$SH_FILES $WF_FILES" | xargs grep -nE \
+  'gcloud secrets versions access[^|]*$|gcloud secrets versions access.*\|\s*tee|gcloud secrets versions access.*>\s*[^/]' 2>/dev/null \
+  | grep -vE '\$\(\s*gcloud secrets|VAR="?\$\('
+```
+
+허용 패턴:
+- `VAL="$(gcloud secrets versions access ...)"` — 쉘 변수 캡처
+- `echo -n "$value" | gcloud secrets versions add ... --data-file=-` — 쓰기 경로
+- 점검 스크립트 자체의 doc 예제 (이 파일 / README)
+
+매칭 → **FAIL**.
 
 ---
 
-### [S06] 민감 파일 git 추적 여부 — FAIL 시 차단
+### [I06] GitHub Actions 시크릿 평문 로그 — FAIL 시 차단
+
+`${{ secrets.X }}` 를 run 스텝에서 직접 echo / env 노출 금지.
 
 ```bash
-git ls-files | grep -E "\.(env|pem|key|p12|pfx)$|credentials\.json|api_keys\.env|secrets\.json"
+echo "$WF_FILES" | xargs grep -nE \
+  'echo[^#]*\$\{\{\s*secrets\.|env:\s*DEBUG:\s*1' 2>/dev/null
 ```
 
-위 패턴 파일이 git에 추적 중 → **FAIL**
+매칭 → **FAIL**. `::add-mask::` 또는 환경변수로만 주입.
 
 ---
 
-### [S07] .gitignore 필수 항목 누락 — FAIL 시 차단
+### [I07] deletion_protection / ignore_changes — FAIL 시 차단
+
+prod 리소스(DB instance) 에서 `deletion_protection = false` 로 직접 설정되면 **FAIL**.
+반드시 `var.deletion_protection` 경유.
 
 ```bash
-cat .gitignore
+echo "$TF_FILES" | xargs grep -nE \
+  'deletion_protection\s*=\s*(false|true)\b' 2>/dev/null \
+  | grep -v 'var\.'
 ```
 
-아래 항목이 **모두** 포함되어야 PASS:
-- `.env` 또는 `.env.*`
-- `*.pem`
-- `*.key`
-- `credentials.json`
-- `.claude/settings.local.json`
+Secret Manager placeholder 리소스의 `lifecycle { ignore_changes = [secret_data] }`
+누락도 점검 — placeholder 를 Terraform 이 덮어쓰면 out-of-band 주입한 실제 값이
+날아간다.
 
-하나라도 없으면 → **FAIL**
+```bash
+# placeholder 버전 리소스는 ignore_changes 가 반드시 있어야 함
+echo "$TF_FILES" | xargs grep -nB2 -A8 'PLACEHOLDER' 2>/dev/null \
+  | grep -B10 '_placeholder"' | grep -q 'ignore_changes' \
+  || echo "[I07 FAIL] PLACEHOLDER secret_version 에 ignore_changes 누락 가능"
+```
 
 ---
 
-### [S08] 하드코딩 로컬 경로 — WARNING (커밋 허용, 보고 필요)
+### [I08] GitHub Ruleset 우회 액터 — WARNING
+
+`deployment-bot`, `repository-admin` 등이 bypass_actors 에 추가되면 알림.
+코드로 관리되진 않지만 infra 브랜치가 운영 소유자이므로 감지 시 보고.
 
 ```bash
-grep -rn --include="*.py" \
-  -E "\"C:/Users/[^\"]+\"|'C:/Users/[^']+'" \
-  <대상 파일들>
+# 현재 룰셋 상태 조회 (수정 없이 확인만)
+gh api /repos/:owner/:repo/rulesets 2>/dev/null | jq -r '.[].name' || true
 ```
 
-**판정 기준**:
-- 모듈 최상단 상수(`DEFAULT_*`, `MODEL_PATH` 등)이고 CLI 인자(`argparse`)로 덮어쓸 수 있으면 → **WARNING** (허용)
-- 함수 내부 직접 사용 → **FAIL**
+변경 감지 X — 수동 확인만. infra/CLAUDE.md 운영 섹션에 기록.
 
-판정 방법: 해당 라인이 함수 안인지 확인
+---
+
+### [I09] .gitignore 필수 항목 (infra 전용)
+
 ```bash
-# 라인 주변 컨텍스트 확인 (-B5: 위 5줄)
-grep -n "C:/Users/" <파일> | while read line; do
-  lineno=$(echo "$line" | cut -d: -f1)
-  # lineno 위 5줄에 'def ' 패턴이 있으면 함수 내부
+for pat in '*.tfvars' 'terraform.tfstate' '.terraform/' '.tmp/' '/infra/terraform/environments/*.tfvars'; do
+  grep -qF "$pat" .gitignore 2>/dev/null || echo "[I09 WARN] .gitignore 누락 후보: $pat"
 done
 ```
 
+최소 `*.tfvars`, `terraform.tfstate*`, `.terraform/` 는 반드시 포함.
+
 ---
 
-## 전체 실행 스크립트
+### [I10] IAM 최소 권한 점검 — WARNING
 
-아래 스크립트를 Bash 도구로 실행한다. `TARGET_FILES`는 Step 0에서 수집한 파일 목록으로 대체한다.
+Terraform 에서 IAM binding 이 추가되면 `roles/owner`, `roles/editor` 같은
+광역 롤을 붙이지 않았는지 확인. (현 시점 infra/terraform 에는 IAM 리소스 없음 —
+추가될 때 이 규칙이 활성화된다.)
 
 ```bash
-#!/usr/bin/env bash
-# 프로젝트 루트에서 실행 (git repo 루트)
-
-echo "=== Security Audit 시작 ==="
-echo "점검 시각: $(date '+%Y-%m-%d %H:%M')"
-FAIL_COUNT=0
-WARN_COUNT=0
-
-# Step 0: 점검 대상 파일 수집
-STAGED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
-MODIFIED=$(git diff HEAD --name-only --diff-filter=ACM 2>/dev/null)
-TARGET_PY=$(echo -e "${STAGED}\n${MODIFIED}" | grep '\.py$' | sort -u)
-
-if [ -z "$TARGET_PY" ]; then
-  TARGET_PY=$(git diff HEAD~1 HEAD --name-only --diff-filter=ACM 2>/dev/null | grep '\.py$')
-fi
-
-echo "점검 파일: $(echo "$TARGET_PY" | grep -c '.py')개"
-echo "---"
-
-# S01: 하드코딩 자격증명
-result=$(echo "$TARGET_PY" | xargs grep -n \
-  -iE "(api_key|password|secret|token|passwd|pwd)\s*=\s*['\"][^'\"]{6,}['\"]" 2>/dev/null \
-  | grep -viE "(os\.getenv|dotenv|config\.get|example|sample|test|placeholder)")
-if [ -n "$result" ]; then
-  echo "[S01 FAIL] 하드코딩 자격증명 탐지"
-  echo "$result"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S01 PASS] 하드코딩 자격증명"
-fi
-
-# S02: os.getenv() 실제 인프라 기본값
-result=$(echo "$TARGET_PY" | xargs grep -n \
-  -E "os\.getenv\s*\([^)]+,\s*['\"][^'\"]+['\"]" 2>/dev/null \
-  | grep -vE "(localhost|5432|postgres|http://localhost|0\.0\.0\.0|\"\")")
-if [ -n "$result" ]; then
-  echo "[S02 FAIL] os.getenv() 실제 인프라 기본값"
-  echo "$result"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S02 PASS] os.getenv() 기본값"
-fi
-
-# S03: env.get() 실제 인프라 기본값
-result=$(echo "$TARGET_PY" | xargs grep -n \
-  -E "env\.get\s*\([^)]+,\s*['\"][^'\"]+['\"]" 2>/dev/null \
-  | grep -vE "(localhost|5432|postgres|http://localhost|0\.0\.0\.0|\"\")")
-if [ -n "$result" ]; then
-  echo "[S03 FAIL] env.get() 실제 인프라 기본값"
-  echo "$result"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S03 PASS] env.get() 기본값"
-fi
-
-# S04: 실제 IP 주소 하드코딩
-result=$(echo "$TARGET_PY" | xargs grep -n \
-  -E "\"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\"" 2>/dev/null \
-  | grep -vE "(127\.0\.0\.1|0\.0\.0\.0)")
-if [ -n "$result" ]; then
-  echo "[S04 FAIL] 실제 IP 주소 하드코딩"
-  echo "$result"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S04 PASS] IP 주소 하드코딩"
-fi
-
-# S05: .env 파일 스테이징
-result=$(git diff --cached --name-only 2>/dev/null | grep -E "(^|/)\.env(\.|$)" | grep -v "\.example")
-if [ -n "$result" ]; then
-  echo "[S05 FAIL] .env 파일이 staged 상태"
-  echo "$result"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S05 PASS] .env 스테이징"
-fi
-
-# S06: 민감 파일 git 추적
-result=$(git ls-files 2>/dev/null | grep -E "\.(env|pem|key|p12|pfx)$|credentials\.json|api_keys\.env$|secrets\.json" | grep -v "\.example")
-if [ -n "$result" ]; then
-  echo "[S06 FAIL] 민감 파일 git 추적 중"
-  echo "$result"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S06 PASS] 민감 파일 git 추적"
-fi
-
-# S07: .gitignore 필수 항목
-GITIGNORE_FAIL=""
-grep -q "\.env" .gitignore 2>/dev/null || GITIGNORE_FAIL="${GITIGNORE_FAIL} .env"
-grep -q "\*\.pem" .gitignore 2>/dev/null || GITIGNORE_FAIL="${GITIGNORE_FAIL} *.pem"
-grep -q "\*\.key" .gitignore 2>/dev/null || GITIGNORE_FAIL="${GITIGNORE_FAIL} *.key"
-grep -q "credentials\.json" .gitignore 2>/dev/null || GITIGNORE_FAIL="${GITIGNORE_FAIL} credentials.json"
-grep -q "settings\.local\.json" .gitignore 2>/dev/null || GITIGNORE_FAIL="${GITIGNORE_FAIL} settings.local.json"
-if [ -n "$GITIGNORE_FAIL" ]; then
-  echo "[S07 FAIL] .gitignore 누락 항목:${GITIGNORE_FAIL}"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
-else
-  echo "[S07 PASS] .gitignore 필수 항목"
-fi
-
-# S08: 하드코딩 로컬 경로 (WARNING)
-result=$(echo "$TARGET_PY" | xargs grep -n \
-  -E "\"C:/Users/[^\"]+\"|'C:/Users/[^']+'" 2>/dev/null)
-if [ -n "$result" ]; then
-  echo "[S08 WARN] 하드코딩 로컬 경로 — 상수+CLI오버라이드 확인 필요"
-  echo "$result"
-  WARN_COUNT=$((WARN_COUNT + 1))
-else
-  echo "[S08 PASS] 하드코딩 로컬 경로"
-fi
-
-echo ""
-echo "=== Security Audit 완료 ==="
-echo "FAIL: ${FAIL_COUNT}건 / WARN: ${WARN_COUNT}건"
-if [ "$FAIL_COUNT" -gt 0 ]; then
-  echo ">>> 커밋 차단 — FAIL 항목 수정 후 재실행"
-else
-  echo ">>> 커밋 진행 가능"
-fi
+echo "$TF_FILES" | xargs grep -nE \
+  'roles/(owner|editor)\b' 2>/dev/null \
+  | grep -v '^\s*#'
 ```
+
+매칭 → **WARNING** (차단은 하지 않되 리뷰에서 재확인 요청).
 
 ---
 
-## Orchestrator에 전달할 결과 형식
+## Orchestrator 결과 포맷
 
 ```
-[Security Auditor 결과]
-- 실행 시점: 코드 작성 후 / 커밋 직전
-- 점검 파일: N개
+[Security Auditor (infra) 결과]
+- 점검 파일: TF N / SH M / WF K
 - PASS: N건 / FAIL: N건 / WARN: N건
 
-FAIL 항목:
-- [S번호 FAIL] 설명
-  위반 파일: path/to/file.py:라인번호
-  위반 내용: (실제 값은 마스킹 — 예: api_key = "ab**...")
+FAIL:
+- [I0X FAIL] <rule> @ <file>:<line>  (실값은 마스킹)
 
 판단:
-- FAIL 0건 → 커밋/실행 허용
-- FAIL 1건 이상 → 즉시 차단, 수정 요청
-- WARN만 존재 → 허용, 보고서에 기록
+- FAIL 0 → 커밋 허용
+- FAIL ≥1 → 차단, 수정 후 재실행
+- WARN 만 → 허용, 보고서 기록
 ```
 
 ---
 
 ## 수정 가이드
 
-### S01/S02/S03 위반 수정
-```python
+### I01: tfvars 실값 커밋
+```bash
+git rm --cached infra/terraform/environments/staging.tfvars
+# 값은 .example 에 구조만 남기고 실값은 로컬/CI secret 으로
+```
+
+### I03: 코드 내 시크릿
+```hcl
 # Before (FAIL)
-DB_HOST = "10.0.0.1"
-api_key = "abcd1234efgh"
-host = os.getenv("DB_HOST", "10.0.0.1")
+resource "google_secret_manager_secret_version" "x" {
+  secret_data = "actual-real-key-never-commit"
+}
 
 # After (PASS)
-DB_HOST = os.getenv("DB_HOST")
-api_key = os.getenv("TMDB_API_KEY", "")
-host = os.getenv("DB_HOST")
+resource "google_secret_manager_secret_version" "x" {
+  secret_data = var.x_key          # tfvars 로 주입
+  lifecycle { ignore_changes = [secret_data] }  # out-of-band 주입 허용
+}
 ```
 
-### S05 위반 수정
+### I05: 시크릿 stdout
 ```bash
-git rm --cached .env
-echo ".env" >> .gitignore
+# Before (FAIL)
+gcloud secrets versions access latest --secret=db-password-staging
+
+# After (PASS)
+DB_PASS="$(gcloud secrets versions access latest --secret=db-password-staging)"
+# 사용 후 unset
+unset DB_PASS
 ```
 
-### S08 WARNING — 허용 조건 확인
-```python
-# WARNING 허용 (모듈 상단 상수 + CLI 인자 존재)
-DEFAULT_TRAILERS_DIR = Path("C:/Users/daewo/DX_prod_2nd/trailers")  # ← 허용
-parser.add_argument('--trailers-dir', default=str(DEFAULT_TRAILERS_DIR))
+### I06: GH Actions 시크릿
+```yaml
+# Before (FAIL)
+- run: echo "TOKEN=${{ secrets.DEPLOY_TOKEN }}"
 
-# FAIL로 격상 (함수 내부 직접 사용)
-def process():
-    path = Path("C:/Users/daewo/DX_prod_2nd/trailers")  # ← FAIL
+# After (PASS)
+- env:
+    DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+  run: |
+    curl -H "Authorization: Bearer $DEPLOY_TOKEN" ...
 ```
 
 ---
 
 ## 주의사항
 
-1. 점검 결과 출력에 실제 자격증명 값을 포함하지 않는다 (마스킹 처리)
-2. S08 WARN 항목은 보고서 "보안 참고사항"에 기록하되 진행을 차단하지 않는다
-3. S05/S06은 `git add` 이후 `git commit` 이전에만 유효하다
-4. `.env.example`은 민감 정보 없이 키 이름만 포함된 경우 PASS
+1. 점검 결과 출력에 실제 값을 포함하지 않는다 — 마스킹 (`"ab**..."`)
+2. `gcloud secrets versions access` 는 점검 과정에서도 호출 금지. 파일 스캔만.
+3. I01/I02 는 `git add` 이후 커밋 이전에만 의미가 있다.
+4. `.github/workflows/**` 는 물리 경로가 루트지만 infra 소유. 점검 범위에 포함.

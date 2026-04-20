@@ -56,12 +56,13 @@ find tests/ -name "test_*<module>*"
 - [ ] 매칭되는 테스트가 새 분기를 실제로 커버하는지 확인 (단순 import만 있는 경우 미커버)
 - **판정 기준**: 신규 분기에 대응 테스트 0건 → Critical, 부분 커버 → Major
 
-### 4. Performance
-- [ ] 루프 안의 외부 호출 / N+1 패턴
-- [ ] 캐시 키 충돌 가능성
-- [ ] 불필요한 LLM 호출 (규칙 기반으로 충분한지)
-- [ ] ThreadPoolExecutor `max_workers` vs API rate limit
-- **판정 기준**: 운영 부하에서 실측 가능한 저하 → Major, 미세 → Minor
+### 4. Performance / Infra 비용·가용성 (infra 브랜치용)
+- [ ] `terraform plan` 에서 destroy→recreate 되는 리소스의 재생성 비용·시간
+- [ ] Cloud SQL tier/disk 변경이 monthly cost 에 미치는 영향 (ENTERPRISE_PLUS ~$400+/mo 주의)
+- [ ] Cloud Run min_instances > 0 로 변경 시 상시 과금 발생
+- [ ] `authorized_networks` 광범위 개방 (0.0.0.0/0) 여부
+- [ ] bash 스크립트의 cloud-sql-proxy 프로세스 leak (`trap cleanup` 누락)
+- **판정 기준**: 운영 부하/비용 실측 가능한 저하 → Major, 미세 → Minor
 
 ### 5. API / 인터페이스 설계
 - [ ] 함수 시그니처 변경이 호출처와 호환되는지 (Step 0에서 모은 grep 결과 대조)
