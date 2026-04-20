@@ -78,13 +78,23 @@ resource "google_cloud_run_v2_worker_pool" "ee" {
   deletion_protection = var.deletion_protection
 
   # Worker Pool scaling is a TOP-LEVEL block, not nested under template
-  # (contrast with google_cloud_run_v2_service). scaling_mode = AUTOMATIC
-  # + min=0 lets the API-triggered wake-up (ADR-021 §4) drive instance
-  # count; idle timeout returns it to 0.
+  # (contrast with google_cloud_run_v2_service).
+  #
+  # MANUAL mode chosen because the Cloud Run Admin API's Python SDK
+  # (`google-cloud-run` 0.16.0) exposes `manual_instance_count` as the
+  # only writable scaling field on WorkerPoolScaling — AUTOMATIC-mode
+  # min/max fields aren't in the generated proto yet. See PR #95
+  # (WakeWorker implementation) and ADR-021 §5-b.
+  #
+  # `manual_instance_count = 0` at rest; API_Server's WakeWorker patches
+  # it to 1 on /execute. Scale-down back to 0 is NOT automatic in MANUAL
+  # mode — a separate Cloud Scheduler + Cloud Functions watchdog
+  # (post-Phase-6 follow-up) or a container-side self-terminate signal
+  # on idle queue needs to flip it back. Until that lands, staging
+  # destroy after E2E is the de-facto scale-down.
   scaling {
-    scaling_mode       = "AUTOMATIC"
-    min_instance_count = 0
-    max_instance_count = var.ee_worker_max_instances
+    scaling_mode          = "MANUAL"
+    manual_instance_count = 0
   }
 
   template {
@@ -176,12 +186,12 @@ resource "google_cloud_run_v2_worker_pool" "ee" {
     # Image updates land via CI / manual gcloud after first apply — same
     # pattern as ADR-020 §6-a on the API service.
     #
-    # min_instance_count drifts every time API_Server wakes the pool
-    # (services.patch bumps it to 1, idle timeout returns it to 0). Ignore
-    # so `terraform plan` stays clean.
+    # manual_instance_count drifts every time API_Server wakes the pool
+    # (workerPools.patch bumps it to 1). Ignore so `terraform plan` stays
+    # clean.
     ignore_changes = [
       template[0].containers[0].image,
-      scaling[0].min_instance_count,
+      scaling[0].manual_instance_count,
       client,
       client_version,
     ]
@@ -191,7 +201,8 @@ resource "google_cloud_run_v2_worker_pool" "ee" {
 # ---- API_Server wake-up permission ------------------------------------------
 #
 # API_Server's workflow_service.execute_workflow() calls Cloud Run Admin API
-# `services.patch` against THIS worker pool to bump min_instance_count = 1.
+# `workerPools.patch` against THIS worker pool to bump scaling.manual_instance_count
+# to 1 on wake.
 # Scope is tightened two ways:
 #   1. Resource-level binding (this pool only, not project-wide)
 #   2. `roles/run.developer` is the least predefined role that includes

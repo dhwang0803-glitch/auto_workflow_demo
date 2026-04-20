@@ -5,7 +5,7 @@
 # contracts that ADR-021 locks in, rather than running `terraform plan` (which
 # would hit GCP). The terraform validate pass in CI is the true syntax gate;
 # this bats suite guards against silent ADR drift — e.g., someone flipping
-# min_instance_count to 1 "to fix cold starts" without updating the ADR.
+# manual_instance_count to 1 "to fix cold starts" without updating the ADR.
 #
 # Run locally:
 #   bats infra/tests/test_phase_21.bats
@@ -32,8 +32,13 @@ TF_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../terraform" && pwd)"
 }
 
 @test "worker.tf: Worker Pool scales from 0 (ADR-021 §4 wake-up contract)" {
-  grep -q 'min_instance_count = 0' "$TF_DIR/worker.tf"
-  ! grep -q 'min_instance_count = 1' "$TF_DIR/worker.tf"
+  grep -q 'manual_instance_count = 0' "$TF_DIR/worker.tf"
+  ! grep -q 'manual_instance_count = 1' "$TF_DIR/worker.tf"
+}
+
+@test "worker.tf: scaling_mode pinned to MANUAL (SDK compat, ADR-021 §5-b)" {
+  grep -q 'scaling_mode          = "MANUAL"' "$TF_DIR/worker.tf"
+  ! grep -q 'scaling_mode.*=.*"AUTOMATIC"' "$TF_DIR/worker.tf"
 }
 
 @test "worker.tf: provider pinned to google-beta (Worker Pools is beta-only)" {
@@ -55,9 +60,9 @@ TF_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../terraform" && pwd)"
   grep -q 'member   = "serviceAccount:\${google_service_account.api.email}"' "$TF_DIR/worker.tf"
 }
 
-@test "worker.tf: ignore_changes on image + min_instance_count (drift protection)" {
+@test "worker.tf: ignore_changes on image + manual_instance_count (drift protection)" {
   grep -q 'template\[0\].containers\[0\].image' "$TF_DIR/worker.tf"
-  grep -q 'scaling\[0\].min_instance_count' "$TF_DIR/worker.tf"
+  grep -q 'scaling\[0\].manual_instance_count' "$TF_DIR/worker.tf"
 }
 
 @test "cloud_run.tf: API container gets WORKER_POOL_NAME + CELERY_BROKER_URL" {

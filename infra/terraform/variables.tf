@@ -161,12 +161,6 @@ variable "ee_image_uri" {
   }
 }
 
-variable "ee_worker_max_instances" {
-  description = "Worker Pools max_instance_count. MVP cap kept low; bump after observing queue depth in staging."
-  type        = number
-  default     = 5
-}
-
 variable "ee_worker_resources" {
   description = "Worker container resource limits. 0.5 CPU / 512Mi is enough for the current node mix (HTTP-heavy Workspace calls). Bump memory if future ML/embedding nodes run on the same pool."
   type = object({
