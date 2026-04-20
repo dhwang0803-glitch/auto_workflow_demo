@@ -3,6 +3,8 @@ and mounts them onto `app.state`.
 """
 from __future__ import annotations
 
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -27,6 +29,15 @@ def create_app(
     *,
     email_sender: EmailSender | None = None,
 ) -> FastAPI:
+    # uvicorn installs its own handlers only on `uvicorn.*` loggers — our
+    # `api_server.*` loggers inherit from root, which has no handler by
+    # default under gunicorn/uvicorn workers. Without this, structured log
+    # lines from EMAIL_SENDER=console etc. silently vanish in Cloud Run.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=os.getenv("LOG_LEVEL", "INFO"),
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
     s = settings or Settings()
 
     @asynccontextmanager
