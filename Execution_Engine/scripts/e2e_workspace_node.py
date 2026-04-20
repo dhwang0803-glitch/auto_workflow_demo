@@ -4,7 +4,7 @@ Dispatches via the node registry so the same script handles all 6
 Workspace node types (gmail/drive/sheets/docs/slides/calendar). Replaces
 the per-node one-offs that would otherwise duplicate the bootstrap.
 
-Run via Database/deploy/scripts/run_e2e_workspace_node.sh which sets up
+Run via infra/scripts/run_e2e_workspace_node.sh which sets up
 the Cloud SQL proxy + injects DATABASE_URL / CREDENTIAL_MASTER_KEY /
 GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET from Secret Manager.
 
