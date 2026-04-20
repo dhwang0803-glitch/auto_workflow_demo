@@ -11,12 +11,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Database/ ./Database/
+COPY Execution_Engine/ ./Execution_Engine/
 COPY API_Server/ ./API_Server/
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+# Execution_Engine is an install-time dep of API_Server only for
+# serverless_execution_mode="inline" (ADR-021 §5 stopgap). PLAN_21 Phase 6
+# will drop both the dep and this COPY.
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir ./Database \
+    && pip install --no-cache-dir ./Execution_Engine \
     && pip install --no-cache-dir ./API_Server
 
 
