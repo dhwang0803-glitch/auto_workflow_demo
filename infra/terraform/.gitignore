@@ -1,0 +1,13 @@
+# Never commit real tfvars — they reference concrete project IDs and IPs.
+*.tfvars
+!*.tfvars.example
+
+# Local state & plan files contain live resource IDs and sometimes secrets.
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
+*.tfplan
+
+# Don't commit editor cruft
+*.swp
