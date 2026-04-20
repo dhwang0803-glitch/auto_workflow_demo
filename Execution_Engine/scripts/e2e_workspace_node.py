@@ -1,18 +1,23 @@
-"""One-off Gmail send against a live staging credential — ADR-019 verification.
+"""Generic E2E runner for any GoogleWorkspaceNode — ADR-019 verification.
 
-Run via Database/deploy/scripts/run_e2e_gmail_send.sh which sets up the
-Cloud SQL proxy + injects DATABASE_URL / CREDENTIAL_MASTER_KEY /
+Dispatches via the node registry so the same script handles all 6
+Workspace node types (gmail/drive/sheets/docs/slides/calendar). Replaces
+the per-node one-offs that would otherwise duplicate the bootstrap.
+
+Run via Database/deploy/scripts/run_e2e_workspace_node.sh which sets up
+the Cloud SQL proxy + injects DATABASE_URL / CREDENTIAL_MASTER_KEY /
 GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET from Secret Manager.
 
-Args (via env vars so nothing leaks through argv):
+Args (env vars so nothing leaks through argv):
   CRED_ID      — UUID of the google_oauth credential row to use
-  TO_ADDR      — recipient
-  SUBJECT      — mail subject
-  BODY         — plaintext body
+  NODE_TYPE    — registered node type, e.g. google_drive_upload_file
+  NODE_CONFIG  — JSON dict of node-specific config (credential_id is
+                 injected from CRED_ID, do not duplicate)
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from uuid import UUID
 
@@ -22,8 +27,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from auto_workflow_database.repositories.credential_store import (
     FernetCredentialStore,
 )
-from src.nodes.gmail_send import GmailSendNode
+
+import src.nodes  # noqa: F401 — populates registry via self-registration
 from src.nodes.google_workspace import GoogleWorkspaceNode
+from src.nodes.registry import registry
 from src.services.google_oauth_client import GoogleOAuthClient
 
 
@@ -34,9 +41,9 @@ async def main() -> None:
     client_secret = os.environ["GOOGLE_OAUTH_CLIENT_SECRET"]
 
     cred_id = UUID(os.environ["CRED_ID"])
-    to_addr = os.environ["TO_ADDR"]
-    subject = os.environ["SUBJECT"]
-    body = os.environ.get("BODY", "")
+    node_type = os.environ["NODE_TYPE"]
+    node_config = json.loads(os.environ["NODE_CONFIG"])
+    node_config["credential_id"] = str(cred_id)
 
     engine = create_async_engine(db_url, pool_pre_ping=True)
     sm = async_sessionmaker(engine, expire_on_commit=False)
@@ -54,17 +61,9 @@ async def main() -> None:
             http_client=http,
         )
 
-        node = GmailSendNode()
-        result = await node.execute(
-            {},
-            {
-                "credential_id": str(cred_id),
-                "to": to_addr,
-                "subject": subject,
-                "body": body,
-            },
-        )
-        print("GMAIL_SEND_RESULT:", result)
+        node = registry.get(node_type)()
+        result = await node.execute({}, node_config)
+        print(f"{node_type.upper()}_RESULT:", result)
 
     await engine.dispose()
 

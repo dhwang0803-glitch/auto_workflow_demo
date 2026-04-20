@@ -421,6 +421,7 @@ class CredentialStore(ABC):
         access_token: str,
         token_expires_at: datetime,
         refresh_token: str | None = None,
+        granted_scopes: list[str] | None = None,
     ) -> None:
         """Apply a successful Google `/token` refresh result.
 
@@ -428,6 +429,12 @@ class CredentialStore(ABC):
         and clears `needs_reauth` if set. When Google rotates the
         refresh_token (occasional but contract-allowed), the caller passes
         the new value and `encrypted_data` is re-encrypted.
+
+        `granted_scopes` is the authoritative scope list returned by
+        Google's `/token` response (used by ADR-019 §2 incremental consent
+        — Google merges the prior grant with newly-requested scopes and
+        returns the union). When supplied, REPLACES `oauth_metadata.scopes`
+        and `oauth_metadata.granted_scopes` rather than merging client-side.
         """
         ...
 

@@ -19,16 +19,17 @@ user-visible error — there is no existing credential to mark
 from __future__ import annotations
 
 from urllib.parse import urlencode
+from uuid import UUID
 
 from auto_workflow_database.repositories.base import User
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from app.dependencies import get_current_user
-from app.errors import DomainError
+from app.errors import DomainError, NotFoundError
 from app.services.google_oauth_client import GoogleOAuthClient, OAuthTokenError
 from app.services.oauth_state import InvalidStateError, OAuthStateSigner
 
@@ -38,9 +39,24 @@ GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
 
 class AuthorizeRequest(BaseModel):
-    credential_name: str = Field(min_length=1, max_length=255)
+    credential_name: str | None = Field(default=None, min_length=1, max_length=255)
     scopes: list[str] = Field(min_length=1)
     return_to: str | None = None
+    # ADR-019 §2 incremental consent: when set, this flow EXTENDS an
+    # existing google_oauth credential with additional scopes instead of
+    # creating a new row. `credential_name` is taken from the existing
+    # row in that case (frontend doesn't need to know it).
+    extends_credential_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "AuthorizeRequest":
+        # The xor lets the schema cover both first-time and incremental
+        # without two near-duplicate endpoints.
+        if (self.credential_name is None) == (self.extends_credential_id is None):
+            raise ValueError(
+                "exactly one of credential_name or extends_credential_id required"
+            )
+        return self
 
 
 class AuthorizeResponse(BaseModel):
@@ -82,11 +98,45 @@ async def authorize(
     signer: OAuthStateSigner = Depends(_get_state_signer),
     client: GoogleOAuthClient = Depends(_get_google_client),
 ) -> AuthorizeResponse:
+    credential_name = body.credential_name
+    scopes = list(body.scopes)
+    existing_id: UUID | None = None
+
+    if body.extends_credential_id is not None:
+        # Incremental path: verify ownership, merge requested scopes into
+        # the credential's already-granted set. Google's
+        # `include_granted_scopes=true` will merge server-side too, but we
+        # send the explicit union so the consent screen shows the user the
+        # full picture and our state's scopes match what we expect back.
+        store = request.app.state.credential_store
+        try:
+            creds = await store.bulk_retrieve(
+                [body.extends_credential_id], owner_id=user.id
+            )
+        except KeyError:
+            raise NotFoundError("credential not found")
+
+        plaintext = creds[body.extends_credential_id]
+        metadata = plaintext.get("oauth_metadata") or {}
+        existing_scopes = (
+            metadata.get("granted_scopes") or metadata.get("scopes") or []
+        )
+        # Preserve order: existing scopes first, then any new ones not
+        # already granted. dict.fromkeys keeps first-seen order.
+        scopes = list(dict.fromkeys([*existing_scopes, *body.scopes]))
+
+        for row in await store.list_by_owner(user.id):
+            if row.id == body.extends_credential_id:
+                credential_name = row.name
+                break
+        existing_id = body.extends_credential_id
+
     state = signer.issue(
         user.id,
-        credential_name=body.credential_name,
-        scopes=body.scopes,
+        credential_name=credential_name,
+        scopes=scopes,
         return_to=body.return_to,
+        existing_credential_id=existing_id,
     )
     # ADR-019: access_type=offline + prompt=consent guarantees Google
     # issues a refresh_token even when the user already granted scopes.
@@ -94,7 +144,7 @@ async def authorize(
         authorize_url=build_authorize_url(
             settings=request.app.state.settings,
             state=state,
-            scopes=body.scopes,
+            scopes=scopes,
         )
     )
 
@@ -132,15 +182,19 @@ async def callback(
     store = request.app.state.credential_store
 
     if claims.existing_credential_id is not None:
-        # Re-consent path: update tokens on the existing row. Google may
-        # omit refresh_token on re-consent if the user didn't revoke —
-        # we just rotate access_token in that case.
+        # Re-consent / incremental-consent path: update tokens on the
+        # existing row. Google omits refresh_token when it merges into a
+        # prior grant (ADR-019 §2 — incremental consent doesn't rotate
+        # the refresh token); we just refresh access_token + the merged
+        # scope list and keep the stored refresh_token as-is.
+        granted = token_resp.get("scope", "").split() or None
         try:
             await store.update_oauth_tokens(
                 claims.existing_credential_id,
                 access_token=token_resp["access_token"],
                 token_expires_at=expires_at,
                 refresh_token=refresh_token,
+                granted_scopes=granted,
             )
         except KeyError:
             return _redirect_with_error(

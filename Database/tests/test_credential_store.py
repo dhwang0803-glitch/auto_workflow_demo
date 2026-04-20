@@ -343,6 +343,36 @@ async def test_update_oauth_tokens_rotates_refresh_token(sm):
         await store.delete(cid)
 
 
+async def test_update_oauth_tokens_replaces_granted_scopes(sm):
+    """ADR-019 §2 incremental consent: callback passes Google's
+    authoritative merged scope list back as `granted_scopes` and we
+    REPLACE the stored set rather than appending client-side."""
+    from datetime import datetime, timedelta, timezone
+
+    user = await _seed_user(sm)
+    store = FernetCredentialStore(sm, master_key=Fernet.generate_key())
+    cid = await store.store_google_oauth(
+        user.id, "gmail",
+        refresh_token="1//rt",
+        oauth_metadata=_oauth_metadata(scopes=["a"]),
+    )
+
+    try:
+        await store.update_oauth_tokens(
+            cid,
+            access_token="new",
+            token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            granted_scopes=["a", "b", "c"],
+        )
+        got = await store.retrieve(cid)
+        # Both keys updated to the authoritative list — readers can use
+        # either field, see GoogleWorkspaceNode scope-check path.
+        assert got["oauth_metadata"]["scopes"] == ["a", "b", "c"]
+        assert got["oauth_metadata"]["granted_scopes"] == ["a", "b", "c"]
+    finally:
+        await store.delete(cid)
+
+
 async def test_mark_needs_reauth_and_clear_via_refresh(sm):
     from datetime import datetime, timedelta, timezone
 

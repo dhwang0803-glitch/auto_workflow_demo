@@ -161,6 +161,7 @@ class FernetCredentialStore(CredentialStore):
         access_token: str,
         token_expires_at: datetime,
         refresh_token: str | None = None,
+        granted_scopes: list[str] | None = None,
     ) -> None:
         async with self._sm() as s, s.begin():
             row = await s.get(CredentialORM, credential_id)
@@ -170,6 +171,9 @@ class FernetCredentialStore(CredentialStore):
             md["access_token"] = access_token
             md["token_expires_at"] = token_expires_at.isoformat()
             md.pop("needs_reauth", None)
+            if granted_scopes is not None:
+                md["scopes"] = list(granted_scopes)
+                md["granted_scopes"] = list(granted_scopes)
             row.oauth_metadata = md
             if refresh_token is not None:
                 row.encrypted_data = self._f.encrypt(

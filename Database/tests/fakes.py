@@ -275,6 +275,7 @@ class InMemoryCredentialStore(CredentialStore):
         access_token: str,
         token_expires_at: datetime,
         refresh_token: str | None = None,
+        granted_scopes: list[str] | None = None,
     ) -> None:
         row = self._store.get(credential_id)
         if row is None:
@@ -283,6 +284,9 @@ class InMemoryCredentialStore(CredentialStore):
         md["access_token"] = access_token
         md["token_expires_at"] = token_expires_at.isoformat()
         md.pop("needs_reauth", None)
+        if granted_scopes is not None:
+            md["scopes"] = list(granted_scopes)
+            md["granted_scopes"] = list(granted_scopes)
         row["oauth_metadata"] = md
         if refresh_token is not None:
             row["plaintext"] = {"refresh_token": refresh_token}
