@@ -50,8 +50,13 @@ infra/
 ├── docs/                        ← runbook
 │   ├── README.md                ← main → development → release 3단 배포 절차
 │   └── README_oauth.md          ← Google OAuth secret 주입 절차
-├── agents/                      ← infra 브랜치 전용 에이전트 지시사항 (REVIEW / SECURITY_AUDITOR / IMPACT_ASSESSOR)
-├── tests/                       ← (추후) terraform validate / policy check
+├── agents/                      ← infra TDD 사이클 9-에이전트 지시사항
+│                                  (ORCHESTRATOR / TEST_WRITER / DEVELOPER / TESTER /
+│                                   REFACTOR / REVIEW / SECURITY_AUDITOR /
+│                                   IMPACT_ASSESSOR / REPORTER)
+├── plans/                       ← PLAN_NN_*.md (ADR Phase 와 1:1 매핑)
+├── reports/                     ← TDD 사이클 결과 보고서 (REPORTER 출력)
+├── tests/                       ← bats + terraform validate/plan + tflint/checkov
 └── config/                      ← (필요 시) ops-level 설정
 ```
 
