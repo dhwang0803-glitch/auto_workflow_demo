@@ -244,6 +244,19 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      # ADR-021 — wake-up target + broker URL. Both non-secret. WORKER_POOL_NAME
+      # is the bare name (not the fully-qualified resource path); wake_worker.py
+      # composes `projects/<project>/locations/<region>/workerPools/<name>`.
+      env {
+        name  = "WORKER_POOL_NAME"
+        value = google_cloud_run_v2_worker_pool.ee.name
+      }
+
+      env {
+        name  = "CELERY_BROKER_URL"
+        value = "redis://${google_redis_instance.broker.host}:${google_redis_instance.broker.port}/0"
+      }
+
       resources {
         limits = {
           cpu    = var.api_cpu

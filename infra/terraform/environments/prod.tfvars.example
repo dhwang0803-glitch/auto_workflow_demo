@@ -28,6 +28,13 @@ api_memory = "1Gi"
 # practice (via gcloud), but first prod apply still needs a real URI here.
 api_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/api:REPLACE-TAG"
 
+# ADR-021 §6 — Execution_Engine worker image. Promote the same SHA that
+# cleared staging; CI release pipeline will bump this via gcloud afterwards.
+ee_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/worker:REPLACE-TAG"
+
+# ADR-021 §9 — STANDARD_HA at prod entry for broker failover.
+broker_tier = "STANDARD_HA"
+
 # Set to the real prod Cloud Run HTTPS URL (or custom domain) and re-apply.
 app_base_url = "https://api.example.com"
 

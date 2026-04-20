@@ -29,6 +29,10 @@ cloudrun_subnet_cidr = "10.60.0.0/26"
 # revert), so this value stays as "the last image Terraform itself applied".
 api_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/api:REPLACE-TAG"
 
+# ADR-021 §6 — Execution_Engine worker image. Same bootstrap flow as
+# api_image_uri: build + push to AR first, then set this and full apply.
+ee_image_uri = "asia-northeast3-docker.pkg.dev/REPLACE-PROJECT/auto-workflow/worker:REPLACE-TAG"
+
 # Scale-to-zero by default (free at rest, ~2s cold start). Bump to 1 for
 # demos / user tests — adds ~$7/month.
 api_min_instances = 0

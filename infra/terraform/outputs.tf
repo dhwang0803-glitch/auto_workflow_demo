@@ -73,3 +73,25 @@ output "artifact_registry_repo" {
   description = "Fully-qualified AR repo path. Image URIs land under <repo>/api:<tag> and <repo>/ee:<tag>."
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.images.repository_id}"
 }
+
+# ---- Worker Pool + Memorystore (ADR-021) -----------------------------------
+
+output "ee_worker_pool_name" {
+  description = "Cloud Run Worker Pool name. API_Server env WORKER_POOL_NAME consumes this for services.patch wake-up calls."
+  value       = google_cloud_run_v2_worker_pool.ee.name
+}
+
+output "ee_service_account_email" {
+  description = "Service account the Worker Pool runs as (ADR-021 §6). Distinct from the API SA to bound blast radius."
+  value       = google_service_account.ee_runtime.email
+}
+
+output "broker_host" {
+  description = "Memorystore private IP. Reachable only inside the peered VPC. Used by API + Worker to compose CELERY_BROKER_URL."
+  value       = google_redis_instance.broker.host
+}
+
+output "broker_port" {
+  description = "Memorystore port (6379 by default). Exposed as an output so scripts don't hard-code."
+  value       = google_redis_instance.broker.port
+}
