@@ -162,13 +162,13 @@ variable "ee_image_uri" {
 }
 
 variable "ee_worker_resources" {
-  description = "Worker container resource limits. 0.5 CPU / 512Mi is enough for the current node mix (HTTP-heavy Workspace calls). Bump memory if future ML/embedding nodes run on the same pool."
+  description = "Worker container resource limits. Cloud Run Worker Pools run on gen2 + always-allocated CPU, which requires cpu >= 1 (API rejects < 1). Memory 512Mi is enough for the current HTTP-heavy node mix; bump if ML/embedding nodes land on the same pool."
   type = object({
     cpu    = string
     memory = string
   })
   default = {
-    cpu    = "0.5"
+    cpu    = "1"
     memory = "512Mi"
   }
 }
