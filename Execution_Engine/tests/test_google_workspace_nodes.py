@@ -233,6 +233,41 @@ async def test_sheets_append_row_multiple_rows(credential_id, httpx_mock):
     assert body["values"] == [["a", "b"], ["c", "d"]]
 
 
+async def test_sheets_append_row_resolves_first_sheet_when_range_has_no_prefix(
+    credential_id, httpx_mock
+):
+    # Simulates a ko-KR user's brand-new spreadsheet whose first sheet is
+    # "시트1", not "Sheet1". Node must look up the actual title (needs
+    # quoting because non-ASCII) and use it in the append URL.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://sheets.googleapis.com/v4/spreadsheets/ss-kr?fields=sheets.properties.title",
+        status_code=200,
+        json={"sheets": [{"properties": {"title": "시트1"}}]},
+    )
+    # Expected range after resolution: '시트1'!A:Z — quoted + url-encoded.
+    httpx_mock.add_response(
+        method="POST",
+        url=(
+            "https://sheets.googleapis.com/v4/spreadsheets/ss-kr/values/"
+            "%27%EC%8B%9C%ED%8A%B81%27%21A%3AZ:append"
+            "?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+        ),
+        status_code=200,
+        json={"spreadsheetId": "ss-kr", "updates": {"updatedRows": 1, "updatedCells": 1}},
+    )
+    result = await GoogleSheetsAppendRowNode().execute(
+        {},
+        {
+            "credential_id": str(credential_id),
+            "spreadsheet_id": "ss-kr",
+            "range": "A:Z",
+            "values": ["x"],
+        },
+    )
+    assert result["updated_rows"] == 1
+
+
 # ==============================================================================
 # Docs
 # ==============================================================================
