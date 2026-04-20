@@ -23,6 +23,7 @@ from app.services.credential_service import CredentialService
 from app.services.email_sender import EmailSender, make_email_sender
 from app.services.google_oauth_client import GoogleOAuthClient
 from app.services.oauth_state import OAuthStateSigner
+from app.services.wake_worker import WakeWorker
 from app.services.workflow_service import WorkflowService
 
 
@@ -76,6 +77,7 @@ class AppContainer:
             and settings.google_oauth_redirect_uri
             else None
         )
+        self.wake_worker = WakeWorker(settings=settings)
         self.workflow_service = WorkflowService(
             repo=self.workflow_repo,
             execution_repo=self.execution_repo,
@@ -87,6 +89,7 @@ class AppContainer:
             agent_connections=self.agent_connections,
             credential_service=self.credential_service,
             credential_store=self.credential_store,
+            wake_worker=self.wake_worker,
         )
 
     async def dispose(self) -> None:

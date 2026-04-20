@@ -46,6 +46,7 @@ from app.models.workflow import (
 )
 from app.services.credential_service import CredentialService
 from app.services.dag_validator import validate_dag
+from app.services.wake_worker import WakeWorker
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class WorkflowService:
         agent_connections: dict | None = None,
         credential_service: CredentialService | None = None,
         credential_store: CredentialStore | None = None,
+        wake_worker: WakeWorker | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
@@ -81,6 +83,7 @@ class WorkflowService:
         self._agent_connections = agent_connections if agent_connections is not None else {}
         self._credential_service = credential_service
         self._credential_store = credential_store
+        self._wake_worker = wake_worker
 
     # ------------------------------------------------------------------ read
 
@@ -187,18 +190,43 @@ class WorkflowService:
         await self._exec_repo.create(execution)
 
         if execution.execution_mode == "serverless" and self._s.celery_broker_url:
-            try:
-                from celery import Celery
-                broker = Celery(broker=self._s.celery_broker_url)
-                # Execution_Engine worker.py listens on the workflow_tasks queue;
-                # without this the task sits in the default "celery" queue forever.
-                broker.send_task(
-                    "execute_workflow",
-                    args=[str(execution.id)],
-                    queue="workflow_tasks",
-                )
-            except Exception:
-                logger.exception("celery dispatch failed for execution %s", execution.id)
+            if self._s.serverless_execution_mode == "inline":
+                # ADR-021 §5 stopgap — run the DAG in-process. Bypasses
+                # Celery + Worker Pool entirely so environments without a
+                # live broker (local dev pre-infra, early staging) still
+                # get an end-to-end execute. Google Workspace nodes will
+                # error here — they need WorkerContainer.configure() which
+                # the Worker runs at startup. Plan_21 Phase 6 removes this
+                # branch once the Worker Pool path is proven.
+                import src.nodes  # noqa: F401 — triggers node self-registration
+                from src.dispatcher.serverless import _execute
+                from src.nodes.registry import registry as node_registry
+
+                try:
+                    await _execute(
+                        str(execution.id),
+                        exec_repo=self._exec_repo,
+                        wf_repo=self._repo,
+                        node_registry=node_registry,
+                        credential_store=self._credential_store,
+                    )
+                except Exception:
+                    logger.exception("inline execution failed for %s", execution.id)
+            else:  # "celery" — steady-state path
+                if self._wake_worker is not None:
+                    await self._wake_worker.wake()
+                try:
+                    from celery import Celery
+                    broker = Celery(broker=self._s.celery_broker_url)
+                    # Execution_Engine worker.py listens on the workflow_tasks queue;
+                    # without this the task sits in the default "celery" queue forever.
+                    broker.send_task(
+                        "execute_workflow",
+                        args=[str(execution.id)],
+                        queue="workflow_tasks",
+                    )
+                except Exception:
+                    logger.exception("celery dispatch failed for execution %s", execution.id)
         elif execution.execution_mode == "agent" and self._agent_repo:
             agents = await self._agent_repo.list_by_owner(user.id)
             dispatched = False
