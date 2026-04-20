@@ -38,12 +38,16 @@ def _make_mock_client(handler) -> GoogleOAuthClient:
     )
 
 
-def _ok_token_handler(*, with_refresh: bool = True):
+def _ok_token_handler(
+    *,
+    with_refresh: bool = True,
+    scope: str = "https://www.googleapis.com/auth/gmail.send",
+):
     def handler(_req):
         body = {
             "access_token": "at-xxx",
             "expires_in": 3599,
-            "scope": "https://www.googleapis.com/auth/gmail.send",
+            "scope": scope,
             "token_type": "Bearer",
         }
         if with_refresh:
@@ -229,6 +233,132 @@ async def test_reauth_missing_credential_404(authed_client):
         f"/api/v1/credentials/{uuid4()}/reauth", json={}
     )
     assert r.status_code == 404
+
+
+# ----------------------------------------------- /authorize incremental scope
+
+
+async def test_authorize_xor_credential_name_or_extends(authed_client):
+    # Neither set → 422.
+    r = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={"scopes": ["scope"]},
+    )
+    assert r.status_code == 422
+
+    # Both set → 422.
+    from uuid import uuid4
+    r = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={
+            "credential_name": "x",
+            "extends_credential_id": str(uuid4()),
+            "scopes": ["scope"],
+        },
+    )
+    assert r.status_code == 422
+
+
+async def test_authorize_extends_unknown_credential_404(authed_client):
+    from uuid import uuid4
+    r = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={
+            "extends_credential_id": str(uuid4()),
+            "scopes": ["https://www.googleapis.com/auth/drive.file"],
+        },
+    )
+    assert r.status_code == 404
+
+
+async def test_authorize_extends_merges_existing_and_new_scopes(authed_client):
+    authed_client._transport.app.state.google_oauth_client = _make_mock_client(
+        _ok_token_handler()
+    )
+    # Seed a credential with one scope via first-time flow.
+    auth = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={
+            "credential_name": "gm-incremental",
+            "scopes": ["https://www.googleapis.com/auth/gmail.send"],
+        },
+    )
+    state = parse_qs(urlparse(auth.json()["authorize_url"]).query)["state"][0]
+    cb = await authed_client.get(
+        "/api/v1/oauth/google/callback",
+        params={"code": "c1", "state": state},
+        follow_redirects=False,
+    )
+    cred_id = parse_qs(urlparse(cb.headers["location"]).query)["credential_id"][0]
+
+    # Extend with a new scope. Returned consent URL must request the union.
+    r = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={
+            "extends_credential_id": cred_id,
+            "scopes": ["https://www.googleapis.com/auth/drive.file"],
+        },
+    )
+    assert r.status_code == 200
+    consent = parse_qs(urlparse(r.json()["authorize_url"]).query)
+    requested = consent["scope"][0].split(" ")
+    assert "https://www.googleapis.com/auth/gmail.send" in requested
+    assert "https://www.googleapis.com/auth/drive.file" in requested
+
+
+async def test_callback_incremental_succeeds_without_refresh_token(authed_client):
+    # Step 1 — first-time consent (refresh_token mandatory here).
+    authed_client._transport.app.state.google_oauth_client = _make_mock_client(
+        _ok_token_handler()
+    )
+    auth = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={
+            "credential_name": "gm-inc-cb",
+            "scopes": ["https://www.googleapis.com/auth/gmail.send"],
+        },
+    )
+    state = parse_qs(urlparse(auth.json()["authorize_url"]).query)["state"][0]
+    cb = await authed_client.get(
+        "/api/v1/oauth/google/callback",
+        params={"code": "c1", "state": state},
+        follow_redirects=False,
+    )
+    cred_id = parse_qs(urlparse(cb.headers["location"]).query)["credential_id"][0]
+
+    # Step 2 — incremental authorize for an additional scope.
+    r2 = await authed_client.post(
+        "/api/v1/oauth/google/authorize",
+        json={
+            "extends_credential_id": cred_id,
+            "scopes": ["https://www.googleapis.com/auth/drive.file"],
+        },
+    )
+    inc_state = parse_qs(urlparse(r2.json()["authorize_url"]).query)["state"][0]
+
+    # Step 3 — Google returns merged scope list but NO refresh_token (the
+    # documented incremental-consent behaviour). Callback must succeed
+    # and update the row in place.
+    authed_client._transport.app.state.google_oauth_client = _make_mock_client(
+        _ok_token_handler(
+            with_refresh=False,
+            scope=(
+                "https://www.googleapis.com/auth/gmail.send "
+                "https://www.googleapis.com/auth/drive.file"
+            ),
+        )
+    )
+    cb2 = await authed_client.get(
+        "/api/v1/oauth/google/callback",
+        params={"code": "c2", "state": inc_state},
+        follow_redirects=False,
+    )
+    assert cb2.status_code in (302, 307)
+    assert "oauth=success" in cb2.headers["location"]
+    assert f"credential_id={cred_id}" in cb2.headers["location"]
+
+
+# -------------------------------------------------- /credentials/{id}/reauth
 
 
 async def test_reauth_updates_tokens_on_existing_credential(authed_client):

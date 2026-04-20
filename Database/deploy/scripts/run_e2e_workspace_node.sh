@@ -1,18 +1,36 @@
 #!/usr/bin/env bash
-# E2E Gmail send against the staging Cloud SQL credential. Wraps
-# Execution_Engine/scripts/e2e_gmail_send.py with proxy + Secret Manager.
+# Generic E2E runner for any Google Workspace node against the staging
+# Cloud SQL credential. Wraps Execution_Engine/scripts/e2e_workspace_node.py
+# with proxy + Secret Manager bootstrap. Same shape as run_e2e_gmail_send.sh
+# but parametrized by node_type + JSON config so all 6 ADR-019 nodes share
+# one entry point.
 #
 # Usage:
-#   bash Database/deploy/scripts/run_e2e_gmail_send.sh <env> <cred_id> <to> <subject> <body>
+#   bash Database/deploy/scripts/run_e2e_workspace_node.sh \
+#       <env: staging|prod> <credential_id> <node_type> <config_json>
+#
+# Examples (single-quote the JSON to keep bash from eating the braces):
+#   ... staging <cred> gmail_send \
+#       '{"to":"x@y.com","subject":"hi","body":"hello"}'
+#   ... staging <cred> google_drive_upload_file \
+#       '{"name":"smoke.txt","content":"hello from workflow"}'
+#   ... staging <cred> google_sheets_append_row \
+#       '{"spreadsheet_id":"<id>","range":"Sheet1!A:B","values":["x","y"]}'
+#   ... staging <cred> google_docs_append_text \
+#       '{"document_id":"<id>","text":"appended\n"}'
+#   ... staging <cred> google_slides_create_presentation \
+#       '{"title":"E2E smoke deck"}'
+#   ... staging <cred> google_calendar_create_event \
+#       '{"summary":"E2E","start_date":"2026-04-21","end_date":"2026-04-22"}'
 
 set -euo pipefail
 
-if [ $# -lt 5 ]; then
-  echo "usage: $0 <env: staging|prod> <credential_id> <to> <subject> <body>" >&2
+if [ $# -lt 4 ]; then
+  echo "usage: $0 <env: staging|prod> <credential_id> <node_type> <config_json>" >&2
   exit 2
 fi
 
-ENV_NAME="$1"; CRED_ID="$2"; TO_ADDR="$3"; SUBJECT="$4"; BODY="$5"
+ENV_NAME="$1"; CRED_ID="$2"; NODE_TYPE="$3"; NODE_CONFIG="$4"
 
 case "$ENV_NAME" in staging|prod) ;; *) echo "bad env" >&2; exit 2 ;; esac
 
@@ -38,7 +56,7 @@ for _ in $(seq 1 20); do
 done
 grep -q "ready for new connections" "$PROXY_LOG" || { cat "$PROXY_LOG" >&2; exit 1; }
 
-# Pull secrets without echoing
+# Pull secrets without echoing — see feedback_secret_read_pipe memory.
 DB_PASS="$(gcloud secrets versions access latest --secret="db-password-${ENV_NAME}" --project="$PROJECT")"
 CRED_MASTER="$(gcloud secrets versions access latest --secret="credential-master-key-${ENV_NAME}" --project="$PROJECT")"
 OAUTH_CID="$(gcloud secrets versions access latest --secret="google-oauth-client-id-${ENV_NAME}" --project="$PROJECT")"
@@ -49,12 +67,11 @@ export CREDENTIAL_MASTER_KEY="$CRED_MASTER"
 export GOOGLE_OAUTH_CLIENT_ID="$OAUTH_CID"
 export GOOGLE_OAUTH_CLIENT_SECRET="$OAUTH_SECRET"
 export CRED_ID="$CRED_ID"
-export TO_ADDR="$TO_ADDR"
-export SUBJECT="$SUBJECT"
-export BODY="$BODY"
+export NODE_TYPE="$NODE_TYPE"
+export NODE_CONFIG="$NODE_CONFIG"
 
 unset DB_PASS CRED_MASTER OAUTH_CID OAUTH_SECRET
 
 cd "${REPO_ROOT}/Execution_Engine"
 export PYTHONPATH="$(pwd)"
-"$PYBIN" scripts/e2e_gmail_send.py
+"$PYBIN" scripts/e2e_workspace_node.py
