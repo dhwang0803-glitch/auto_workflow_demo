@@ -14,6 +14,30 @@ from src.nodes.registry import registry
 
 
 class EmailSendNode(BaseNode):
+    display_name = "Email Send (SMTP)"
+    category = "email"
+    description = "Send an email via SMTP with optional HTML alternative."
+    config_schema = {
+        "type": "object",
+        "required": [
+            "from", "to", "subject", "body",
+            "smtp_host", "smtp_port", "smtp_user", "smtp_password",
+        ],
+        "properties": {
+            "from": {"type": "string", "format": "email"},
+            "to": {"type": "array", "items": {"type": "string", "format": "email"}},
+            "subject": {"type": "string"},
+            "body": {"type": "string"},
+            "body_html": {"type": "string"},
+            "smtp_host": {"type": "string"},
+            "smtp_port": {"type": "integer"},
+            "smtp_user": {"type": "string"},
+            "smtp_password": {"type": "string", "format": "secret_ref"},
+            "use_starttls": {"type": "boolean", "default": True},
+            "timeout_seconds": {"type": "integer", "default": 30, "minimum": 1},
+        },
+    }
+
     @property
     def node_type(self) -> str:
         return "email_send"

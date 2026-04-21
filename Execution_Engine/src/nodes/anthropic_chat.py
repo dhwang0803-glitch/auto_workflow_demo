@@ -12,6 +12,33 @@ from src.nodes.registry import registry
 
 
 class AnthropicChatNode(BaseNode):
+    display_name = "Anthropic Chat (Claude)"
+    category = "ai"
+    description = "Call Anthropic Messages API for a single Claude response."
+    config_schema = {
+        "type": "object",
+        "required": ["api_token", "model", "messages", "max_tokens"],
+        "properties": {
+            "api_token": {"type": "string", "format": "secret_ref"},
+            "model": {"type": "string", "examples": ["claude-opus-4-7", "claude-sonnet-4-6"]},
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["role", "content"],
+                    "properties": {
+                        "role": {"type": "string", "enum": ["user", "assistant"]},
+                        "content": {"type": "string"},
+                    },
+                },
+            },
+            "max_tokens": {"type": "integer", "minimum": 1},
+            "system": {"type": "string"},
+            "temperature": {"type": "number", "minimum": 0, "maximum": 1},
+            "timeout_seconds": {"type": "integer", "default": 60, "minimum": 1},
+        },
+    }
+
     @property
     def node_type(self) -> str:
         return "anthropic_chat"

@@ -8,6 +8,25 @@ from src.nodes.registry import registry
 
 
 class HttpRequestNode(BaseNode):
+    display_name = "HTTP Request"
+    category = "network"
+    description = "Make an HTTP request to an external API and return the response."
+    config_schema = {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {"type": "string", "title": "URL", "format": "uri"},
+            "method": {
+                "type": "string",
+                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                "default": "GET",
+            },
+            "headers": {"type": "object", "additionalProperties": {"type": "string"}},
+            "body": {"type": "object"},
+            "timeout_seconds": {"type": "integer", "default": 30, "minimum": 1},
+        },
+    }
+
     @property
     def node_type(self) -> str:
         return "http_request"
