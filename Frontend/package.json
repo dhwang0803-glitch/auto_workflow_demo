@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:smoke": "playwright test"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.2",
@@ -19,6 +20,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/dagre": "^0.7.54",
     "@types/node": "^20",
     "@types/react": "^18",

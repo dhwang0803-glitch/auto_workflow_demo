@@ -34,6 +34,8 @@ interface EditorState {
   dirty: boolean;
   lastSavedId: string | null;
   lastError: string | null;
+  // Current execution being polled by ResultDrawer. Null = drawer closed.
+  activeExecutionId: string | null;
 
   setName: (name: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -54,6 +56,7 @@ interface EditorState {
   toPayload: () => WorkflowPayload;
   setError: (msg: string | null) => void;
   markSaved: (id: string) => void;
+  setActiveExecutionId: (id: string | null) => void;
 }
 
 const initialState = {
@@ -64,6 +67,7 @@ const initialState = {
   dirty: false,
   lastSavedId: null,
   lastError: null,
+  activeExecutionId: null,
 };
 
 let nodeCounter = 0;
@@ -184,6 +188,8 @@ export const useEditorStore = create<EditorState>()(
       setError: (lastError) => set({ lastError }),
 
       markSaved: (id) => set({ dirty: false, lastSavedId: id }),
+
+      setActiveExecutionId: (activeExecutionId) => set({ activeExecutionId }),
     }),
     {
       // Only nodes/edges/name are undo/redo-able. Selection, dirty, errors

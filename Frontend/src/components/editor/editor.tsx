@@ -8,6 +8,7 @@ import { NodePalette } from "./node-palette";
 import { WorkflowCanvas } from "./workflow-canvas";
 import { PropertyPanel } from "./property-panel";
 import { Toolbar } from "./toolbar";
+import { ResultDrawer } from "./result-drawer";
 
 interface EditorProps {
   workflowId?: string; // when undefined or "new" → blank editor
@@ -53,10 +54,11 @@ export function Editor({ workflowId }: EditorProps) {
   return (
     <div className="h-screen flex flex-col">
       <Toolbar />
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
         <NodePalette />
         <WorkflowCanvas />
         <PropertyPanel />
+        <ResultDrawer />
       </div>
     </div>
   );

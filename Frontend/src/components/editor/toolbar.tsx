@@ -4,7 +4,9 @@ import { useMutation } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import {
   createWorkflow,
+  executeWorkflow,
   updateWorkflow,
+  type ExecutionResponse,
   type WorkflowResponse,
 } from "@/lib/api";
 import { useEditorStore, useEditorTemporal } from "@/store/editor-store";
@@ -24,6 +26,7 @@ export function Toolbar() {
     toPayload,
     markSaved,
     setError,
+    setActiveExecutionId,
   } = useEditorStore();
 
   const temporal = useEditorTemporal();
@@ -49,7 +52,23 @@ export function Toolbar() {
     replaceNodes(laid);
   };
 
+  const executeMutation = useMutation({
+    mutationFn: async (): Promise<ExecutionResponse> => {
+      if (!lastSavedId) throw new Error("Save the workflow first");
+      return executeWorkflow(lastSavedId);
+    },
+    onSuccess: (exec) => {
+      setActiveExecutionId(exec.id);
+      setError(null);
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
   const canSave = nodes.length > 0 && !saveMutation.isPending;
+  // Execute requires a persisted workflow with no pending edits, so the server
+  // actually runs what the user sees on canvas.
+  const canExecute =
+    Boolean(lastSavedId) && !dirty && !executeMutation.isPending;
 
   return (
     <div className="flex items-center gap-2 border-b bg-white px-3 py-2">
@@ -93,6 +112,21 @@ export function Toolbar() {
         className="text-sm bg-blue-600 text-white rounded px-3 py-1 disabled:bg-gray-300"
       >
         {saveMutation.isPending ? "Saving…" : "Save"}
+      </button>
+      <button
+        type="button"
+        disabled={!canExecute}
+        onClick={() => executeMutation.mutate()}
+        title={
+          !lastSavedId
+            ? "Save first"
+            : dirty
+              ? "Save your changes before executing"
+              : "Run this workflow now"
+        }
+        className="text-sm bg-emerald-600 text-white rounded px-3 py-1 disabled:bg-gray-300"
+      >
+        {executeMutation.isPending ? "Executing…" : "Execute"}
       </button>
       {lastError && (
         <div
