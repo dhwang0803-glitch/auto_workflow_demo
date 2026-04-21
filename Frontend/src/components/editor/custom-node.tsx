@@ -30,8 +30,21 @@ function NodeStatusDot({ nodeId }: { nodeId: string }) {
     },
   });
 
-  const status = data?.node_results?.[nodeId]?.status;
-  if (!status) return null;
+  if (!data) return null;
+
+  // Execution_Engine writes node_results[id] = <output dict> only after the
+  // node succeeds (executor.py:67). Failed nodes leave no entry and only the
+  // overall execution.status flips to "failed". Derive a per-node status from
+  // entry presence + overall status:
+  //   - entry present                          → success
+  //   - no entry + overall failed              → failed (this node or upstream)
+  //   - no entry + overall queued/running      → still pending
+  const hasEntry = Boolean(data.node_results?.[nodeId]);
+  let status: ExecutionStatus;
+  if (hasEntry) status = "success";
+  else if (data.status === "failed") status = "failed";
+  else status = data.status;
+
   return (
     <span
       aria-label={`node status: ${status}`}
