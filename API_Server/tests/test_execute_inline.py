@@ -109,7 +109,7 @@ async def authed_inline(inline_client, inline_app):
 TWO_NODE_GRAPH = {
     "nodes": [
         {"id": "cond", "type": "condition", "config": {
-            "field": "value", "operator": "gt", "value": 0,
+            "left_field": "value", "operator": "gt", "right_value": 0,
         }},
         {"id": "tail", "type": "merge", "config": {}},
     ],
