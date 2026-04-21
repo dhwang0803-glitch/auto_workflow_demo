@@ -89,7 +89,7 @@ async def authed_inline(inline_client, inline_app):
     )
     assert r.status_code == 201
 
-    sender = inline_app.state.container.email_sender
+    sender = inline_app.state.email_sender
     link = next(l for (to, l) in sender.sent if to == email)
     token = parse_qs(urlparse(link).query)["token"][0]
     v = await inline_client.get("/api/v1/auth/verify", params={"token": token})
