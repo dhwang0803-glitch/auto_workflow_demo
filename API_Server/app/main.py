@@ -15,6 +15,7 @@ from app.config import Settings
 from app.container import AppContainer
 from app.errors import DomainError
 from app.routers.agents import router as agents_router
+from app.routers.ai_composer import router as ai_composer_router
 from app.routers.auth import router as auth_router
 from app.routers.credentials import router as credentials_router
 from app.routers.executions import router as executions_router
@@ -22,6 +23,7 @@ from app.routers.node_catalog import router as node_catalog_router
 from app.routers.oauth_google import router as oauth_google_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
+from app.services.ai_composer_service import LLMBackend
 from app.services.email_sender import EmailSender
 
 
@@ -29,6 +31,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     email_sender: EmailSender | None = None,
+    ai_composer_backend: LLMBackend | None = None,
 ) -> FastAPI:
     # uvicorn installs its own handlers only on `uvicorn.*` loggers — our
     # `api_server.*` loggers inherit from root, which has no handler by
@@ -43,7 +46,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        c = AppContainer(s, email_sender=email_sender)
+        c = AppContainer(
+            s,
+            email_sender=email_sender,
+            ai_composer_backend=ai_composer_backend,
+        )
         app.state.settings = c.settings
         app.state.engine = c.engine
         app.state.sessionmaker = c.sessionmaker
@@ -61,6 +68,7 @@ def create_app(
         app.state.oauth_state_signer = c.oauth_state_signer
         app.state.google_oauth_client = c.google_oauth_client
         app.state.workflow_service = c.workflow_service
+        app.state.ai_composer_service = c.ai_composer_service
         try:
             yield
         finally:
@@ -104,6 +112,9 @@ def create_app(
     )
     app.include_router(
         node_catalog_router, prefix="/api/v1/nodes/catalog", tags=["nodes"]
+    )
+    app.include_router(
+        ai_composer_router, prefix="/api/v1/ai", tags=["ai-composer"]
     )
 
     @app.get("/health")

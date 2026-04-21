@@ -18,6 +18,12 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import Settings
+from app.services.ai_composer_service import (
+    AIComposerService,
+    AnthropicBackend,
+    LLMBackend,
+    build_node_catalog_provider,
+)
 from app.services.auth_service import AuthService
 from app.services.credential_service import CredentialService
 from app.services.email_sender import EmailSender, make_email_sender
@@ -34,6 +40,7 @@ class AppContainer:
         settings: Settings,
         *,
         email_sender: EmailSender | None = None,
+        ai_composer_backend: LLMBackend | None = None,
     ) -> None:
         self.settings = settings
         self.engine = build_engine(settings.database_url)
@@ -78,6 +85,24 @@ class AppContainer:
             else None
         )
         self.wake_worker = WakeWorker(settings=settings)
+
+        # PLAN_02 PR A — AI Composer. `backend=None` keeps the service wired
+        # but disabled (router 503s on call) so envs without ANTHROPIC_API_KEY
+        # boot normally. Tests inject their own LLMBackend for determinism.
+        backend: LLMBackend | None = ai_composer_backend
+        if backend is None and settings.anthropic_api_key:
+            backend = AnthropicBackend(
+                api_key=settings.anthropic_api_key,
+                model=settings.anthropic_model,
+            )
+        self.ai_composer_service = AIComposerService(
+            backend=backend,
+            catalog_provider=build_node_catalog_provider(),
+            rate_per_minute=settings.ai_compose_rate_per_minute,
+            max_tokens=settings.ai_compose_max_tokens,
+        )
+
+
         self.workflow_service = WorkflowService(
             repo=self.workflow_repo,
             execution_repo=self.execution_repo,
