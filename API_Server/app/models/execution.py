@@ -18,6 +18,7 @@ class ExecutionResponse(BaseModel):
     finished_at: datetime | None = None
     created_at: datetime | None = None
     error: dict | None = None
+    node_results: dict | None = None
 
 
 class ExecutionListResponse(BaseModel):
