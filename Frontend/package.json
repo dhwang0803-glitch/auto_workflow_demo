@@ -10,11 +10,16 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.99.2",
+    "dagre": "^0.8.5",
     "next": "14.2.35",
     "react": "^18",
-    "react-dom": "^18"
+    "react-dom": "^18",
+    "reactflow": "^11.11.4",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@types/dagre": "^0.7.54",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
