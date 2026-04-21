@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import {
   createWorkflow,
@@ -33,6 +33,8 @@ export function Toolbar() {
   const undo = () => temporal.getState().undo();
   const redo = () => temporal.getState().redo();
 
+  const queryClient = useQueryClient();
+
   const saveMutation = useMutation({
     mutationFn: async (): Promise<WorkflowResponse> => {
       const payload = toPayload();
@@ -58,6 +60,10 @@ export function Toolbar() {
       return executeWorkflow(lastSavedId);
     },
     onSuccess: (exec) => {
+      // Seed the cache with the POST response (queued snapshot in inline mode)
+      // so the drawer shows the initial state immediately, instead of an empty
+      // "Loading…" until the first poll lands ~1s later.
+      queryClient.setQueryData(["execution", exec.id], exec);
       setActiveExecutionId(exec.id);
       setError(null);
     },
