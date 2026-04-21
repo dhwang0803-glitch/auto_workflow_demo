@@ -17,6 +17,10 @@ interface ComposerState {
   sessionId: string | null;
   messages: ChatMessage[];
   pending: boolean;
+  // Tokens accumulated from the in-flight SSE stream. Rendered as a "typing"
+  // bubble at the bottom of the message list while `pending` is true; cleared
+  // when the terminal `result` frame turns into a real assistant message.
+  streamingRationale: string;
   lastError: string | null;
   // The proposed DAG from the most recent draft|refine assistant turn,
   // awaiting the user's Apply decision. Null once applied or superseded.
@@ -29,6 +33,8 @@ interface ComposerState {
   pushUser: (text: string) => void;
   pushAssistant: (result: ComposeResult) => void;
   setPending: (pending: boolean) => void;
+  appendRationale: (token: string) => void;
+  clearStreamingRationale: () => void;
   setError: (msg: string | null) => void;
   clearPendingDraft: () => void;
   reset: () => void;
@@ -41,6 +47,7 @@ export const useComposerStore = create<ComposerState>()((set) => ({
   sessionId: null,
   messages: [],
   pending: false,
+  streamingRationale: "",
   lastError: null,
   pendingDraft: null,
   pendingIntent: null,
@@ -71,6 +78,11 @@ export const useComposerStore = create<ComposerState>()((set) => ({
 
   setPending: (pending) => set({ pending }),
 
+  appendRationale: (token) =>
+    set((s) => ({ streamingRationale: s.streamingRationale + token })),
+
+  clearStreamingRationale: () => set({ streamingRationale: "" }),
+
   setError: (lastError) => set({ lastError }),
 
   clearPendingDraft: () =>
@@ -81,6 +93,7 @@ export const useComposerStore = create<ComposerState>()((set) => ({
       sessionId: null,
       messages: [],
       pending: false,
+      streamingRationale: "",
       lastError: null,
       pendingDraft: null,
       pendingIntent: null,
