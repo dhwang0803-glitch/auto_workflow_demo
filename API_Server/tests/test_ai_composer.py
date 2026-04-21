@@ -1,10 +1,10 @@
-"""POST /api/v1/ai/compose — non-stream half (PLAN_02 PR A).
+"""POST /api/v1/ai/compose — JSON-once + SSE streaming (PLAN_02 PR A & B).
 
 The Anthropic SDK is mocked via a `FakeBackend` injected through
 `create_app(ai_composer_backend=...)`. No network I/O.
 
-PR B will add SSE streaming + Redis-backed sessions; this file exercises the
-JSON-once contract that the Frontend ChatPanel (PR C) will consume.
+Streaming tests feed canned chunks through `FakeBackend.stream()` and parse
+the SSE frames the router emits.
 """
 from __future__ import annotations
 
@@ -39,19 +39,38 @@ class FakeBackend:
     """Records the most recent prompt and replays a canned response. Each
     test instantiates one and asserts on `last_system` / `last_user` to
     catch prompt regressions.
+
+    For streaming tests, pass `stream_chunks=[...]` to replay a preset chunk
+    sequence through `stream()`.
     """
 
-    def __init__(self, response: str) -> None:
+    def __init__(
+        self,
+        response: str = "",
+        *,
+        stream_chunks: list[str] | None = None,
+    ) -> None:
         self._response = response
+        self._stream_chunks = stream_chunks or []
         self.last_system: str | None = None
         self.last_user: str | None = None
         self.calls = 0
+        self.stream_calls = 0
 
     async def complete(self, *, system: str, user_message: str, max_tokens: int) -> str:
         self.last_system = system
         self.last_user = user_message
         self.calls += 1
         return self._response
+
+    async def stream(
+        self, *, system: str, user_message: str, max_tokens: int
+    ) -> AsyncIterator[str]:
+        self.last_system = system
+        self.last_user = user_message
+        self.stream_calls += 1
+        for chunk in self._stream_chunks:
+            yield chunk
 
 
 def _wrap_json(payload: dict) -> str:
@@ -91,8 +110,13 @@ async def composer_client_factory():
     of the backend's response, while still sharing the auth boilerplate.
     """
 
-    async def _build(response_text: str, **settings_overrides):
-        backend = FakeBackend(response_text)
+    async def _build(
+        response_text: str = "",
+        *,
+        stream_chunks: list[str] | None = None,
+        **settings_overrides,
+    ):
+        backend = FakeBackend(response_text, stream_chunks=stream_chunks)
         settings = _make_settings(**settings_overrides)
         app = create_app(
             settings,
@@ -335,21 +359,6 @@ async def test_disabled_when_no_api_key(composer_client_factory):
         await _truncate(app)
 
 
-async def test_stream_true_returns_501_until_pr_b(composer_client_factory):
-    canned = _wrap_json({"intent": "clarify", "rationale": "x"})
-    backend, app, client = await composer_client_factory(canned)
-    async with client, app.router.lifespan_context(app):
-        await _truncate(app)
-        await _register_and_login(client, app)
-
-        r = await client.post(
-            "/api/v1/ai/compose?stream=true", json={"message": "go"}
-        )
-        assert r.status_code == 501
-
-        await _truncate(app)
-
-
 async def test_unauthenticated_returns_401(composer_client_factory):
     canned = _wrap_json({"intent": "clarify", "rationale": "x"})
     backend, app, client = await composer_client_factory(canned)
@@ -360,5 +369,182 @@ async def test_unauthenticated_returns_401(composer_client_factory):
             "/api/v1/ai/compose", json={"message": "go"}
         )
         assert r.status_code == 401
+
+        await _truncate(app)
+
+
+# --------------------------------------------------------- streaming (PR B)
+
+
+def _parse_sse(body: str) -> list[dict]:
+    """Parse a text/event-stream body into a list of {event, data} dicts."""
+    out: list[dict] = []
+    for frame in body.split("\n\n"):
+        frame = frame.strip()
+        if not frame:
+            continue
+        event = None
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+        if event is not None:
+            out.append(
+                {"event": event, "data": json.loads("\n".join(data_lines))}
+            )
+    return out
+
+
+async def test_stream_emits_rationale_deltas_then_result(composer_client_factory):
+    payload = {
+        "intent": "draft",
+        "clarify_questions": None,
+        "proposed_dag": {
+            "nodes": [
+                {"id": "fetch", "type": "http_request", "config": {"url": "https://x"}}
+            ],
+            "edges": [],
+        },
+        "diff": None,
+        "rationale": "Fetch then done.",
+    }
+    # Simulate the model narrating inside <rationale>...</rationale>, then
+    # emitting the JSON fence. Chunks split across tag boundaries to prove
+    # the parser holds back partial-tag tails.
+    chunks = [
+        "<ration",
+        "ale>Fetching ",
+        "the URL.",
+        "</rational",
+        "e>\n```json\n",
+        json.dumps(payload),
+        "\n```",
+    ]
+    backend, app, client = await composer_client_factory(
+        "", stream_chunks=chunks
+    )
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        r = await client.post(
+            "/api/v1/ai/compose?stream=true", json={"message": "fetch it"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/event-stream")
+
+        events = _parse_sse(r.text)
+        kinds = [e["event"] for e in events]
+        assert kinds[0] == "session"  # correlation frame first
+        assert "rationale_delta" in kinds
+        assert kinds[-1] == "result"
+
+        # Rationale tokens concatenated reconstruct the full rationale text
+        # — no tag fragments leaked.
+        narrated = "".join(
+            e["data"]["token"] for e in events if e["event"] == "rationale_delta"
+        )
+        assert "Fetching the URL." in narrated
+        assert "<rationale" not in narrated
+        assert "</rationale" not in narrated
+
+        final = next(e["data"] for e in events if e["event"] == "result")
+        assert final["result"]["intent"] == "draft"
+        assert final["result"]["proposed_dag"]["nodes"][0]["id"] == "fetch"
+        assert final["session_id"]
+
+        await _truncate(app)
+
+
+async def test_stream_invalid_json_emits_error_event(composer_client_factory):
+    chunks = [
+        "<rationale>oops</rationale>\n",
+        "not a json fence at all",
+    ]
+    backend, app, client = await composer_client_factory(
+        "", stream_chunks=chunks
+    )
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        r = await client.post(
+            "/api/v1/ai/compose?stream=true", json={"message": "go"}
+        )
+        # Stream opens 200 because headers flush before any failure. The
+        # error is reported in-band.
+        assert r.status_code == 200
+
+        events = _parse_sse(r.text)
+        errs = [e for e in events if e["event"] == "error"]
+        assert len(errs) == 1
+        assert errs[0]["data"]["code"] == "invalid_response"
+        # No `result` frame should follow an `error`.
+        assert not any(e["event"] == "result" for e in events)
+
+        await _truncate(app)
+
+
+async def test_stream_rate_limit_emits_error_event(composer_client_factory):
+    payload = {"intent": "clarify", "rationale": "x"}
+    chunks = [
+        "<rationale>x</rationale>\n```json\n",
+        json.dumps(payload),
+        "\n```",
+    ]
+    backend, app, client = await composer_client_factory(
+        "", stream_chunks=chunks, ai_compose_rate_per_minute=1
+    )
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        # First request consumes the budget.
+        first = await client.post(
+            "/api/v1/ai/compose?stream=true", json={"message": "go"}
+        )
+        assert first.status_code == 200
+        assert any(
+            e["event"] == "result" for e in _parse_sse(first.text)
+        )
+
+        # Second trips the limiter — in-band error, still HTTP 200.
+        blocked = await client.post(
+            "/api/v1/ai/compose?stream=true", json={"message": "go"}
+        )
+        assert blocked.status_code == 200
+        events = _parse_sse(blocked.text)
+        errs = [e for e in events if e["event"] == "error"]
+        assert len(errs) == 1
+        assert errs[0]["data"]["code"] == "rate_limit"
+
+        await _truncate(app)
+
+
+async def test_stream_uses_streaming_prompt_variant(composer_client_factory):
+    """The streaming path must instruct the model to narrate inside
+    <rationale>...</rationale>. Regression guard: if someone refactors
+    `_build_system_prompt`, this catches dropping the streaming branch."""
+    payload = {"intent": "clarify", "rationale": "x"}
+    chunks = [
+        "<rationale>x</rationale>\n```json\n",
+        json.dumps(payload),
+        "\n```",
+    ]
+    backend, app, client = await composer_client_factory(
+        "", stream_chunks=chunks
+    )
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        r = await client.post(
+            "/api/v1/ai/compose?stream=true", json={"message": "go"}
+        )
+        assert r.status_code == 200
+        assert "<rationale>" in (backend.last_system or "")
+        assert "streaming mode" in (backend.last_system or "")
 
         await _truncate(app)
