@@ -42,7 +42,24 @@ answers from `StubLLMBackend` — no key required, no network calls.
 | non-empty `current_dag` in the request | `refine` | diff that updates the first node's `url` |
 | otherwise | `draft` | 2-node skeleton (`http_request` → `gmail_send`) |
 
-## 3. Start Frontend
+## 3. Mint a dev JWT (skip register/login)
+
+`Frontend/.env.local` carries `NEXT_PUBLIC_DEV_TOKEN` so the UI can call the
+API without a login round-trip. The token has a 60-minute TTL and rots
+between sessions — re-mint it from `API_Server/`:
+
+```bash
+python scripts/mint_dev_token.py
+```
+
+This upserts `dev@local.test` (verified), mints a fresh access JWT, and
+rewrites only the `NEXT_PUBLIC_DEV_TOKEN` line (other env vars preserved).
+Restart `pnpm dev` after running it so Next.js picks up the new value.
+
+If you skip this and your `pnpm dev` returns `{"detail":"invalid token"}`
+on first API call, the token has expired — re-run the script.
+
+## 4. Start Frontend
 
 In a second terminal:
 
@@ -52,7 +69,7 @@ pnpm install  # first time only
 pnpm dev      # next dev on :3000 — proxies /api/* to :8000
 ```
 
-## 4. Drive the flow
+## 5. Drive the flow
 
 1. Open `http://localhost:3000`
 2. Register / login (or reuse a session — the `.env.local` `NEXT_PUBLIC_DEV_TOKEN` is still honored)
@@ -64,7 +81,7 @@ pnpm dev      # next dev on :3000 — proxies /api/* to :8000
    - With nodes on the canvas, type `Change the URL` → refine bubble, **Apply** replaces the canvas with the proposed DAG
 6. Save / Execute work as normal (ADR-021 inline mode — DAG runs synchronously in the POST handler)
 
-## 5. Switching to real Claude
+## 6. Switching to real Claude
 
 When you want real LLM behavior:
 
@@ -78,7 +95,7 @@ ANTHROPIC_MODEL=claude-sonnet-4-6    # default, override if needed
 Restart uvicorn. Everything else is identical — the Protocol guarantees
 the wire format.
 
-## 6. SSE streaming (PR D preview)
+## 7. SSE streaming (PR D preview)
 
 PR D hasn't landed yet — the ChatPanel uses the JSON-once path for now.
 You can still exercise the streaming endpoint by hand:
@@ -93,7 +110,7 @@ curl -N -H "Authorization: Bearer $TOKEN" \
 You'll see `event: session` → `event: rationale_delta` frames (one every
 ~40ms from the stub) → `event: result`.
 
-## 7. Gotchas
+## 8. Gotchas
 
 - **Tests require Postgres** — they hit the auth stack. `DATABASE_URL`
   must be exported or present in `.env`.
