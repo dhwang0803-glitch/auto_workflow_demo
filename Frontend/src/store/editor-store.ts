@@ -80,14 +80,27 @@ export const useEditorStore = create<EditorState>()(
 
       setName: (name) => set({ name, dirty: true }),
 
-      onNodesChange: (changes) =>
+      onNodesChange: (changes) => {
+        // React Flow fires "dimensions" on mount (DOM measurement) and "select"
+        // on click — neither is a user mutation, so they must not flip dirty.
+        // Without this filter, freshly loaded workflows show "Unsaved changes"
+        // immediately after load and the Execute button stays disabled.
+        const meaningful = changes.some(
+          (c) => c.type !== "dimensions" && c.type !== "select",
+        );
         set({
           nodes: applyNodeChanges(changes, get().nodes) as EditorNode[],
-          dirty: true,
-        }),
+          ...(meaningful ? { dirty: true } : {}),
+        });
+      },
 
-      onEdgesChange: (changes) =>
-        set({ edges: applyEdgeChanges(changes, get().edges), dirty: true }),
+      onEdgesChange: (changes) => {
+        const meaningful = changes.some((c) => c.type !== "select");
+        set({
+          edges: applyEdgeChanges(changes, get().edges),
+          ...(meaningful ? { dirty: true } : {}),
+        });
+      },
 
       onConnect: (conn) => {
         if (!conn.source || !conn.target) return;
