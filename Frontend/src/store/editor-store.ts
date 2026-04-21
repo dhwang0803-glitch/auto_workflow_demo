@@ -14,6 +14,8 @@ import type {
   WorkflowPayload,
   WorkflowResponse,
 } from "@/lib/api";
+import type { ComposeProposedDag } from "@/lib/composer";
+import { applyAutoLayout } from "@/lib/auto-layout";
 import { wouldCreateCycle } from "@/lib/dag";
 
 export interface EditorNodeData {
@@ -52,6 +54,7 @@ interface EditorState {
   selectNode: (id: string | null) => void;
   replaceNodes: (nodes: EditorNode[]) => void;
   loadFromWorkflow: (wf: WorkflowResponse) => void;
+  applyComposerDraft: (dag: ComposeProposedDag) => void;
   reset: () => void;
   toPayload: () => WorkflowPayload;
   setError: (msg: string | null) => void;
@@ -177,6 +180,37 @@ export const useEditorStore = create<EditorState>()(
           selectedNodeId: null,
           dirty: false,
           lastSavedId: wf.id,
+          lastError: null,
+        });
+      },
+
+      applyComposerDraft: (dag) => {
+        // AI drafts wholesale-replace the canvas — drafts arrive without
+        // positions, so we rank-layout them before the user sees anything.
+        // Unlike `loadFromWorkflow`, we DON'T touch `name` / `lastSavedId`:
+        // the draft is unsaved and still belongs to whatever workflow the
+        // user was editing (or to "new" if they started from scratch).
+        const raw: EditorNode[] = dag.nodes.map((n) => ({
+          id: n.id,
+          type: "custom",
+          position: { x: 0, y: 0 }, // overwritten by applyAutoLayout
+          data: {
+            nodeType: n.type,
+            displayName: n.type,
+            config: (n.config ?? {}) as Record<string, unknown>,
+          },
+        }));
+        const edges: Edge[] = dag.edges.map((e, i) => ({
+          id: `e_${e.source}_${e.target}_${i}`,
+          source: e.source,
+          target: e.target,
+        }));
+        const laid = applyAutoLayout(raw, edges) as EditorNode[];
+        set({
+          nodes: laid,
+          edges,
+          selectedNodeId: null,
+          dirty: true,
           lastError: null,
         });
       },

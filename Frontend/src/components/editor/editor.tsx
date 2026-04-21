@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getWorkflow } from "@/lib/api";
 import { useEditorStore } from "@/store/editor-store";
+import { ChatPanel } from "./chat-panel";
 import { NodePalette } from "./node-palette";
 import { WorkflowCanvas } from "./workflow-canvas";
 import { PropertyPanel } from "./property-panel";
@@ -56,6 +57,7 @@ export function Editor({ workflowId }: EditorProps) {
       <Toolbar />
       <div className="flex-1 flex overflow-hidden relative">
         <NodePalette />
+        <ChatPanel />
         <WorkflowCanvas />
         <PropertyPanel />
         <ResultDrawer />
