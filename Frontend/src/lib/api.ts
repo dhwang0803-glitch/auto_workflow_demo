@@ -114,3 +114,42 @@ export const updateWorkflow = (id: string, body: WorkflowPayload) =>
 
 export const deleteWorkflow = (id: string) =>
   apiFetch<void>(`/api/v1/workflows/${id}`, { method: "DELETE" });
+
+// ─── Execution ──────────────────────────────────────────────────────────────
+// Backend status values: "queued" | "running" | "success" | "failed".
+// node_results is a free-form {nodeId: {status, output?, error?, ...}} dict —
+// shape varies per node, so consumers must read fields defensively.
+
+export type ExecutionStatus = "queued" | "running" | "success" | "failed";
+
+export interface NodeResult {
+  status?: ExecutionStatus;
+  output?: unknown;
+  error?: unknown;
+  [k: string]: unknown;
+}
+
+export interface ExecutionResponse {
+  id: string;
+  workflow_id: string;
+  status: ExecutionStatus;
+  execution_mode: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  error: Record<string, unknown> | null;
+  node_results: Record<string, NodeResult> | null;
+}
+
+export const TERMINAL_STATUSES: ReadonlySet<ExecutionStatus> = new Set<ExecutionStatus>(
+  ["success", "failed"],
+);
+
+export const executeWorkflow = (id: string) =>
+  apiFetch<ExecutionResponse>(
+    `/api/v1/workflows/${id}/execute`,
+    { method: "POST" },
+  );
+
+export const getExecution = (id: string) =>
+  apiFetch<ExecutionResponse>(`/api/v1/executions/${id}`);
