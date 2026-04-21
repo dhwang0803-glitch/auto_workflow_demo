@@ -22,6 +22,7 @@ from app.services.ai_composer_service import (
     AIComposerService,
     AnthropicBackend,
     LLMBackend,
+    StubLLMBackend,
     build_node_catalog_provider,
 )
 from app.services.auth_service import AuthService
@@ -88,13 +89,18 @@ class AppContainer:
 
         # PLAN_02 PR A — AI Composer. `backend=None` keeps the service wired
         # but disabled (router 503s on call) so envs without ANTHROPIC_API_KEY
-        # boot normally. Tests inject their own LLMBackend for determinism.
+        # boot normally. Tests inject their own LLMBackend for determinism;
+        # local UI testing can flip AI_COMPOSER_USE_STUB=true to get a
+        # deterministic no-network backend.
         backend: LLMBackend | None = ai_composer_backend
-        if backend is None and settings.anthropic_api_key:
-            backend = AnthropicBackend(
-                api_key=settings.anthropic_api_key,
-                model=settings.anthropic_model,
-            )
+        if backend is None:
+            if settings.ai_composer_use_stub:
+                backend = StubLLMBackend()
+            elif settings.anthropic_api_key:
+                backend = AnthropicBackend(
+                    api_key=settings.anthropic_api_key,
+                    model=settings.anthropic_model,
+                )
         self.ai_composer_service = AIComposerService(
             backend=backend,
             catalog_provider=build_node_catalog_provider(),

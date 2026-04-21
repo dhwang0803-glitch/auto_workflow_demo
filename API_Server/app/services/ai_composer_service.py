@@ -4,8 +4,10 @@ Architecture:
 
 - `LLMBackend` is a small Protocol with two methods: `complete()` for the
   non-stream JSON-once path and `stream()` for the SSE path. The default
-  `AnthropicBackend` wraps the official SDK; tests inject a fake. This
-  keeps Anthropic SDK imports out of the test path entirely.
+  `AnthropicBackend` wraps the official SDK; tests inject a fake; local
+  UI testing can enable `StubLLMBackend` via `AI_COMPOSER_USE_STUB=true`
+  to drive the ChatPanel without any Anthropic credentials. This keeps
+  Anthropic SDK imports out of the test path entirely.
 - `AIComposerService.compose()` builds the prompt (system rules + node
   catalog + current_dag + user message), calls the backend, parses the
   JSON response into a `ComposeResult`, and bubbles up shape errors as
@@ -148,6 +150,151 @@ class AnthropicBackend:
         ) as s:
             async for text in s.text_stream:
                 yield text
+
+
+# ----------------------------------------------------------------- stub backend
+
+
+class StubLLMBackend:
+    """Deterministic, network-free backend for local UI testing.
+
+    Picks an intent from simple keyword rules in the user_message so you can
+    drive the ChatPanel end-to-end without an Anthropic key:
+    - message contains "?" or starts with "what" / "who" / "which" → clarify
+    - user_message payload already embeds a `<current_dag>` that isn't null
+      → refine (modifies the first node's config to prove the wire works)
+    - otherwise → draft (2-node http_request → gmail_send skeleton)
+
+    The `complete()` path returns the full fenced JSON. `stream()` chunks it
+    so the SSE path exercises the `<rationale>` parser. Not intended for
+    production — enable via `AI_COMPOSER_USE_STUB=true`.
+    """
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+    ) -> str:
+        intent, payload = self._decide(user_message)
+        return "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+
+    async def stream(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        _, payload = self._decide(user_message)
+        rationale = payload.get("rationale", "")
+        # Emit the rationale a few chars at a time to show the typing effect.
+        yield "<rationale>"
+        for i in range(0, len(rationale), 8):
+            # Tiny sleep so the frontend actually sees the frames arrive one
+            # at a time rather than as a single chunk that the browser
+            # concatenates before paint.
+            await asyncio.sleep(0.04)
+            yield rationale[i : i + 8]
+        yield "</rationale>\n```json\n"
+        yield json.dumps(payload, ensure_ascii=False)
+        yield "\n```"
+
+    # ---- intent selection --------------------------------------------------
+
+    def _decide(self, user_message: str) -> tuple[str, dict]:
+        text = user_message.lower()
+        has_current_dag = (
+            "<current_dag>" in text and "<current_dag>\nnull" not in text
+        )
+        if has_current_dag:
+            return "refine", self._refine_payload()
+        if (
+            "?" in user_message
+            or text.strip().startswith(("what", "who", "which", "where", "how"))
+        ):
+            return "clarify", {
+                "intent": "clarify",
+                "clarify_questions": [
+                    "Which data source should I use?",
+                    "Who are the recipients?",
+                    "What format should the output take?",
+                ],
+                "proposed_dag": None,
+                "diff": None,
+                "rationale": (
+                    "I need a bit more detail before drafting a workflow."
+                ),
+            }
+        return "draft", {
+            "intent": "draft",
+            "clarify_questions": None,
+            "proposed_dag": {
+                "nodes": [
+                    {
+                        "id": "fetch_data",
+                        "type": "http_request",
+                        "config": {
+                            "url": "https://example.com/data",
+                            "method": "GET",
+                        },
+                    },
+                    {
+                        "id": "notify",
+                        "type": "gmail_send",
+                        "config": {
+                            "to": "team@example.com",
+                            "subject": "Report",
+                            "body": "See attached.",
+                        },
+                    },
+                ],
+                "edges": [{"source": "fetch_data", "target": "notify"}],
+            },
+            "diff": None,
+            "rationale": (
+                "This is a stubbed draft from StubLLMBackend — fetch data, "
+                "then email it to the team. Replace ANTHROPIC_API_KEY with a "
+                "real key (and unset AI_COMPOSER_USE_STUB) to get real "
+                "Claude-backed responses."
+            ),
+        }
+
+    def _refine_payload(self) -> dict:
+        return {
+            "intent": "refine",
+            "clarify_questions": None,
+            "proposed_dag": {
+                "nodes": [
+                    {
+                        "id": "fetch_data",
+                        "type": "http_request",
+                        "config": {
+                            "url": "https://example.com/data?refined=1",
+                            "method": "GET",
+                        },
+                    },
+                ],
+                "edges": [],
+            },
+            "diff": {
+                "added_nodes": [],
+                "removed_node_ids": [],
+                "modified_nodes": [
+                    {
+                        "id": "fetch_data",
+                        "config": {
+                            "url": "https://example.com/data?refined=1",
+                        },
+                    }
+                ],
+            },
+            "rationale": (
+                "Stubbed refinement — updated the fetch URL with a "
+                "`refined=1` query param to prove the wire."
+            ),
+        }
 
 
 # --------------------------------------------------------------- stream events

@@ -336,6 +336,39 @@ async def test_rate_limit_429(composer_client_factory):
         await _truncate(app)
 
 
+async def test_stub_backend_drives_non_stream_path():
+    """When AI_COMPOSER_USE_STUB=true the container wires StubLLMBackend
+    automatically — no backend injection needed. Keyword-based rules pick
+    the intent so the ChatPanel can be driven end-to-end without Anthropic."""
+    settings = _make_settings(ai_composer_use_stub=True)
+    app = create_app(settings, email_sender=NoopEmailSender())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        # Trailing "?" trips the clarify rule.
+        q = await client.post(
+            "/api/v1/ai/compose",
+            json={"message": "What data source should I use?"},
+        )
+        assert q.status_code == 200, q.text
+        assert q.json()["result"]["intent"] == "clarify"
+
+        # Plain imperative → draft with the stubbed 2-node skeleton.
+        d = await client.post(
+            "/api/v1/ai/compose", json={"message": "Fetch data and email it."}
+        )
+        assert d.status_code == 200, d.text
+        body = d.json()
+        assert body["result"]["intent"] == "draft"
+        assert len(body["result"]["proposed_dag"]["nodes"]) == 2
+
+        await _truncate(app)
+
+
 async def test_disabled_when_no_api_key(composer_client_factory):
     """The container builds AIComposerService with backend=None when the
     Anthropic key is empty AND no test backend is injected. The router

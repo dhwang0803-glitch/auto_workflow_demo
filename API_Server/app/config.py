@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # key, NOT the per-user credential pool.
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
+    # Local UI testing escape hatch — when true, AIComposerService uses a
+    # deterministic StubLLMBackend (no network, no cost) so you can drive
+    # ChatPanel end-to-end against a plain uvicorn. Takes precedence over
+    # `anthropic_api_key` so you don't have to unset the key to flip modes.
+    ai_composer_use_stub: bool = False
     # Per-user rate limit. PR A uses an in-memory token bucket — single Cloud
     # Run instance only. PR B replaces this with Redis-backed counter so the
     # limit holds across the autoscaler.
