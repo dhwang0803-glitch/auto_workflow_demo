@@ -35,14 +35,23 @@ function durationMs(ex: ExecutionResponse): number | null {
 
 function formatNodeResult(result: NodeResult | undefined): string {
   if (!result) return "—";
-  // Strip top-level status; serialize the rest as a compact JSON snippet.
-  const { status: _omit, ...rest } = result;
-  if (Object.keys(rest).length === 0) return "(no output)";
+  if (Object.keys(result).length === 0) return "(no output)";
   try {
-    return JSON.stringify(rest, null, 2);
+    return JSON.stringify(result, null, 2);
   } catch {
     return String(result);
   }
+}
+
+// Mirrors custom-node.tsx: Execution_Engine writes node_results[id] only on
+// success, so per-node status must be derived from entry presence + overall.
+function deriveNodeStatus(
+  exec: ExecutionResponse,
+  nodeId: string,
+): ExecutionStatus {
+  if (exec.node_results?.[nodeId]) return "success";
+  if (exec.status === "failed") return "failed";
+  return exec.status;
 }
 
 export function ResultDrawer() {
@@ -122,15 +131,12 @@ export function ResultDrawer() {
               <ul className="space-y-2">
                 {nodes.map((n) => {
                   const result = data.node_results?.[n.id];
+                  const nodeStatus = deriveNodeStatus(data, n.id);
                   return (
                     <li key={n.id} className="border rounded">
                       <div className="flex items-center justify-between px-2 py-1 bg-gray-50">
                         <span className="text-xs font-mono">{n.id}</span>
-                        {result?.status ? (
-                          <StatusPill status={result.status} />
-                        ) : (
-                          <span className="text-xs text-gray-400">—</span>
-                        )}
+                        <StatusPill status={nodeStatus} />
                       </div>
                       <pre className="text-[11px] p-2 max-h-48 overflow-auto whitespace-pre-wrap break-all">
                         {formatNodeResult(result)}
