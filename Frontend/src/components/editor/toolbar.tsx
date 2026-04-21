@@ -10,6 +10,7 @@ import {
   type WorkflowResponse,
 } from "@/lib/api";
 import { useEditorStore, useEditorTemporal } from "@/store/editor-store";
+import { useComposerStore } from "@/store/composer-store";
 import { applyAutoLayout } from "@/lib/auto-layout";
 
 export function Toolbar() {
@@ -32,6 +33,9 @@ export function Toolbar() {
   const temporal = useEditorTemporal();
   const undo = () => temporal.getState().undo();
   const redo = () => temporal.getState().redo();
+
+  const composerOpen = useComposerStore((s) => s.open);
+  const setComposerOpen = useComposerStore((s) => s.setOpen);
 
   const queryClient = useQueryClient();
 
@@ -106,6 +110,17 @@ export function Toolbar() {
         className="text-xs border rounded px-2 py-1 hover:bg-gray-50"
       >
         Auto-Layout
+      </button>
+      <button
+        type="button"
+        onClick={() => setComposerOpen(!composerOpen)}
+        aria-pressed={composerOpen}
+        className={`text-xs border rounded px-2 py-1 ${
+          composerOpen ? "bg-blue-50 border-blue-300" : "hover:bg-gray-50"
+        }`}
+        data-testid="toggle-ai-composer"
+      >
+        {composerOpen ? "Hide AI" : "AI Composer"}
       </button>
       <div className="flex-1" />
       <span className="text-xs text-gray-500">
