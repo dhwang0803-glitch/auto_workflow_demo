@@ -2,15 +2,19 @@
 
 Architecture:
 
-- `LLMBackend` is a small Protocol with a single `complete()` method. The
-  default `AnthropicBackend` wraps the official SDK; tests inject a fake.
-  This keeps Anthropic SDK imports out of the test path entirely.
+- `LLMBackend` is a small Protocol with two methods: `complete()` for the
+  non-stream JSON-once path and `stream()` for the SSE path. The default
+  `AnthropicBackend` wraps the official SDK; tests inject a fake. This
+  keeps Anthropic SDK imports out of the test path entirely.
 - `AIComposerService.compose()` builds the prompt (system rules + node
   catalog + current_dag + user message), calls the backend, parses the
   JSON response into a `ComposeResult`, and bubbles up shape errors as
   `InvalidComposerResponseError` (502).
-- Rate limiting is a per-user in-memory token bucket. PR B replaces it
-  with a Redis counter so the limit holds across Cloud Run instances.
+- `AIComposerService.compose_stream()` (PR B) yields `StreamEvent` instances
+  — `RationaleDelta` while the model emits text inside `<rationale>...
+  </rationale>`, then a single `Result` once the trailing JSON parses.
+- Rate limiting is a per-user in-memory token bucket. A future PR replaces
+  it with a Redis counter so the limit holds across Cloud Run instances.
 """
 from __future__ import annotations
 
@@ -20,7 +24,8 @@ import logging
 import re
 import time
 from collections import deque
-from typing import Any, Awaitable, Callable, Protocol
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -70,6 +75,22 @@ class LLMBackend(Protocol):
         """Return the assistant's reply as raw text."""
         ...
 
+    def stream(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        """Yield text chunks as the model emits them.
+
+        Implementations MUST close the underlying stream when the consumer
+        stops iterating (e.g. on client disconnect). The default
+        `AnthropicBackend` does this via `async with` around the SDK's
+        `messages.stream()` context manager.
+        """
+        ...
+
 
 class AnthropicBackend:
     """Default backend — wraps the official `anthropic` SDK.
@@ -105,6 +126,131 @@ class AnthropicBackend:
         # `.content` is a list of blocks; collect any text.
         parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
         return "".join(parts)
+
+    async def stream(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+    ) -> AsyncIterator[str]:
+        # `messages.stream()` returns an async context manager that tears the
+        # HTTP connection down deterministically on exit — including when the
+        # consumer stops iterating early (FastAPI client disconnect raises
+        # CancelledError inside `async for`, unwinding through `async with`).
+        async with self._client.messages.stream(
+            model=self._model,
+            max_tokens=max_tokens,
+            system=[
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+            ],
+            messages=[{"role": "user", "content": user_message}],
+        ) as s:
+            async for text in s.text_stream:
+                yield text
+
+
+# --------------------------------------------------------------- stream events
+
+
+@dataclass(frozen=True)
+class RationaleDelta:
+    """Text fragment emitted inside `<rationale>...</rationale>`.
+
+    The Frontend appends these to the live panel verbatim — no JSON parsing,
+    no markdown processing on the transport layer.
+    """
+
+    token: str
+
+
+@dataclass(frozen=True)
+class Result:
+    """Terminal event once the JSON fence is parsed into a `ComposeResult`."""
+
+    payload: ComposeResult
+
+
+@dataclass(frozen=True)
+class StreamError:
+    """Terminal failure event. `code` is machine-readable so the Frontend can
+    distinguish "retry later" (rate_limit) from "this will never work"
+    (invalid_response)."""
+
+    code: str
+    message: str
+
+
+StreamEvent = RationaleDelta | Result | StreamError
+
+
+class _RationaleStreamParser:
+    """State machine that splits a token stream into:
+
+    1. `RationaleDelta` events while text is inside `<rationale>...</rationale>`
+    2. A single buffered string (accessible via `.json_tail`) accumulating
+       everything AFTER `</rationale>`, which the caller parses once the
+       stream ends.
+
+    We can't rely on the model emitting tag boundaries on chunk boundaries —
+    the SDK chunks are arbitrary. The parser keeps a tiny look-behind buffer
+    the size of the longest tag so partial tag matches don't leak as user-
+    visible tokens.
+    """
+
+    _OPEN = "<rationale>"
+    _CLOSE = "</rationale>"
+
+    def __init__(self) -> None:
+        # Pre-tag chunks are discarded (some models emit a newline before the
+        # tag); post-close chunks accumulate verbatim for JSON parsing.
+        self._state: str = "PRE"  # PRE → IN → POST
+        self._buf: str = ""
+        self.json_tail: str = ""
+
+    def feed(self, chunk: str) -> list[RationaleDelta]:
+        self._buf += chunk
+        out: list[RationaleDelta] = []
+        while True:
+            if self._state == "PRE":
+                idx = self._buf.find(self._OPEN)
+                if idx == -1:
+                    # Keep a small tail in case the open tag straddles chunks.
+                    self._buf = self._buf[-(len(self._OPEN) - 1):]
+                    return out
+                self._buf = self._buf[idx + len(self._OPEN):]
+                self._state = "IN"
+            elif self._state == "IN":
+                idx = self._buf.find(self._CLOSE)
+                if idx == -1:
+                    # Emit everything except a tail that might be the start of
+                    # `</rationale>`. Without this guard a chunk ending with
+                    # "</ration" would leak as user-visible text.
+                    keep = len(self._CLOSE) - 1
+                    emit = self._buf[:-keep] if len(self._buf) > keep else ""
+                    if emit:
+                        out.append(RationaleDelta(token=emit))
+                        self._buf = self._buf[len(emit):]
+                    return out
+                if idx > 0:
+                    out.append(RationaleDelta(token=self._buf[:idx]))
+                self._buf = self._buf[idx + len(self._CLOSE):]
+                self._state = "POST"
+            else:  # POST
+                self.json_tail += self._buf
+                self._buf = ""
+                return out
+
+    def finish(self) -> list[RationaleDelta]:
+        # Flush any remainder that was being held back as potential tag prefix.
+        out: list[RationaleDelta] = []
+        if self._state == "IN" and self._buf:
+            out.append(RationaleDelta(token=self._buf))
+            self._buf = ""
+        elif self._state == "POST" and self._buf:
+            self.json_tail += self._buf
+            self._buf = ""
+        return out
 
 
 # --------------------------------------------------------------- rate limit
@@ -181,7 +327,7 @@ class AIComposerService:
         await self._rate_limiter.acquire(str(user_id))
 
         catalog = await self._catalog_provider()
-        system = self._build_system_prompt(catalog)
+        system = self._build_system_prompt(catalog, for_streaming=False)
         user_payload = self._build_user_message(current_dag, message)
 
         raw = await self._backend.complete(
@@ -191,10 +337,106 @@ class AIComposerService:
         )
         return self._parse_result(raw)
 
+    async def compose_stream(
+        self,
+        *,
+        user_id: UUID,
+        message: str,
+        current_dag: dict | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Yield `RationaleDelta` events as the model narrates, then a single
+        `Result` (or `StreamError`) once the trailing JSON parses.
+
+        The enabled/rate-limit/disabled checks are emitted *in-band* as
+        `StreamError` events rather than raised, so the router can send a
+        clean SSE "error" frame instead of aborting the response mid-stream.
+        The router still uses the DomainError path for pre-stream failures
+        (auth 401 etc.) that happen before any bytes are sent.
+        """
+        if self._backend is None:
+            yield StreamError(
+                code="disabled",
+                message="AI Composer is not configured (anthropic_api_key missing)",
+            )
+            return
+        try:
+            await self._rate_limiter.acquire(str(user_id))
+        except ComposerRateLimitError as exc:
+            yield StreamError(code="rate_limit", message=exc.message)
+            return
+
+        catalog = await self._catalog_provider()
+        system = self._build_system_prompt(catalog, for_streaming=True)
+        user_payload = self._build_user_message(current_dag, message)
+
+        parser = _RationaleStreamParser()
+        try:
+            async for chunk in self._backend.stream(
+                system=system,
+                user_message=user_payload,
+                max_tokens=self._max_tokens,
+            ):
+                for ev in parser.feed(chunk):
+                    yield ev
+            for ev in parser.finish():
+                yield ev
+        except asyncio.CancelledError:
+            # Client disconnect — propagate so the underlying HTTP stream
+            # unwinds via `async with`. No terminal event needed; the socket
+            # is already gone.
+            raise
+        except Exception as exc:  # noqa: BLE001 — surface SDK/network errors
+            logger.exception("composer_stream_upstream_error")
+            yield StreamError(code="upstream_error", message=str(exc))
+            return
+
+        try:
+            result = self._parse_result(parser.json_tail)
+        except InvalidComposerResponseError as exc:
+            yield StreamError(code="invalid_response", message=exc.message)
+            return
+        yield Result(payload=result)
+
     # -------------------------------------------------------- prompt build
 
-    def _build_system_prompt(self, catalog: list[dict[str, Any]]) -> str:
+    def _build_system_prompt(
+        self, catalog: list[dict[str, Any]], *, for_streaming: bool
+    ) -> str:
         catalog_json = json.dumps(catalog, ensure_ascii=False)
+        # In streaming mode the model MUST narrate first inside
+        # `<rationale>...</rationale>` so the UI can show live tokens, then
+        # emit the JSON fence. In non-stream mode we can fit the rationale
+        # inside the JSON payload — simpler and one less parsing step.
+        if for_streaming:
+            output_contract = (
+                "Output format (streaming mode):\n"
+                "  1. First, write the rationale as a user-facing explanation "
+                "inside `<rationale>...</rationale>`. Use the user's language. "
+                "Do NOT emit any text before `<rationale>`.\n"
+                "  2. Then emit a single JSON object inside a ```json fenced "
+                "block. Schema:\n"
+                "{\n"
+                '  "intent": "clarify"|"draft"|"refine",\n'
+                '  "clarify_questions": [string, ...] | null,\n'
+                '  "proposed_dag": {"nodes": [...], "edges": [...]} | null,\n'
+                '  "diff": {"added_nodes": [...], "removed_node_ids": [...], '
+                '"modified_nodes": [...]} | null,\n'
+                '  "rationale": string  // repeat of the rationale above\n'
+                "}\n"
+            )
+        else:
+            output_contract = (
+                "Output a single JSON object inside a ```json fenced block. "
+                "Schema:\n"
+                "{\n"
+                '  "intent": "clarify"|"draft"|"refine",\n'
+                '  "clarify_questions": [string, ...] | null,\n'
+                '  "proposed_dag": {"nodes": [...], "edges": [...]} | null,\n'
+                '  "diff": {"added_nodes": [...], "removed_node_ids": [...], '
+                '"modified_nodes": [...]} | null,\n'
+                '  "rationale": string  // why this DAG, in the user language\n'
+                "}\n"
+            )
         return (
             "You are a workflow-automation agent. The user describes an "
             "intent in natural language and you produce a directed acyclic "
@@ -210,16 +452,7 @@ class AIComposerService:
             "  - 'refine' when current_dag is non-null. Return the full "
             "proposed_dag PLUS a diff describing what changed.\n"
             "\n"
-            "Output a single JSON object inside a ```json fenced block. "
-            "Schema:\n"
-            "{\n"
-            '  "intent": "clarify"|"draft"|"refine",\n'
-            '  "clarify_questions": [string, ...] | null,\n'
-            '  "proposed_dag": {"nodes": [...], "edges": [...]} | null,\n'
-            '  "diff": {"added_nodes": [...], "removed_node_ids": [...], '
-            '"modified_nodes": [...]} | null,\n'
-            '  "rationale": string  // why this DAG, in the user language\n'
-            "}\n"
+            f"{output_contract}"
             "\n"
             "Each node has: id (string), type (one of catalog types), "
             "config (object matching that node's config_schema). Each edge "
