@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str = ""
     google_oauth_redirect_uri: str = ""
 
+    # PLAN_02 AI Composer — Anthropic API. Empty key disables the router
+    # (returns 503) so local/CI without secrets still boots. Operator-owned
+    # key, NOT the per-user credential pool.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    # Per-user rate limit. PR A uses an in-memory token bucket — single Cloud
+    # Run instance only. PR B replaces this with Redis-backed counter so the
+    # limit holds across the autoscaler.
+    ai_compose_rate_per_minute: int = Field(default=10, ge=1)
+    ai_compose_max_tokens: int = Field(default=4096, ge=512, le=16384)
+
     @property
     def scheduler_jobstore_url(self) -> str:
         # APScheduler's SQLAlchemyJobStore is sync. Route it to psycopg3 sync

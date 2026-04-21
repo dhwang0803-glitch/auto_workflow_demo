@@ -12,6 +12,7 @@ from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 
 from app.config import Settings
+from app.services.ai_composer_service import AIComposerService
 from app.services.auth_service import AuthService
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -23,6 +24,10 @@ def get_settings(request: Request) -> Settings:
 
 def get_auth_service(request: Request) -> AuthService:
     return request.app.state.auth_service
+
+
+def get_ai_composer_service(request: Request) -> AIComposerService:
+    return request.app.state.ai_composer_service
 
 
 async def get_current_user(

@@ -20,6 +20,7 @@ dependencies = [
     "celery[redis]>=5.3",
     "apscheduler>=3.10,<4",
     "google-cloud-run>=0.10",  # ADR-021 §5-b — WorkerPoolsAsyncClient for wake-up patch
+    "anthropic>=0.40",  # PLAN_02 — AI Composer (Claude SDK)
     "auto-workflow-database",    # editable local install: `pip install -e ../Database`
     # ADR-021 §5 stopgap — only needed for serverless_execution_mode="inline".
     # PLAN_21 Phase 6 removes this dep along with the inline branch.
