@@ -95,3 +95,25 @@ output "broker_port" {
   description = "Memorystore port (6379 by default). Exposed as an output so scripts don't hard-code."
   value       = google_redis_instance.broker.port
 }
+
+# ---- AI_Agent (PLAN_11 PR 5) -----------------------------------------------
+
+output "agent_service_url" {
+  description = "HTTPS URL of the AI_Agent Cloud Run service. INGRESS_INTERNAL_ONLY — callable only with an OIDC token from a service account holding run.invoker on this service. Null until first deploy."
+  value       = google_cloud_run_v2_service.agent.uri
+}
+
+output "agent_service_account_email" {
+  description = "Service account the AI_Agent runs as. Distinct from api / ee SAs to scope blast radius (model bucket read only)."
+  value       = google_service_account.agent.email
+}
+
+output "agent_artifact_registry_repo" {
+  description = "Fully-qualified AR repo path in var.agent_region. Image URIs: <this>/<name>:<tag>."
+  value       = "${var.agent_region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.agent_images.repository_id}"
+}
+
+output "agent_models_bucket" {
+  description = "GCS bucket holding model weights (GGUF). Upload via: gsutil cp <local.gguf> gs://<this>/<object>"
+  value       = google_storage_bucket.agent_models.name
+}

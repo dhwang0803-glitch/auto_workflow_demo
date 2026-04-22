@@ -215,3 +215,115 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+# ---- AI_Agent Cloud Run GPU (PLAN_11 PR 5) ---------------------------------
+#
+# AI_Agent is deployed in a DIFFERENT region from the rest of the stack
+# because L4 GPU quota was only granted in us-central1 (memory
+# `reference_cloudrun_gpu_region`). asia-northeast3 has no L4 availability as
+# of 2026-04. Cross-region HTTPS calls from API_Server are acceptable — LLM
+# inference (1-2s) dominates the added ~150ms RTT.
+
+variable "agent_region" {
+  description = "GCP region for AI_Agent Cloud Run GPU service. Separate from var.region because L4 quota is region-specific."
+  type        = string
+  default     = "us-central1"
+}
+
+variable "agent_image_uri" {
+  description = <<-EOT
+    Container image URI for AI_Agent. Required — no default (same bootstrap
+    pattern as api_image_uri / ee_image_uri).
+
+    Bootstrap:
+      terraform apply \
+        -target=google_project_service.agent_apis \
+        -target=google_artifact_registry_repository.agent_images \
+        -target=google_storage_bucket.agent_models \
+        -target=google_service_account.agent \
+        -var-file=environments/staging.tfvars
+      # upload model weights to the bucket (huggingface-cli + gsutil)
+      # build + push AI_Agent image to the us-central1 AR repo
+      # then full apply with this variable set
+
+    Steady state: image drift is ignored via lifecycle.ignore_changes.
+  EOT
+  type        = string
+
+  validation {
+    condition     = length(var.agent_image_uri) > 0
+    error_message = "agent_image_uri must be set — see variable description for the bootstrap flow."
+  }
+}
+
+variable "agent_cpu" {
+  description = "CPU allocation per AI_Agent instance. Cloud Run GPU requires >= 4; 8 gives headroom for concurrent llama-server + FastAPI + gcsfuse."
+  type        = string
+  default     = "8"
+}
+
+variable "agent_memory" {
+  description = "Memory per AI_Agent instance. 32Gi fits the 26B-A4B Q4 GGUF mmap (~13GB) + KV cache (~4GB at ctx=8192) + Python + gcsfuse cache, with headroom."
+  type        = string
+  default     = "32Gi"
+}
+
+variable "agent_gpu_type" {
+  description = "GPU accelerator type. Cloud Run supports nvidia-l4 as of 2025; upgrade path (H100/A100) requires quota bump + region review."
+  type        = string
+  default     = "nvidia-l4"
+}
+
+variable "agent_gpu_count" {
+  description = "GPUs per instance. 1 is the only currently-supported value on Cloud Run GPU."
+  type        = number
+  default     = 1
+}
+
+variable "agent_min_instances" {
+  description = "Min instances for AI_Agent. 0 (scale-to-zero) keeps demo cost near-zero at rest; cold start ~30-60s is covered by the startup probe budget."
+  type        = number
+  default     = 0
+}
+
+variable "agent_max_instances" {
+  description = "Max instances for AI_Agent. Bounded at 1 because project-level L4 quota = 1 (memory `reference_cloudrun_gpu_region`). Raising this without a quota increase would just queue revisions."
+  type        = number
+  default     = 1
+}
+
+variable "agent_model_bucket_name" {
+  description = <<-EOT
+    Globally-unique GCS bucket name for AI_Agent model weights. Required —
+    no default because bucket names are global and must not collide.
+
+    Convention: `<project_id>-agent-models-<env>` (e.g.
+    `autoworkflowdemo-agent-models-staging`). Terraform creates the bucket
+    in var.agent_region; model weights are uploaded post-bootstrap via
+    `gsutil cp` (see infra/docs/RUNBOOK_agent_deploy.md).
+  EOT
+  type        = string
+
+  validation {
+    condition     = length(var.agent_model_bucket_name) > 0
+    error_message = "agent_model_bucket_name must be set (GCS names are global — no default)."
+  }
+}
+
+variable "agent_model_object_name" {
+  description = "GGUF object name inside the model bucket. Mounted at /models/<this> in the container; entrypoint.sh MODEL_PATH must match."
+  type        = string
+  default     = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
+}
+
+variable "agent_ctx_size" {
+  description = "llama-server context window (tokens). 8192 fits KV cache + model on L4 24GB VRAM."
+  type        = number
+  default     = 8192
+}
+
+variable "agent_n_gpu_layers" {
+  description = "llama-server --n-gpu-layers. 999 = offload all layers to GPU (26B-A4B Q4 fits fully on L4)."
+  type        = number
+  default     = 999
+}
