@@ -45,3 +45,17 @@ api_allow_unauthenticated = false
 # When prod traffic starts, bump this:
 # db_tier         = "db-custom-2-7680"
 # db_disk_size_gb = 50
+
+# ---- AI_Agent Cloud Run GPU (PLAN_11 PR 5) ---------------------------------
+# Prod entry for AI_Agent is post-hackathon. Keep these REPLACE-marked so a
+# premature apply fails loudly rather than silently provisioning an L4.
+
+agent_region            = "us-central1"
+agent_image_uri         = "us-central1-docker.pkg.dev/REPLACE-PROJECT/auto-workflow-agent/agent:REPLACE-TAG"
+agent_model_bucket_name = "REPLACE-PROJECT-agent-models-prod"
+agent_model_object_name = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
+
+# L4 quota per-project is 1 as of 2026-04. File a quota increase before
+# bumping max_instances past 1 in prod.
+agent_min_instances = 0
+agent_max_instances = 1
