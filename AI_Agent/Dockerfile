@@ -23,10 +23,29 @@ ARG LLAMA_CPP_REF=b6000
 RUN git clone --depth=1 --branch "${LLAMA_CPP_REF}" https://github.com/ggerganov/llama.cpp.git
 
 WORKDIR /build/llama.cpp
+# llama.cpp b6000+ links against the CUDA Driver API (cuMemMap/cuMemRelease/…),
+# which lives in libcuda.so.1. The CUDA devel image only ships the SONAME-less
+# stub `libcuda.so` under /usr/local/cuda/lib64/stubs/. Final-link of
+# llama-server fails on transitive resolution of libggml-cuda.so → libcuda.so.1
+# unless ld is told where to look. Belt-and-suspenders:
+#   1. Create the .so.1 symlink so the SONAME exists.
+#   2. Register the stubs dir with ldconfig so it's part of the system search
+#      path (covers transitive resolution).
+#   3. Pass -Wl,-rpath-link so the executable link step explicitly resolves
+#      transitive deps from the stubs dir (covers cmake-managed link).
+# Runtime libcuda.so.1 comes from the host NVIDIA driver via
+# nvidia-container-runtime / Cloud Run GPU injection — these stubs are
+# build-only (no symbols at exec time, but .so.1 SONAME satisfied).
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
+ && echo "/usr/local/cuda/lib64/stubs" > /etc/ld.so.conf.d/cuda-stubs.conf \
+ && ldconfig
+
 RUN cmake -B build \
         -DGGML_CUDA=ON \
         -DLLAMA_CURL=ON \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,/usr/local/cuda/lib64/stubs" \
+        -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,/usr/local/cuda/lib64/stubs" \
     && cmake --build build --config Release --target llama-server -j"$(nproc)"
 
 
