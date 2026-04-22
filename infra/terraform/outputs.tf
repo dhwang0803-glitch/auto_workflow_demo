@@ -96,15 +96,30 @@ output "broker_port" {
   value       = google_redis_instance.broker.port
 }
 
-# ---- AI_Agent (PLAN_11 PR 5) -----------------------------------------------
+# ---- AI_Agent (PLAN_11 PR 5 + 2026-04-22 GCE VM pivot) ---------------------
 
-output "agent_service_url" {
-  description = "HTTPS URL of the AI_Agent Cloud Run service. INGRESS_INTERNAL_ONLY — callable only with an OIDC token from a service account holding run.invoker on this service. Null until first deploy."
-  value       = google_cloud_run_v2_service.agent.uri
+output "agent_vm_name" {
+  description = "Name of the GCE L4 spot VM running AI_Agent. Start/stop via `gcloud compute instances start|stop <this> --zone=<agent_vm_zone>`."
+  value       = google_compute_instance.agent.name
+}
+
+output "agent_vm_zone" {
+  description = "Zone the agent VM is pinned to. Needed for gcloud start/stop commands."
+  value       = google_compute_instance.agent.zone
+}
+
+output "agent_vm_external_ip" {
+  description = "Ephemeral external IPv4 of the AI_Agent VM. API_Server reaches it at http://<this>/v1/* with `Authorization: Bearer <agent_bearer_token>`. Re-read after start/stop (ephemeral IPs change)."
+  value       = google_compute_instance.agent.network_interface[0].access_config[0].nat_ip
+}
+
+output "agent_bearer_token_secret_id" {
+  description = "Secret Manager resource ID for the AI_Agent bearer token. API_Server boot fetches with: gcloud secrets versions access latest --secret=<this>"
+  value       = google_secret_manager_secret.agent_bearer_token.secret_id
 }
 
 output "agent_service_account_email" {
-  description = "Service account the AI_Agent runs as. Distinct from api / ee SAs to scope blast radius (model bucket read only)."
+  description = "Service account the AI_Agent VM runs as. Distinct from api / ee SAs to scope blast radius (model bucket read only + own bearer secret)."
   value       = google_service_account.agent.email
 }
 

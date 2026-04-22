@@ -1,0 +1,83 @@
+#!/bin/bash
+# AI_Agent VM startup script — runs on every boot.
+#
+# Responsibilities:
+#   1. Mount the model GCS bucket at /opt/models via gcsfuse (read-only).
+#   2. Fetch the bearer token from Secret Manager and persist to disk.
+#   3. Pull the AI_Agent image from Artifact Registry.
+#   4. Run the container with --gpus all, model + bearer env injected.
+#
+# Idempotent: re-running on a warm boot skips already-mounted fuse, and
+# `docker run --rm -d --name agent` picks up the existing image from the
+# local cache. If the VM was preempted and started again, the model is
+# still in GCS (no re-download needed) and the bearer token is unchanged.
+#
+# Logs: /var/log/agent-startup.log + journalctl -u google-startup-scripts.
+
+set -euo pipefail
+exec > >(tee -a /var/log/agent-startup.log) 2>&1
+
+echo "=== agent startup @ $(date -Iseconds) ==="
+
+# ---- 1. gcsfuse mount (models read-only) ----
+#
+# DLVM comes with gcsfuse preinstalled. Mount via systemd so the mount
+# survives across docker restart; but on first boot we just mount inline.
+MODEL_DIR=/opt/models
+mkdir -p "$MODEL_DIR"
+
+if ! mountpoint -q "$MODEL_DIR"; then
+    echo "Mounting gs://${model_bucket} at $MODEL_DIR"
+    gcsfuse --implicit-dirs -o ro "${model_bucket}" "$MODEL_DIR"
+else
+    echo "$MODEL_DIR already mounted — skipping gcsfuse"
+fi
+
+# Sanity check: the expected GGUF must be visible.
+if [ ! -f "$MODEL_DIR/${model_object}" ]; then
+    echo "ERROR: model file not found at $MODEL_DIR/${model_object}" >&2
+    ls -la "$MODEL_DIR" >&2 || true
+    exit 1
+fi
+
+# ---- 2. Bearer token from Secret Manager ----
+BEARER=$(gcloud secrets versions access latest --secret="${bearer_secret_name}" --project="$(gcloud config get-value project)")
+if [ -z "$BEARER" ]; then
+    echo "ERROR: bearer token fetch returned empty" >&2
+    exit 1
+fi
+
+# ---- 3. AR pull ----
+gcloud auth configure-docker "${agent_region}-docker.pkg.dev" --quiet
+docker pull "${agent_image_uri}"
+
+# ---- 4. docker run (replace any existing container) ----
+docker rm -f agent 2>/dev/null || true
+
+docker run -d \
+    --name agent \
+    --restart=unless-stopped \
+    --gpus all \
+    --network host \
+    -v "$MODEL_DIR:/models:ro" \
+    -e LLM_BACKEND=llamacpp \
+    -e LLAMA_SERVER_URL=http://127.0.0.1:8080 \
+    -e MODEL_PATH="/models/${model_object}" \
+    -e N_GPU_LAYERS=${n_gpu_layers} \
+    -e CTX_SIZE=${ctx_size} \
+    -e PORT=${container_port} \
+    -e AGENT_BEARER_TOKEN="$BEARER" \
+    "${agent_image_uri}"
+
+echo "=== agent container started — tail logs via: docker logs -f agent ==="
+
+# ---- 5. :80 → :container_port forwarding ----
+#
+# FastAPI listens on ${container_port}. Firewall opens :80 globally. Use
+# iptables PREROUTING DNAT to forward :80 → :${container_port} so clients
+# hit the VM on the conventional port. --network host inside the container
+# means 127.0.0.1:${container_port} is the right target.
+iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports ${container_port} 2>/dev/null || \
+    iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports ${container_port}
+
+echo "=== startup complete @ $(date -Iseconds) ==="

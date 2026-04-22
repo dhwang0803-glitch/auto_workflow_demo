@@ -106,180 +106,177 @@ resource "google_storage_bucket_iam_member" "agent_models_reader" {
   member = "serviceAccount:${google_service_account.agent.email}"
 }
 
-# ---- Cloud Run GPU service -------------------------------------------------
+# ---- Bearer token for service-to-service auth ------------------------------
 #
-# google-beta because GCS volume mounts and GPU zonal-redundancy flag are
-# still beta-only in the Terraform provider as of 2026-04. The Worker Pool in
-# worker.tf already uses google-beta, so the provider alias is configured.
+# Pivot (2026-04-22): Cloud Run GPU project-level quota (`nvidia_l4_gpu_
+# allocation*`) is unassigned on this project — the Edit Quotas UI refuses
+# to even accept a raise request. Cloud Run GPU is therefore unreachable on
+# the hackathon timeline. We keep the GCE L4=1 quota (already granted in
+# us-central1) and pivot AI_Agent onto a plain GCE VM. The Cloud Run-style
+# OIDC invoker IAM is no longer available, so we replace it with a static
+# bearer token stored in Secret Manager: API_Server reads it at boot and
+# attaches `Authorization: Bearer <token>`; the FastAPI app checks it.
 #
-# Ingress INTERNAL only (svc-to-svc). Public access is explicitly blocked by
-# the absence of an `allUsers` roles/run.invoker binding — API_Server SA is
-# the sole caller.
+# Bearer-in-env is weaker than OIDC (no rotation without redeploy, no
+# per-caller identity) but acceptable for a single-caller demo. Rotation
+# story and stronger auth (mTLS / signed JWT from API_Server) are follow-
+# ups for the live-demo phase.
 
-resource "google_cloud_run_v2_service" "agent" {
+resource "random_password" "agent_bearer_token" {
+  length  = 48
+  special = false
+}
+
+resource "google_secret_manager_secret" "agent_bearer_token" {
+  secret_id = "agent-bearer-token-${var.environment}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret_version" "agent_bearer_token" {
+  secret      = google_secret_manager_secret.agent_bearer_token.id
+  secret_data = random_password.agent_bearer_token.result
+}
+
+# Both sides need read access: the VM startup script to inject the token into
+# the container env, and API_Server to attach it to outbound requests.
+resource "google_secret_manager_secret_iam_member" "agent_sa_bearer_token" {
+  secret_id = google_secret_manager_secret.agent_bearer_token.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.agent.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "api_sa_bearer_token" {
+  secret_id = google_secret_manager_secret.agent_bearer_token.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+# VM also needs to read GCS (gcsfuse) + log/metric + AR pull. The project-
+# level log/metric writers + AR reader + bucket reader above already cover
+# it. No extra binding needed.
+
+# ---- Firewall: open :80 globally, Bearer in FastAPI handles auth -----------
+#
+# Cloud Run (asia-northeast3) egresses through a NAT'd pool without a stable
+# IP, so a CIDR whitelist is impractical. We open port 80 universe-wide and
+# lean on the bearer-token middleware for auth. Revisit for live-demo phase
+# (Serverless VPC Connector + fixed egress, or IAP TCP forwarder).
+
+resource "google_compute_firewall" "agent_allow_http" {
+  name        = "auto-workflow-agent-allow-http-${var.environment}"
+  network     = "default"
+  description = "Allow TCP :80 to AI_Agent VM. Bearer token in FastAPI gates access."
+
+  allow {
+    protocol = "tcp"
+    ports    = ["80"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["agent-llm"]
+
+  depends_on = [google_project_service.network_apis]
+}
+
+# ---- L4 spot VM ------------------------------------------------------------
+#
+# Deep Learning VM image ships with NVIDIA driver + Docker + nvidia-container-
+# toolkit preinstalled — saves 5-10 minutes of driver install on every boot.
+# `common-cu124-*` family lines up with the CUDA 12.4 runtime the container
+# was built against.
+#
+# Spot (provisioning_model = "SPOT") trims cost by ~70% versus on-demand.
+# instance_termination_action = "STOP" means preemption halts the VM rather
+# than deleting it, so manual `gcloud compute instances start` brings it back
+# with the same boot disk (and any cached docker pulls).
+
+locals {
+  agent_vm_startup_script = templatefile("${path.module}/agent_vm_startup.sh.tftpl", {
+    agent_region       = var.agent_region
+    agent_image_uri    = var.agent_image_uri
+    model_bucket       = google_storage_bucket.agent_models.name
+    model_object       = var.agent_model_object_name
+    bearer_secret_name = google_secret_manager_secret.agent_bearer_token.secret_id
+    n_gpu_layers       = var.agent_n_gpu_layers
+    ctx_size           = var.agent_ctx_size
+    container_port     = 8100
+  })
+}
+
+resource "google_compute_instance" "agent" {
   provider = google-beta
 
-  name     = "auto-workflow-agent-${var.environment}"
-  location = var.agent_region
+  name         = "auto-workflow-agent-${var.environment}"
+  machine_type = var.agent_vm_machine_type
+  zone         = var.agent_vm_zone
 
-  deletion_protection = var.deletion_protection
+  tags = ["agent-llm"]
 
-  # Internal only — not reachable from the public internet. API_Server
-  # (asia-northeast3) calls this with an OIDC ID token scoped to its SA.
-  ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  # Scheduling required for any L4 attachment: TERMINATE on host maintenance,
+  # no automatic restart on spot preemption (manual start is the lifecycle).
+  scheduling {
+    on_host_maintenance         = "TERMINATE"
+    automatic_restart           = false
+    provisioning_model          = "SPOT"
+    instance_termination_action = "STOP"
+    preemptible                 = true
+  }
 
-  template {
-    service_account = google_service_account.agent.email
+  guest_accelerator {
+    type  = var.agent_gpu_type
+    count = var.agent_gpu_count
+  }
 
-    # Cloud Run GPU is gen2-only; request-scoped concurrency is low because
-    # llama-server is compute-bound on the GPU. One concurrent request per
-    # instance keeps tail latency predictable.
-    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
-    max_instance_request_concurrency = 1
-
-    scaling {
-      min_instance_count = var.agent_min_instances
-      max_instance_count = var.agent_max_instances
+  boot_disk {
+    auto_delete = true
+    initialize_params {
+      # DLVM CUDA 12.4 + Ubuntu 22.04 + Python 3.10. Includes docker,
+      # nvidia-container-toolkit, NVIDIA driver 550+.
+      image = "projects/deeplearning-platform-release/global/images/family/common-cu124-ubuntu-2204-py310"
+      size  = 100
+      type  = "pd-balanced"
     }
+  }
 
-    # Pin the GPU to the node selector. Provider version must support this
-    # field (google-beta >= 5.x). Without it the container schedules on CPU-
-    # only nodes and llama-server fails to load layers onto any GPU.
-    node_selector {
-      accelerator = var.agent_gpu_type
-    }
+  network_interface {
+    network = "default"
 
-    # Cloud Run GPU has separate quota buckets for zonally-redundant vs
-    # non-redundant. Non-redundant saves on hot-standby cost but requires its
-    # own quota line — the default `L4 GPUs` quota only covers the redundant
-    # variant (2026-04 GCP staging). Keep redundancy ON until the non-redundant
-    # quota lands; scale-to-zero means idle cost is $0 regardless of variant.
-    gpu_zonal_redundancy_disabled = false
+    # External IP for API_Server to reach. Ephemeral (fine — API_Server
+    # refreshes AI_AGENT_URL via terraform output or config redeploy).
+    access_config {}
+  }
 
-    # Model weights live in GCS. Cloud Run v2 gcsfuse volume does the mount;
-    # the container treats /models as a read-only filesystem.
-    volumes {
-      name = "models"
-      gcs {
-        bucket    = google_storage_bucket.agent_models.name
-        read_only = true
-      }
-    }
+  service_account {
+    email  = google_service_account.agent.email
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
 
-    containers {
-      name  = "agent"
-      image = var.agent_image_uri
+  # DLVM license agreement — required by Google for ML-optimized images.
+  metadata = {
+    install-nvidia-driver = "False" # already present in DLVM
+    enable-oslogin        = "TRUE"
+    startup-script        = local.agent_vm_startup_script
+  }
 
-      # FastAPI listens on 8100 per AI_Agent/scripts/entrypoint.sh. Cloud Run
-      # sets the PORT env to container_port, which entrypoint then threads
-      # through to uvicorn.
-      ports {
-        container_port = 8100
-      }
-
-      env {
-        name  = "LLM_BACKEND"
-        value = "llamacpp"
-      }
-
-      env {
-        name  = "LLAMA_SERVER_URL"
-        value = "http://127.0.0.1:8080"
-      }
-
-      env {
-        name  = "MODEL_PATH"
-        value = "/models/${var.agent_model_object_name}"
-      }
-
-      env {
-        name  = "N_GPU_LAYERS"
-        value = tostring(var.agent_n_gpu_layers)
-      }
-
-      env {
-        name  = "CTX_SIZE"
-        value = tostring(var.agent_ctx_size)
-      }
-
-      resources {
-        limits = {
-          cpu              = var.agent_cpu
-          memory           = var.agent_memory
-          "nvidia.com/gpu" = tostring(var.agent_gpu_count)
-        }
-        # Cloud Run GPU requires always-allocated CPU (not request-scoped).
-        # CPU-idle is incompatible with llama-server holding VRAM warm.
-        cpu_idle          = false
-        startup_cpu_boost = true
-      }
-
-      volume_mounts {
-        name       = "models"
-        mount_path = "/models"
-      }
-
-      # Startup budget sized for cold gcsfuse + 13GB GGUF mmap + full GPU
-      # layer offload. Worst observed on similar setups is ~5 minutes; the
-      # 10-minute ceiling here leaves headroom without masking a hang.
-      startup_probe {
-        http_get {
-          path = "/v1/health"
-          port = 8100
-        }
-        initial_delay_seconds = 30
-        period_seconds        = 10
-        failure_threshold     = 60
-        timeout_seconds       = 5
-      }
-
-      liveness_probe {
-        http_get {
-          path = "/v1/health"
-          port = 8100
-        }
-        period_seconds    = 30
-        failure_threshold = 3
-        timeout_seconds   = 5
-      }
-    }
-
-    # Cloud Run default request timeout is 5 minutes. Compose calls can run
-    # long under low-concurrency streaming; 15 minutes leaves room for a
-    # multi-round compose without hitting the ceiling.
-    timeout = "900s"
+  # Prefer gcloud/CI for tag bumps once the VM exists. Terraform replacing the
+  # instance on every image push would be painful (loses docker cache, model
+  # gcsfuse remount).
+  lifecycle {
+    ignore_changes = [
+      metadata["startup-script"],
+    ]
   }
 
   depends_on = [
     google_project_iam_member.agent_log_writer,
     google_artifact_registry_repository_iam_member.agent_ar_reader,
     google_storage_bucket_iam_member.agent_models_reader,
+    google_secret_manager_secret_iam_member.agent_sa_bearer_token,
+    google_compute_firewall.agent_allow_http,
   ]
-
-  lifecycle {
-    # Image drift ignored — CI (or manual `gcloud run deploy`) bumps the tag
-    # out-of-band, same pattern as api_image_uri / ee_image_uri.
-    ignore_changes = [
-      template[0].containers[0].image,
-      client,
-      client_version,
-    ]
-  }
-}
-
-# ---- Invoker IAM: only API_Server SA may call /v1/* ------------------------
-#
-# No `allUsers` binding — AI_Agent is not exposed to the public internet.
-# API_Server's `AIAgentHTTPBackend` will mint an OIDC ID token for this
-# service's audience and pass it as `Authorization: Bearer <token>`. That
-# wiring lands in a follow-up API_Server PR (PLAN_11 post-PR-5).
-
-resource "google_cloud_run_v2_service_iam_member" "api_invokes_agent" {
-  provider = google-beta
-
-  project  = google_cloud_run_v2_service.agent.project
-  location = google_cloud_run_v2_service.agent.location
-  name     = google_cloud_run_v2_service.agent.name
-  role     = "roles/run.invoker"
-  member   = "serviceAccount:${google_service_account.api.email}"
 }
