@@ -280,16 +280,21 @@ variable "agent_gpu_count" {
   default     = 1
 }
 
-variable "agent_min_instances" {
-  description = "Min instances for AI_Agent. 0 (scale-to-zero) keeps demo cost near-zero at rest; cold start ~30-60s is covered by the startup probe budget."
-  type        = number
-  default     = 0
+# NOTE: Cloud Run-era min/max_instances variables were removed in the
+# 2026-04-22 pivot (PR fix/agent-pivot-to-gce-vm). GCE VM is always one
+# instance — start/stop lifecycle is managed via `gcloud compute instances
+# start|stop`, not Terraform.
+
+variable "agent_vm_machine_type" {
+  description = "GCE machine type for AI_Agent VM. g2-standard-8 = 8 vCPU + 32GB RAM + 1 L4 (preinstalled). Downgrade path: g2-standard-4 (4 vCPU + 16GB + 1 L4) — risky with 26B model + gcsfuse."
+  type        = string
+  default     = "g2-standard-8"
 }
 
-variable "agent_max_instances" {
-  description = "Max instances for AI_Agent. Bounded at 1 because project-level L4 quota = 1 (memory `reference_cloudrun_gpu_region`). Raising this without a quota increase would just queue revisions."
-  type        = number
-  default     = 1
+variable "agent_vm_zone" {
+  description = "Zone for the agent VM. Must be in var.agent_region and have L4 capacity. us-central1-a is the widely-available default."
+  type        = string
+  default     = "us-central1-a"
 }
 
 variable "agent_model_bucket_name" {
