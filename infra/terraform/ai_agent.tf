@@ -149,9 +149,12 @@ resource "google_cloud_run_v2_service" "agent" {
       accelerator = var.agent_gpu_type
     }
 
-    # Zonal redundancy doubles GPU reservation cost. Off for single-instance
-    # demo; flip on (omit this field or set false) if we ever run >= 2.
-    gpu_zonal_redundancy_disabled = true
+    # Cloud Run GPU has separate quota buckets for zonally-redundant vs
+    # non-redundant. Non-redundant saves on hot-standby cost but requires its
+    # own quota line — the default `L4 GPUs` quota only covers the redundant
+    # variant (2026-04 GCP staging). Keep redundancy ON until the non-redundant
+    # quota lands; scale-to-zero means idle cost is $0 regardless of variant.
+    gpu_zonal_redundancy_disabled = false
 
     # Model weights live in GCS. Cloud Run v2 gcsfuse volume does the mount;
     # the container treats /models as a read-only filesystem.
