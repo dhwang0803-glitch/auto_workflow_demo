@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     ai_compose_rate_per_minute: int = Field(default=10, ge=1)
     ai_compose_max_tokens: int = Field(default=4096, ge=512, le=16384)
 
+    # PLAN_11 PR 1 — AI_Agent split. When ai_agent_base_url is set, the
+    # container prefers AIAgentHTTPBackend over the in-tree Anthropic/Stub
+    # backends. Empty falls back to the PLAN_02 local-backend path so
+    # tests and envs without AI_Agent still boot.
+    ai_agent_base_url: str = ""
+    ai_agent_timeout_s: float = Field(default=60.0, ge=1.0)
+
     @property
     def scheduler_jobstore_url(self) -> str:
         # APScheduler's SQLAlchemyJobStore is sync. Route it to psycopg3 sync
