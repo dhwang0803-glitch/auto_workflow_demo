@@ -68,7 +68,7 @@ variable "agent_gpu_count"           # number, default 1
 variable "agent_min_instances"       # number, default 0
 variable "agent_max_instances"       # number, default 1
 variable "agent_model_bucket_name"   # string, REQUIRED (global-unique)
-variable "agent_model_object_name"   # string, default "gemma-4-26B-A4B-it-Q4_K_M.gguf"
+variable "agent_model_object_name"   # string, default "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
 variable "agent_ctx_size"            # number, default 8192
 variable "agent_n_gpu_layers"        # number, default 999
 ```
@@ -82,8 +82,8 @@ variable "agent_n_gpu_layers"        # number, default 999
                    -target=google_service_account.agent \
                    -var-file=environments/staging.tfvars
    ```
-2. `huggingface-cli download unsloth/gemma-4-26B-A4B-it-GGUF gemma-4-26B-A4B-it-Q4_K_M.gguf ...`
-3. `gsutil cp <local.gguf> gs://<agent_model_bucket_name>/gemma-4-26B-A4B-it-Q4_K_M.gguf`
+2. `huggingface-cli download unsloth/gemma-4-26B-A4B-it-GGUF gemma-4-26B-A4B-it-UD-Q4_K_M.gguf ...`
+3. `gsutil cp <local.gguf> gs://<agent_model_bucket_name>/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`
 4. `docker build -f AI_Agent/Dockerfile -t <agent-image-uri> .`
 5. `docker push <agent-image-uri>` (us-central1 AR)
 6. `agent_image_uri` 을 staging.tfvars 에 세팅 후 전체 apply.

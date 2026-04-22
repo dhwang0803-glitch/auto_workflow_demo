@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-: "${MODEL_PATH:=/models/gemma-4-26B-A4B-it-Q4_K_M.gguf}"
+: "${MODEL_PATH:=/models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf}"
 : "${LLAMA_SERVER_HOST:=127.0.0.1}"
 : "${LLAMA_SERVER_PORT:=8080}"
 : "${N_GPU_LAYERS:=999}"

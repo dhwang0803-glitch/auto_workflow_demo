@@ -68,7 +68,7 @@ agent_model_bucket_name = "REPLACE-PROJECT-agent-models-staging"
 
 # GGUF object name inside the bucket. Entrypoint.sh composes
 # MODEL_PATH=/models/<this>, which llama-server loads.
-agent_model_object_name = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
+agent_model_object_name = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
 
 # L4 quota = 1 — raising max without a quota increase just queues revisions.
 agent_min_instances = 0

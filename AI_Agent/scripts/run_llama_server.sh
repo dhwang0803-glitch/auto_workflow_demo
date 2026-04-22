@@ -6,7 +6,7 @@
 #   2. Download the GGUF to $MODEL_PATH. Typical command (requires HF token +
 #      Gemma license acceptance):
 #        huggingface-cli download unsloth/gemma-4-26B-A4B-it-GGUF \
-#          gemma-4-26B-A4B-it-Q4_K_M.gguf \
+#          gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
 #          --local-dir "$(dirname "$MODEL_PATH")"
 #
 # Then start the server (in another terminal):
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-: "${MODEL_PATH:=${HOME}/.cache/auto_workflow_demo/models/gemma-4-26B-A4B-it-Q4_K_M.gguf}"
+: "${MODEL_PATH:=${HOME}/.cache/auto_workflow_demo/models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf}"
 : "${LLAMA_SERVER_PORT:=8080}"
 : "${LLAMA_SERVER_HOST:=127.0.0.1}"
 # 999 = offload all layers to GPU. On L4 (24GB) the 26B-A4B Q4 fits with
