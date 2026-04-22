@@ -17,9 +17,16 @@ from app.main import create_app
 class _FakeBackend:
     """Duck-typed LLMBackend recording prompts for assertion."""
 
-    def __init__(self, *, response: str = "hello", stream_chunks: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        response: str = "hello",
+        stream_chunks: list[str] | None = None,
+        is_ready: bool = True,
+    ) -> None:
         self._response = response
         self._stream_chunks = stream_chunks or ["a", "b", "c"]
+        self._is_ready = is_ready
         self.last_system: str | None = None
         self.last_user: str | None = None
 
@@ -34,18 +41,35 @@ class _FakeBackend:
         for chunk in self._stream_chunks:
             yield chunk
 
+    async def ready(self) -> bool:
+        return self._is_ready
+
+    async def aclose(self) -> None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_health_reports_backend() -> None:
     app = create_app(backend_override=_FakeBackend())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        # Lifespan runs on first request — confirm /v1/health mounts settings.
         resp = await c.get("/v1/health")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
     assert body["backend"] == "stub"  # default Settings().llm_backend
+
+
+@pytest.mark.asyncio
+async def test_health_returns_503_when_backend_not_ready() -> None:
+    # Cloud Run startup probe must see non-2xx while llama-server still loads,
+    # otherwise traffic arrives before the model is mmap'd.
+    app = create_app(backend_override=_FakeBackend(is_ready=False))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/v1/health")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "starting"
 
 
 @pytest.mark.asyncio

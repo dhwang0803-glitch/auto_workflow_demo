@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.backends.anthropic import AnthropicBackend
+from app.backends.llamacpp_gemma import LlamaCppGemmaBackend
 from app.backends.protocols import LLMBackend
 from app.backends.stub import StubLLMBackend
 from app.config import Settings
@@ -31,9 +32,10 @@ class AIAgentContainer:
                 model=settings.anthropic_model,
             )
         elif settings.llm_backend == "llamacpp":
-            # PLAN_11 PR 2 — implement LlamaCppGemmaBackend + Dockerfile.
-            raise NotImplementedError(
-                "LlamaCppGemmaBackend arrives in PLAN_11 PR 2"
+            self.backend = LlamaCppGemmaBackend(
+                base_url=settings.llama_server_url,
+                model_label=settings.llama_model_label,
+                request_timeout_s=settings.llama_request_timeout_s,
             )
         else:  # pragma: no cover — Literal narrows this, but be explicit.
             raise RuntimeError(f"Unknown llm_backend: {settings.llm_backend}")

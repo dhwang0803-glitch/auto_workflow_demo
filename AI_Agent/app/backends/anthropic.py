@@ -55,3 +55,12 @@ class AnthropicBackend:
         ) as s:
             async for text in s.text_stream:
                 yield text
+
+    async def ready(self) -> bool:
+        # The Anthropic SDK has no cheap liveness endpoint; the API itself is
+        # the health signal. Assume remote is reachable — the first real call
+        # will surface the failure if not.
+        return True
+
+    async def aclose(self) -> None:
+        await self._client.close()

@@ -43,6 +43,12 @@ class StubLLMBackend:
         yield json.dumps(payload, ensure_ascii=False)
         yield "\n```"
 
+    async def ready(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
     # ---- intent selection --------------------------------------------------
 
     def _decide(self, user_message: str) -> tuple[str, dict]:
