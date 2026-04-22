@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "httpx>=0.27",
+    "anthropic>=0.40",  # AnthropicBackend (migrated from API_Server)
 ]
 
 [project.optional-dependencies]

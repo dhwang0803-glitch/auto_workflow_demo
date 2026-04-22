@@ -18,6 +18,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import Settings
+from app.services.ai_agent_client import AIAgentHTTPBackend
 from app.services.ai_composer_service import (
     AIComposerService,
     AnthropicBackend,
@@ -88,13 +89,20 @@ class AppContainer:
         self.wake_worker = WakeWorker(settings=settings)
 
         # PLAN_02 PR A — AI Composer. `backend=None` keeps the service wired
-        # but disabled (router 503s on call) so envs without ANTHROPIC_API_KEY
-        # boot normally. Tests inject their own LLMBackend for determinism;
-        # local UI testing can flip AI_COMPOSER_USE_STUB=true to get a
-        # deterministic no-network backend.
+        # but disabled (router 503s on call) so envs without a configured
+        # backend boot normally. Tests inject their own LLMBackend.
+        #
+        # PLAN_11 PR 1 — ai_agent_base_url wins when set: the container routes
+        # through AIAgentHTTPBackend to the separate AI_Agent service. Empty
+        # falls back to the original local-backend selection below.
         backend: LLMBackend | None = ai_composer_backend
         if backend is None:
-            if settings.ai_composer_use_stub:
+            if settings.ai_agent_base_url:
+                backend = AIAgentHTTPBackend(
+                    base_url=settings.ai_agent_base_url,
+                    timeout_s=settings.ai_agent_timeout_s,
+                )
+            elif settings.ai_composer_use_stub:
                 backend = StubLLMBackend()
             elif settings.anthropic_api_key:
                 backend = AnthropicBackend(

@@ -3,6 +3,25 @@
 > 본 문서는 PLAN_11 작성 **전** 합의된 분할 설계를 고정한다.
 > 배경 결정: 2026-04-22 세션. 본 문서가 PLAN_11 의 전제 조건.
 
+## 진행 상태 (2026-04-22 PLAN_11 PR 1 반영)
+
+PLAN_11 PR 1 은 아래 원칙을 따랐다 (Model X — 저수준 LLM 프록시):
+
+- **AIComposerService 는 API_Server 에 잔류**. 프롬프트 빌드 / JSON 파싱 /
+  스트림 파서 / 레이트리밋이 전부 API_Server 에 그대로 남는다.
+- AI_Agent 는 저수준 LLM 엔드포인트만 제공: `POST /v1/complete`, `POST /v1/stream`,
+  `GET /v1/health`. (§4 의 `/v1/compose` 는 PLAN_11 후반부에 필요 시 추가)
+- `AIAgentHTTPBackend` (`API_Server/app/services/ai_agent_client.py`) 가 `LLMBackend`
+  Protocol 구현체로, `settings.ai_agent_base_url` 이 설정되면 기존 Anthropic/Stub
+  백엔드를 대체한다.
+- **코드는 "이동" 이 아닌 "복사"**. `AnthropicBackend`·`StubLLMBackend` 는 AI_Agent 에
+  복사본이 들어왔지만 API_Server 에도 그대로 남아있다. §5.3 의 "삭제" 단계는 PLAN_11
+  후속 PR (안정화 확인 후) 로 연기.
+
+아래 §3-§5 의 "이동" 용어는 Model Y (고수준 compose 엔드포인트) 를 가정한 설계로,
+Model X 는 이를 "복사 + HTTP 경계 1계층 추가" 로 축소 구현했다. Model Y 전환은
+해커톤 후 prompt 엔지니어링이 AI_Agent 내부로 이동할 필요가 생길 때 재검토한다.
+
 ## 1. 배경
 
 PLAN_02 (AI Composer) 는 `API_Server/app/services/ai_composer_service.py` 단일 파일에
