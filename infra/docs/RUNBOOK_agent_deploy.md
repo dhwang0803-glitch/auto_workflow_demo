@@ -39,7 +39,7 @@ terraform apply \
 
 ## 2. 모델 가중치 업로드 (GCS)
 
-GGUF 약 13GB. 업로드에 30-60분 소요. 백그라운드 실행 권장.
+GGUF 약 13-15GB (UD-Q4_K_M, "Unsloth Dynamic" quant). 업로드에 30-60분 소요. 백그라운드 실행 권장. unsloth repo 는 plain `Q4_K_M` 을 발행하지 않으므로 UD-* 시리즈 사용.
 
 ```bash
 # 로컬 임시 디렉토리에 다운로드
@@ -47,16 +47,16 @@ mkdir -p ~/.cache/auto_workflow_demo/models
 export HF_TOKEN=hf_...   # 노출 금지, 쉘 변수로만
 
 huggingface-cli download unsloth/gemma-4-26B-A4B-it-GGUF \
-  gemma-4-26B-A4B-it-Q4_K_M.gguf \
+  gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
   --local-dir ~/.cache/auto_workflow_demo/models
 
 # GCS 업로드 (parallel composite upload 로 가속)
 gsutil -o "GSUtil:parallel_composite_upload_threshold=150M" \
-  cp ~/.cache/auto_workflow_demo/models/gemma-4-26B-A4B-it-Q4_K_M.gguf \
-     gs://<agent_models_bucket>/gemma-4-26B-A4B-it-Q4_K_M.gguf
+  cp ~/.cache/auto_workflow_demo/models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
+     gs://<agent_models_bucket>/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 
-# 확인 — 크기가 ~13GB 인지 (Q4_K_M 기준)
-gsutil du -h gs://<agent_models_bucket>/gemma-4-26B-A4B-it-Q4_K_M.gguf
+# 확인 — 크기가 대략 13-15GB 인지 (UD-Q4_K_M 은 plain Q4_K_M 보다 살짝 큼)
+gsutil du -h gs://<agent_models_bucket>/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
 ```
 
 ## 3. 컨테이너 이미지 빌드 + 푸시

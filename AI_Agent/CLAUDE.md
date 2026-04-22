@@ -61,7 +61,7 @@ import httpx       # llama-server OpenAI-호환 API 호출
 ```
 # 런타임 의존
 - llama.cpp (`llama-server` 바이너리, Dockerfile 에서 빌드)
-- unsloth/gemma-4-26B-A4B-it-GGUF (Q4_K_M) — 모델 가중치 (HF)
+- unsloth/gemma-4-26B-A4B-it-GGUF (UD-Q4_K_M) — 모델 가중치 (HF). unsloth 는 plain Q4_K_M 미발행, UD-* (Unsloth Dynamic) 시리즈만 제공.
 ```
 
 ## 핵심 엔드포인트 (API_Server 가 호출)

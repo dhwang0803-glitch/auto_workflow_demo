@@ -53,7 +53,7 @@ api_allow_unauthenticated = false
 agent_region            = "us-central1"
 agent_image_uri         = "us-central1-docker.pkg.dev/REPLACE-PROJECT/auto-workflow-agent/agent:REPLACE-TAG"
 agent_model_bucket_name = "REPLACE-PROJECT-agent-models-prod"
-agent_model_object_name = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
+agent_model_object_name = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
 
 # L4 quota per-project is 1 as of 2026-04. File a quota increase before
 # bumping max_instances past 1 in prod.

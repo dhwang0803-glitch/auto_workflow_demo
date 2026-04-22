@@ -313,7 +313,7 @@ variable "agent_model_bucket_name" {
 variable "agent_model_object_name" {
   description = "GGUF object name inside the model bucket. Mounted at /models/<this> in the container; entrypoint.sh MODEL_PATH must match."
   type        = string
-  default     = "gemma-4-26B-A4B-it-Q4_K_M.gguf"
+  default     = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
 }
 
 variable "agent_ctx_size" {
