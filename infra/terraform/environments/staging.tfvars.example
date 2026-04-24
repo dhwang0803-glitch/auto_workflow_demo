@@ -50,26 +50,8 @@ api_allow_unauthenticated = true
 # Safe to destroy staging on a whim; prod keeps the default true.
 deletion_protection = false
 
-# ---- AI_Agent Cloud Run GPU (PLAN_11 PR 5) ---------------------------------
-
-# L4 quota is us-central1 only (memory reference_cloudrun_gpu_region). The
-# rest of the stack stays in asia-northeast3 — cross-region HTTPS from the
-# API to AI_Agent is acceptable (inference latency dominates).
-agent_region = "us-central1"
-
-# REQUIRED. Same bootstrap pattern as api_image_uri — no default. Populate
-# after the AR repo exists and the first build lands in it.
-agent_image_uri = "us-central1-docker.pkg.dev/REPLACE-PROJECT/auto-workflow-agent/agent:REPLACE-TAG"
-
-# GCS bucket for model weights (must be globally unique). Convention:
-# <project_id>-agent-models-<env>. Bucket is created in agent_region and
-# mounted at /models in the AI_Agent container.
+# ---- AI_Agent (Modal pivot 2026-04-24) -------------------------------------
+# 런타임은 Modal (AI_Agent/scripts/modal_app.py). GCP 쪽엔 백업 자산만 (AR 이미지
+# 백업 + GCS GGUF 백업 + agent SA + bearer secret).
+agent_region            = "us-central1"
 agent_model_bucket_name = "REPLACE-PROJECT-agent-models-staging"
-
-# GGUF object name inside the bucket. Entrypoint.sh composes
-# MODEL_PATH=/models/<this>, which llama-server loads.
-agent_model_object_name = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
-
-# L4 quota = 1 — raising max without a quota increase just queues revisions.
-agent_min_instances = 0
-agent_max_instances = 1
