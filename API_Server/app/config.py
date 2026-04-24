@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     # tests and envs without AI_Agent still boot.
     ai_agent_base_url: str = ""
     ai_agent_timeout_s: float = Field(default=60.0, ge=1.0)
+    # Bearer token attached to outbound calls. Modal endpoint requires it
+    # (FastAPI BearerAuth middleware in AI_Agent gates /v1/* on a match).
+    # Same value lives in GCP Secret Manager `agent-bearer-token-<env>` and
+    # Modal Secret `agent-bearer-token`. Empty disables the header (local
+    # AI_Agent without auth).
+    agent_bearer_token: str = ""
 
     @property
     def scheduler_jobstore_url(self) -> str:

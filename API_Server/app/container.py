@@ -101,6 +101,7 @@ class AppContainer:
                 backend = AIAgentHTTPBackend(
                     base_url=settings.ai_agent_base_url,
                     timeout_s=settings.ai_agent_timeout_s,
+                    bearer_token=settings.agent_bearer_token,
                 )
             elif settings.ai_composer_use_stub:
                 backend = StubLLMBackend()

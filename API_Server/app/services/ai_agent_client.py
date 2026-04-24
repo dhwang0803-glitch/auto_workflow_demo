@@ -22,11 +22,21 @@ logger = logging.getLogger(__name__)
 
 
 class AIAgentHTTPBackend:
-    def __init__(self, *, base_url: str, timeout_s: float = 60.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_s: float = 60.0,
+        bearer_token: str = "",
+    ) -> None:
         self._base_url = base_url.rstrip("/")
-        # Generous overall timeout for cold-start (Cloud Run GPU 30-60s);
+        # Generous overall timeout for cold-start (Modal cold-start 1-3min);
         # connect timeout is short since we fail fast if DNS/TCP misbehave.
         self._timeout = httpx.Timeout(timeout_s, connect=10.0)
+        # Header is attached on every request when set; AI_Agent FastAPI
+        # middleware (env AGENT_BEARER_TOKEN) checks it. Empty token means
+        # no header — only valid for local dev where AI_Agent runs unauthed.
+        self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
 
     async def complete(
         self,
@@ -35,7 +45,7 @@ class AIAgentHTTPBackend:
         user_message: str,
         max_tokens: int,
     ) -> str:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as client:
             resp = await client.post(
                 f"{self._base_url}/v1/complete",
                 json={
@@ -54,7 +64,7 @@ class AIAgentHTTPBackend:
         user_message: str,
         max_tokens: int,
     ) -> AsyncIterator[str]:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as client:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/v1/stream",
