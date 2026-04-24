@@ -46,7 +46,5 @@ api_allow_unauthenticated = false
 # db_tier         = "db-custom-2-7680"
 # db_disk_size_gb = 50
 
-# ---- AI_Agent (Modal pivot 2026-04-24) -------------------------------------
-# 런타임은 Modal (AI_Agent/scripts/modal_app.py). GCP 쪽엔 백업 자산만.
-agent_region            = "us-central1"
-agent_model_bucket_name = "REPLACE-PROJECT-agent-models-prod"
+# AI_Agent 는 Modal (AI_Agent/scripts/modal_app.py) 에서 운영. GCP 쪽엔
+# bearer secret 만 남았고 별도 변수 불필요.

@@ -7,28 +7,21 @@
 ## 사전 체크
 
 - [ ] Modal 계정 + 토큰 (`pip install modal && modal token new`)
-- [ ] GCP `autoworkflowdemo` 프로젝트 인증 (bearer secret 읽기용)
 - [ ] HuggingFace `HF_TOKEN` (Gemma 4 라이선스 수락 후 read 토큰)
+- [ ] GCP `autoworkflowdemo` 프로젝트 인증 (bearer secret 읽기용)
 - [ ] Python 환경: `modal` 설치된 venv (Windows 면 `PYTHONUTF8=1` 필수)
 
 ## 1. GCP-side 부트스트랩 (infra 브랜치)
 
-Modal 이 동작하기 위한 GCP 자산 (AR 백업, GCS 백업, bearer secret) 을 먼저 만든다.
+`infra/terraform/ai_agent.tf` 가 만드는 건 bearer secret 1건뿐. 메인 인프라 apply 의 일부로 자동 생성됨:
 
 ```bash
 cd infra/terraform
-terraform init
 terraform plan  -var-file=environments/staging.tfvars
 terraform apply -var-file=environments/staging.tfvars
 ```
 
-생성되는 것:
-- `auto-workflow-agent` AR repo (us-central1) — pre-Modal Docker 이미지 백업용
-- `autoworkflowdemo-agent-models-staging` GCS 버킷 — GGUF 백업용
-- `auto-workflow-agent-staging` SA + log/metric/AR/bucket IAM
-- `agent-bearer-token-staging` Secret Manager + IAM (agent SA, api SA)
-
-출력에서 `agent_bearer_token_secret_id` 확인.
+생성: `agent-bearer-token-staging` Secret + `api_sa_bearer_token` IAM (API_Server SA 가 bearer 읽기). 출력 `agent_bearer_token_secret_id` 확인.
 
 ## 2. Modal Secrets 등록 (1회)
 
@@ -48,7 +41,7 @@ modal secret create huggingface-token HF_TOKEN=hf_...
 PYTHONUTF8=1 modal run AI_Agent/scripts/modal_app.py::download_model
 ```
 
-첫 실행은 ~30-40min (이미지 빌드 ~80min 의 경우 첫 빌드) + HF 다운로드 15.7 GiB. 이후 cold start 에서 Volume 마운트만으로 즉시 접근.
+첫 실행은 ~30-40min (이미지 빌드 ~80min 의 경우 첫 빌드) + HF 다운로드 16.9 GiB. 이후 cold start 에서 Volume 마운트만으로 즉시 접근.
 
 ## 4. Modal deploy
 
@@ -88,20 +81,13 @@ curl -sS -m 30 -w "\n[HTTP %{http_code}]\n" \
 ## 6. 롤백 / 정리
 
 ```bash
-# Modal 앱 중지 (contains 과금 중지)
 modal app stop auto-workflow-agent
-
-# Volume 삭제 (주의: 다음 deploy 시 download_model 재실행 필요, 15.7 GiB 재다운로드)
-modal volume delete agent-models
-
-# Secrets 삭제
+modal volume delete agent-models  # 주의: 다음 deploy 시 download_model 재실행 (16.9 GiB 재다운로드)
 modal secret delete agent-bearer-token
 modal secret delete huggingface-token
-
-# GCP-side 자산은 terraform destroy (staging 전용, deletion_protection=false)
-cd infra/terraform
-terraform destroy -var-file=environments/staging.tfvars
 ```
+
+GCP-side 는 메인 인프라 일부라 별도 destroy 없음 (`terraform destroy` 는 전체 staging 정리 시).
 
 ## 7. 흔한 실패 패턴
 

@@ -216,31 +216,6 @@ variable "deletion_protection" {
   default     = true
 }
 
-# ---- AI_Agent (Modal pivot 2026-04-24) -------------------------------------
-#
-# AI_Agent runtime moved to Modal (`AI_Agent/scripts/modal_app.py`). GCP-side
-# artifacts kept: AR repo (image backup), GCS bucket (model backup), agent SA,
-# bearer secret. See ai_agent.tf header for rationale.
-
-variable "agent_region" {
-  description = "GCP region for AI_Agent AR repo + GCS bucket. us-central1 chosen pre-Modal for L4 proximity; left as-is to avoid moving 15.7 GiB GGUF backup."
-  type        = string
-  default     = "us-central1"
-}
-
-variable "agent_model_bucket_name" {
-  description = <<-EOT
-    Globally-unique GCS bucket name for AI_Agent model weights backup. Required
-    — no default because bucket names are global and must not collide.
-
-    Convention: `<project_id>-agent-models-<env>` (e.g.
-    `autoworkflowdemo-agent-models-staging`). Modal uses its own Volume for
-    runtime mmap; this bucket survives as the primary GGUF backup.
-  EOT
-  type        = string
-
-  validation {
-    condition     = length(var.agent_model_bucket_name) > 0
-    error_message = "agent_model_bucket_name must be set (GCS names are global — no default)."
-  }
-}
+# NOTE: AI_Agent runtime is on Modal (`AI_Agent/scripts/modal_app.py`). The
+# only GCP-side artifact left is the bearer secret (ai_agent.tf), which is
+# environment-scoped and needs no extra variables.
