@@ -46,5 +46,6 @@ api_allow_unauthenticated = false
 # db_tier         = "db-custom-2-7680"
 # db_disk_size_gb = 50
 
-# AI_Agent 는 Modal (AI_Agent/scripts/modal_app.py) 에서 운영. GCP 쪽엔
-# bearer secret 만 남았고 별도 변수 불필요.
+# AI_Agent 는 Modal (AI_Agent/scripts/modal_app.py) 에서 운영.
+# AI_AGENT_BASE_URL = `modal deploy` 출력의 endpoint URL. 빈 값이면 fallback.
+ai_agent_base_url = "https://REPLACE-USER--auto-workflow-agent-agentservice-fastapi.modal.run"

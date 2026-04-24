@@ -270,6 +270,24 @@ resource "google_cloud_run_v2_service" "api" {
         value = "redis://${google_redis_instance.broker.host}:${google_redis_instance.broker.port}/0"
       }
 
+      # PLAN_11 — AI_Agent (Modal) endpoint + bearer. Empty AI_AGENT_BASE_URL
+      # falls back to the in-tree Anthropic/Stub backend (container.py guard),
+      # so a fresh staging boot before Modal is deployed still works.
+      env {
+        name  = "AI_AGENT_BASE_URL"
+        value = var.ai_agent_base_url
+      }
+
+      env {
+        name = "AGENT_BEARER_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.agent_bearer_token.secret_id
+            version = "latest"
+          }
+        }
+      }
+
       resources {
         limits = {
           cpu    = var.api_cpu
@@ -321,6 +339,7 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_iam_member.api_google_oauth_client_id,
     google_secret_manager_secret_iam_member.api_google_oauth_client_secret,
     google_secret_manager_secret_iam_member.api_google_oauth_redirect_uri,
+    google_secret_manager_secret_iam_member.api_sa_bearer_token,
   ]
 
   lifecycle {
