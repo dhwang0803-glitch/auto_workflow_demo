@@ -96,39 +96,24 @@ output "broker_port" {
   value       = google_redis_instance.broker.port
 }
 
-# ---- AI_Agent (PLAN_11 PR 5 + 2026-04-22 GCE VM pivot) ---------------------
-
-output "agent_vm_name" {
-  description = "Name of the GCE L4 spot VM running AI_Agent. Start/stop via `gcloud compute instances start|stop <this> --zone=<agent_vm_zone>`."
-  value       = google_compute_instance.agent.name
-}
-
-output "agent_vm_zone" {
-  description = "Zone the agent VM is pinned to. Needed for gcloud start/stop commands."
-  value       = google_compute_instance.agent.zone
-}
-
-output "agent_vm_external_ip" {
-  description = "Ephemeral external IPv4 of the AI_Agent VM. API_Server reaches it at http://<this>/v1/* with `Authorization: Bearer <agent_bearer_token>`. Re-read after start/stop (ephemeral IPs change)."
-  value       = google_compute_instance.agent.network_interface[0].access_config[0].nat_ip
-}
+# ---- AI_Agent (Modal pivot 2026-04-24, GCP-side artifacts only) ------------
 
 output "agent_bearer_token_secret_id" {
-  description = "Secret Manager resource ID for the AI_Agent bearer token. API_Server boot fetches with: gcloud secrets versions access latest --secret=<this>"
+  description = "Secret Manager resource ID for the AI_Agent bearer token. API_Server boot fetches with: gcloud secrets versions access latest --secret=<this>. Modal Secret `agent-bearer-token` (key AGENT_BEARER_TOKEN) holds the same value."
   value       = google_secret_manager_secret.agent_bearer_token.secret_id
 }
 
 output "agent_service_account_email" {
-  description = "Service account the AI_Agent VM runs as. Distinct from api / ee SAs to scope blast radius (model bucket read only + own bearer secret)."
+  description = "Service account with read access to AI_Agent AR + bucket + bearer secret. Not attached to any runtime after Modal pivot — kept for workstation / future re-host."
   value       = google_service_account.agent.email
 }
 
 output "agent_artifact_registry_repo" {
-  description = "Fully-qualified AR repo path in var.agent_region. Image URIs: <this>/<name>:<tag>."
+  description = "Fully-qualified AR repo path. Holds pre-Modal image (agent:b07d8b0) as a frozen backup."
   value       = "${var.agent_region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.agent_images.repository_id}"
 }
 
 output "agent_models_bucket" {
-  description = "GCS bucket holding model weights (GGUF). Upload via: gsutil cp <local.gguf> gs://<this>/<object>"
+  description = "GCS bucket holding GGUF backup. Modal Volume `agent-models` is the live source; this bucket survives Volume drops."
   value       = google_storage_bucket.agent_models.name
 }

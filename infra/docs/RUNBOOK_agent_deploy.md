@@ -1,162 +1,127 @@
-# RUNBOOK — AI_Agent Cloud Run GPU 배포
+# RUNBOOK — AI_Agent Modal 배포
 
-> PLAN_11 PR 5 (`infra/plans/PLAN_11_AI_AGENT_DEPLOY.md`) 의 실제 적용 절차.
-> 모든 명령은 `infra/terraform/` 에서 실행.
+> 2026-04-24 피벗 — Cloud Run GPU / GCE L4 경로는 폐기 (GCP GPU 쿼터·capacity 누적 차단). AI_Agent 는 Modal L4 에서 운영.
+>
+> 참조: auto-memory `project_agent_modal_pivot.md`, `reference_modal_pitfalls.md`.
 
 ## 사전 체크
 
-- [ ] GCP `autoworkflowdemo` 프로젝트 인증 (`gcloud auth application-default login`)
-- [ ] us-central1 L4 GPU 쿼터 >= 1 (Cloud Run Admin GPU 쿼터 페이지)
-- [ ] HuggingFace 계정 + Gemma 4 라이선스 수락 완료 (`HF_TOKEN` 발급)
-- [ ] `infra/terraform/environments/staging.tfvars` 에 `agent_*` 값 작성
-      (staging.tfvars.example 복사 + REPLACE 치환)
+- [ ] Modal 계정 + 토큰 (`pip install modal && modal token new`)
+- [ ] GCP `autoworkflowdemo` 프로젝트 인증 (bearer secret 읽기용)
+- [ ] HuggingFace `HF_TOKEN` (Gemma 4 라이선스 수락 후 read 토큰)
+- [ ] Python 환경: `modal` 설치된 venv (Windows 면 `PYTHONUTF8=1` 필수)
 
-## 1. 부트스트랩 — 리소스 스켈레톤만 먼저 생성
+## 1. GCP-side 부트스트랩 (infra 브랜치)
 
-Cloud Run 서비스는 `agent_image_uri` 유효성 검증이 걸려 있어 빈 AR 상태에서
-full apply 가 실패한다. 타겟팅으로 저장소·버킷·SA 만 먼저 만든다.
+Modal 이 동작하기 위한 GCP 자산 (AR 백업, GCS 백업, bearer secret) 을 먼저 만든다.
 
 ```bash
 cd infra/terraform
 terraform init
-
-terraform plan \
-  -target=google_project_service.agent_apis \
-  -target=google_artifact_registry_repository.agent_images \
-  -target=google_storage_bucket.agent_models \
-  -target=google_service_account.agent \
-  -var-file=environments/staging.tfvars
-
-terraform apply \
-  -target=google_project_service.agent_apis \
-  -target=google_artifact_registry_repository.agent_images \
-  -target=google_storage_bucket.agent_models \
-  -target=google_service_account.agent \
-  -var-file=environments/staging.tfvars
-```
-
-출력에서 `agent_artifact_registry_repo`, `agent_models_bucket` 을 메모.
-
-## 2. 모델 가중치 업로드 (GCS)
-
-GGUF 약 13-15GB (UD-Q4_K_M, "Unsloth Dynamic" quant). 업로드에 30-60분 소요. 백그라운드 실행 권장. unsloth repo 는 plain `Q4_K_M` 을 발행하지 않으므로 UD-* 시리즈 사용.
-
-```bash
-# 로컬 임시 디렉토리에 다운로드
-mkdir -p ~/.cache/auto_workflow_demo/models
-export HF_TOKEN=hf_...   # 노출 금지, 쉘 변수로만
-
-huggingface-cli download unsloth/gemma-4-26B-A4B-it-GGUF \
-  gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
-  --local-dir ~/.cache/auto_workflow_demo/models
-
-# GCS 업로드 (parallel composite upload 로 가속)
-gsutil -o "GSUtil:parallel_composite_upload_threshold=150M" \
-  cp ~/.cache/auto_workflow_demo/models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
-     gs://<agent_models_bucket>/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
-
-# 확인 — 크기가 대략 13-15GB 인지 (UD-Q4_K_M 은 plain Q4_K_M 보다 살짝 큼)
-gsutil du -h gs://<agent_models_bucket>/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
-```
-
-## 3. 컨테이너 이미지 빌드 + 푸시
-
-```bash
-# repo root 에서
-PROJECT_ID=autoworkflowdemo
-REGION=us-central1
-TAG="$(git rev-parse --short HEAD)"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/auto-workflow-agent/agent:${TAG}"
-
-# AR 인증 (최초 1회)
-gcloud auth configure-docker "${REGION}-docker.pkg.dev"
-
-# CUDA 빌드 스테이지 때문에 로컬 NVIDIA 드라이버 불필요 — cross-build 가능.
-# 단, buildx 는 사용하지 않는다 (CUDA 베이스 멀티아키 미지원).
-docker build -f AI_Agent/Dockerfile -t "${IMAGE}" .
-docker push "${IMAGE}"
-```
-
-## 4. 전체 Terraform apply
-
-`staging.tfvars` 의 `agent_image_uri` 를 방금 푸시한 태그로 업데이트 후:
-
-```bash
 terraform plan  -var-file=environments/staging.tfvars
 terraform apply -var-file=environments/staging.tfvars
 ```
 
-플랜에 `google_cloud_run_v2_service.agent` + 2 개 IAM binding 만 `+` 로
-보여야 한다. 기존 api/worker 리소스는 변경 0.
+생성되는 것:
+- `auto-workflow-agent` AR repo (us-central1) — pre-Modal Docker 이미지 백업용
+- `autoworkflowdemo-agent-models-staging` GCS 버킷 — GGUF 백업용
+- `auto-workflow-agent-staging` SA + log/metric/AR/bucket IAM
+- `agent-bearer-token-staging` Secret Manager + IAM (agent SA, api SA)
+
+출력에서 `agent_bearer_token_secret_id` 확인.
+
+## 2. Modal Secrets 등록 (1회)
+
+```bash
+# bearer token — GCP Secret 과 동기화
+TOKEN=$(gcloud secrets versions access latest \
+  --secret=agent-bearer-token-staging --project=autoworkflowdemo)
+modal secret create agent-bearer-token AGENT_BEARER_TOKEN=$TOKEN
+
+# HuggingFace read token (rate-limit 회피)
+modal secret create huggingface-token HF_TOKEN=hf_...
+```
+
+## 3. Modal Volume 모델 다운로드 (1회)
+
+```bash
+PYTHONUTF8=1 modal run AI_Agent/scripts/modal_app.py::download_model
+```
+
+첫 실행은 ~30-40min (이미지 빌드 ~80min 의 경우 첫 빌드) + HF 다운로드 15.7 GiB. 이후 cold start 에서 Volume 마운트만으로 즉시 접근.
+
+## 4. Modal deploy
+
+```bash
+PYTHONUTF8=1 modal deploy AI_Agent/scripts/modal_app.py
+```
+
+출력에 endpoint URL (`https://<user>--auto-workflow-agent-agentservice-fastapi.modal.run`) 표시. 대시보드: https://modal.com/apps/<user>/main/deployed/auto-workflow-agent
 
 ## 5. Smoke test
 
-Agent URL 확인:
-
 ```bash
-AGENT_URL=$(terraform output -raw agent_service_url)
-echo "$AGENT_URL"
-```
+URL="https://<user>--auto-workflow-agent-agentservice-fastapi.modal.run"
+TOKEN=$(gcloud secrets versions access latest \
+  --secret=agent-bearer-token-staging --project=autoworkflowdemo)
 
-ingress=INTERNAL_ONLY + SA-only invoker 이므로 로컬 laptop 에서 직접 호출 불가.
-staging 에서 health 확인하려면:
-
-### A. API_Server SA impersonation (권장)
-
-```bash
-API_SA=$(terraform output -raw api_service_account_email)
-TOKEN=$(gcloud auth print-identity-token \
-  --impersonate-service-account="${API_SA}" \
-  --audiences="${AGENT_URL}")
-
-# 첫 호출은 cold start (30s-5min). timeout 여유 확보.
-curl -sS --max-time 600 \
-  -H "Authorization: Bearer ${TOKEN}" \
-  "${AGENT_URL}/v1/health"
+# health — bearer 불필요
+curl -sS -m 300 "$URL/v1/health"
 # 기대: {"status":"ok","backend":"llamacpp"}
+
+# complete — bearer 필수
+curl -sS -m 300 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"system":"You are concise.","user_message":"Say hi.","max_tokens":32}' \
+  "$URL/v1/complete"
+
+# bearer 무 → 401
+curl -sS -m 30 -w "\n[HTTP %{http_code}]\n" \
+  -H "Content-Type: application/json" \
+  -d '{"system":"hi","user_message":"hi","max_tokens":16}' \
+  "$URL/v1/complete"
 ```
 
-### B. API_Server 쪽 배선 완료 후 E2E
+첫 호출은 cold start 1-3min (image pull + volume mount + model mmap). 이후 warm.
 
-본 PR 머지 후 후속 API_Server PR 에서 `AI_AGENT_URL` 환경변수 + OIDC 토큰
-exchange 가 구현된다. 그 시점엔 `/api/v1/ai/compose` 요청이 곧 E2E smoke 가
-된다.
-
-## 6. 롤백 / 티어다운
-
-staging 전용 (`deletion_protection = false`):
+## 6. 롤백 / 정리
 
 ```bash
-# 서비스만 내리기
-terraform destroy \
-  -target=google_cloud_run_v2_service.agent \
-  -var-file=environments/staging.tfvars
+# Modal 앱 중지 (contains 과금 중지)
+modal app stop auto-workflow-agent
 
-# 전부 정리 — 주의: 모델 파일이 13GB 다. 재업로드 비용 발생.
+# Volume 삭제 (주의: 다음 deploy 시 download_model 재실행 필요, 15.7 GiB 재다운로드)
+modal volume delete agent-models
+
+# Secrets 삭제
+modal secret delete agent-bearer-token
+modal secret delete huggingface-token
+
+# GCP-side 자산은 terraform destroy (staging 전용, deletion_protection=false)
+cd infra/terraform
 terraform destroy -var-file=environments/staging.tfvars
 ```
-
-prod 는 `deletion_protection = true` 유지.
 
 ## 7. 흔한 실패 패턴
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
-| `terraform apply` 에서 `nvidia.com/gpu` resource 거부 | provider 버전 낮음 | `google-beta >= 5.x` 확인 |
-| Cloud Run revision 가 `EXTERNAL: The user-provided container failed to start` | llama-server CUDA symbol 불일치 | Dockerfile 의 `LLAMA_CPP_REF` / CUDA 이미지 태그 정합성 확인 |
-| Startup probe 5분 이상 대기 후 실패 | gcsfuse mmap + 전체 layer GPU 업로드 대기 | 로그에서 `llama_model_load_internal: offloaded` 라인 확인. L4 VRAM 부족이면 `agent_n_gpu_layers` 를 < 999 로 내려 CPU fallback 혼합 |
-| `PermissionDenied` on AR pull | agent SA 에 `roles/artifactregistry.reader` 미부여 | `terraform state show google_artifact_registry_repository_iam_member.agent_ar_reader` |
-| GCS mount stuck on empty `/models` | 모델 업로드가 다른 bucket 에 들어감 | `gsutil ls gs://<bucket>/` 로 객체 이름 확인 — `agent_model_object_name` 와 정확히 일치해야 함 |
+| `UnicodeDecodeError: 'cp949'` on Windows | modal CLI 가 Dockerfile UTF-8 을 cp949 로 읽음 | `PYTHONUTF8=1` prefix 필수 |
+| `ERROR: model not found at /vol/...` + Runner failed | Dockerfile ENTRYPOINT 가 container 부팅 차단 | modal_app.py 의 `.dockerfile_commands(["ENTRYPOINT []"])` 확인 |
+| `libgomp.so.1: cannot open shared object file` | CUDA runtime 이미지에 OpenMP 런타임 없음 | modal_app.py 의 `.apt_install("libgomp1")` 확인 |
+| `unknown model architecture: 'gemma4'` | llama.cpp 가 Gemma 4 지원 전 빌드 | Dockerfile `LLAMA_CPP_REF=b8860+` 확인 (memory `reference_llamacpp_gemma4_minver`) |
+| Multi-stage cache 가 stale binary 반환 | Dockerfile ARG 변경 후 Modal 캐시 quirk | modal_app.py 의 `force_build=True` 한 번 켜고 deploy, 성공 후 제거 |
+| cold start 가 매번 3분+ | 이미지 pull 이 GPU 노드마다 발생 (~5GB) | scaledown_window 값 늘리거나 min_containers=1 (비용↑) |
 
-## 8. 다음 단계 (본 PR 범위 외)
+## 8. 비용 관리
 
-PR 5 머지 직후 진행할 후속 PR 리스트:
+- L4 in-use 과금 ~$0.59/hr (per-second)
+- Modal Volume 16.9 GiB × $0.15/GB·mo ≈ $2.5/mo
+- scaledown_window=300s (5분 idle 후 종료). 단발 요청만이면 ≈ 5min/call
+- 예상 월간: 해커톤 기간 (~30hr 사용) ≈ **$20-30**
 
-- **API_Server**: `AI_AGENT_URL` env + `AIAgentHTTPBackend` 에 OIDC 토큰
-  exchange (google-auth `id_token_credentials`) 추가. Cloud Run 환경에서
-  metadata 서버로 부터 ID 토큰 획득.
-- **infra**: `api` Cloud Run 서비스에 `AI_AGENT_URL` 환경변수 주입
-  (`cloud_run.tf` 의 api container env 블록에 `google_cloud_run_v2_service.agent.uri`
-  reference 추가).
-- **AI_Agent**: 로컬 모드 (stub/anthropic) 와 동일한 테스트 커버리지를
-  유지하도록 integration 테스트 스키마 재확인.
+## 9. 다음 단계 (본 RUNBOOK 범위 외)
+
+- **API_Server**: `AI_AGENT_URL` env + `AIAgentHTTPBackend` 이 bearer 자동 부착. Cloud Run env 에 Secret Manager 참조로 주입 (`infra/terraform/cloud_run.tf`).
+- **Frontend**: `/api/v1/ai/compose` 를 통해 E2E 검증.
