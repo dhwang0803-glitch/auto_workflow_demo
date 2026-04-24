@@ -35,3 +35,8 @@ class Settings(BaseSettings):
 
     # Hard cap on max_tokens accepted from callers.
     max_tokens_ceiling: int = Field(default=16384, ge=512)
+
+    # Bearer token expected on /v1/* requests. Empty = auth disabled (dev mode);
+    # any non-empty value enables the BearerAuthMiddleware. Public Modal
+    # endpoints set this from a Modal Secret; API_Server attaches matching token.
+    agent_bearer_token: str = ""

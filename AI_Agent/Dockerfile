@@ -19,7 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 # Pin to a known-good tag — bump deliberately. master breaks often enough
 # that unpinned builds get painful.
-ARG LLAMA_CPP_REF=b6000
+# b8860 (April 2026) — first stable cut past the Gemma 4 day-0 PRs (#21326
+# parser + #21343 tokenizer). Earlier b6000 fails on `unknown model
+# architecture: 'gemma4'` when loading unsloth/gemma-4-26B-A4B-it GGUF.
+ARG LLAMA_CPP_REF=b8860
 RUN git clone --depth=1 --branch "${LLAMA_CPP_REF}" https://github.com/ggerganov/llama.cpp.git
 
 WORKDIR /build/llama.cpp
