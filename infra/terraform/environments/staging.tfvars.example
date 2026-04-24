@@ -50,8 +50,5 @@ api_allow_unauthenticated = true
 # Safe to destroy staging on a whim; prod keeps the default true.
 deletion_protection = false
 
-# ---- AI_Agent (Modal pivot 2026-04-24) -------------------------------------
-# 런타임은 Modal (AI_Agent/scripts/modal_app.py). GCP 쪽엔 백업 자산만 (AR 이미지
-# 백업 + GCS GGUF 백업 + agent SA + bearer secret).
-agent_region            = "us-central1"
-agent_model_bucket_name = "REPLACE-PROJECT-agent-models-staging"
+# AI_Agent 는 Modal (AI_Agent/scripts/modal_app.py) 에서 운영. GCP 쪽엔
+# bearer secret 만 남았고 별도 변수 불필요.

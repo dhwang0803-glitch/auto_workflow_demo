@@ -96,24 +96,9 @@ output "broker_port" {
   value       = google_redis_instance.broker.port
 }
 
-# ---- AI_Agent (Modal pivot 2026-04-24, GCP-side artifacts only) ------------
+# ---- AI_Agent (Modal pivot — bearer secret only) ---------------------------
 
 output "agent_bearer_token_secret_id" {
   description = "Secret Manager resource ID for the AI_Agent bearer token. API_Server boot fetches with: gcloud secrets versions access latest --secret=<this>. Modal Secret `agent-bearer-token` (key AGENT_BEARER_TOKEN) holds the same value."
   value       = google_secret_manager_secret.agent_bearer_token.secret_id
-}
-
-output "agent_service_account_email" {
-  description = "Service account with read access to AI_Agent AR + bucket + bearer secret. Not attached to any runtime after Modal pivot — kept for workstation / future re-host."
-  value       = google_service_account.agent.email
-}
-
-output "agent_artifact_registry_repo" {
-  description = "Fully-qualified AR repo path. Holds pre-Modal image (agent:b07d8b0) as a frozen backup."
-  value       = "${var.agent_region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.agent_images.repository_id}"
-}
-
-output "agent_models_bucket" {
-  description = "GCS bucket holding GGUF backup. Modal Volume `agent-models` is the live source; this bucket survives Volume drops."
-  value       = google_storage_bucket.agent_models.name
 }
