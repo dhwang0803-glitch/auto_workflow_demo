@@ -20,7 +20,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.backends.protocols import LLMBackend
@@ -28,6 +28,10 @@ from app.config import Settings
 from app.container import AIAgentContainer
 from app.dependencies import get_backend, get_settings
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
+
+# Paths exempt from bearer auth even when AGENT_BEARER_TOKEN is set. /v1/health
+# stays open so external monitors / Modal cold-start probes don't need the secret.
+_PUBLIC_PATHS = frozenset({"/v1/health"})
 
 
 def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
@@ -47,6 +51,20 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
     app = FastAPI(title="AI_Agent", lifespan=lifespan)
     app.state.settings = settings
     app.state.backend = container.backend
+
+    if settings.agent_bearer_token:
+        expected = settings.agent_bearer_token
+
+        @app.middleware("http")
+        async def bearer_auth(request: Request, call_next):
+            if request.url.path in _PUBLIC_PATHS:
+                return await call_next(request)
+            auth = request.headers.get("authorization", "")
+            if not auth.startswith("Bearer "):
+                return JSONResponse({"detail": "missing bearer"}, status_code=401)
+            if auth[len("Bearer ") :] != expected:
+                return JSONResponse({"detail": "invalid bearer"}, status_code=403)
+            return await call_next(request)
 
     @app.post("/v1/complete", response_model=CompleteResponse)
     async def complete(

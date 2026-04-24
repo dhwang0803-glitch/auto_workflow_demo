@@ -89,6 +89,74 @@ async def test_complete_forwards_prompt_and_returns_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bearer_auth_skipped_when_token_unset() -> None:
+    # Default Settings() leaves agent_bearer_token = "" → middleware not mounted,
+    # /v1/complete reachable without Authorization header.
+    app = create_app(backend_override=_FakeBackend(response="ok"))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            json={"system": "sys", "user_message": "hi", "max_tokens": 16},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_bearer_auth_rejects_missing_header(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_BEARER_TOKEN", "secret-x")
+    app = create_app(backend_override=_FakeBackend())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            json={"system": "s", "user_message": "u", "max_tokens": 16},
+        )
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "missing bearer"}
+
+
+@pytest.mark.asyncio
+async def test_bearer_auth_rejects_wrong_token(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_BEARER_TOKEN", "secret-x")
+    app = create_app(backend_override=_FakeBackend())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            headers={"Authorization": "Bearer wrong"},
+            json={"system": "s", "user_message": "u", "max_tokens": 16},
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_bearer_auth_accepts_correct_token(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_BEARER_TOKEN", "secret-x")
+    app = create_app(backend_override=_FakeBackend(response="pong"))
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            headers={"Authorization": "Bearer secret-x"},
+            json={"system": "s", "user_message": "u", "max_tokens": 16},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "pong"}
+
+
+@pytest.mark.asyncio
+async def test_bearer_auth_health_remains_public(monkeypatch) -> None:
+    # /v1/health stays open so monitors don't need the secret.
+    monkeypatch.setenv("AGENT_BEARER_TOKEN", "secret-x")
+    app = create_app(backend_override=_FakeBackend())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/v1/health")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_stream_yields_chunks_in_order() -> None:
     backend = _FakeBackend(stream_chunks=["one", "two", "three"])
     app = create_app(backend_override=backend)
