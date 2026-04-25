@@ -26,12 +26,14 @@ class AIAgentHTTPBackend:
         self,
         *,
         base_url: str,
-        timeout_s: float = 60.0,
+        timeout_s: float = 240.0,
         bearer_token: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        # Generous overall timeout for cold-start (Modal cold-start 1-3min);
-        # connect timeout is short since we fail fast if DNS/TCP misbehave.
+        # Generous overall timeout: Modal cold-start can be 1-3min and a full
+        # 4096-token AI Composer reply on Gemma 4 26B-A4B/L4 takes ~100-130s
+        # (observed 2026-04-25 staging smoke). connect timeout stays short so
+        # DNS/TCP misbehavior fails fast.
         self._timeout = httpx.Timeout(timeout_s, connect=10.0)
         # Header is attached on every request when set; AI_Agent FastAPI
         # middleware (env AGENT_BEARER_TOKEN) checks it. Empty token means

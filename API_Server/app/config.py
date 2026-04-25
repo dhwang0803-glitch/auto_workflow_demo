@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     # backends. Empty falls back to the PLAN_02 local-backend path so
     # tests and envs without AI_Agent still boot.
     ai_agent_base_url: str = ""
-    ai_agent_timeout_s: float = Field(default=60.0, ge=1.0)
+    ai_agent_timeout_s: float = Field(default=240.0, ge=1.0)
     # Bearer token attached to outbound calls. Modal endpoint requires it
     # (FastAPI BearerAuth middleware in AI_Agent gates /v1/* on a match).
     # Same value lives in GCP Secret Manager `agent-bearer-token-<env>` and
