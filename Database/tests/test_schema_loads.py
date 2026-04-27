@@ -129,6 +129,9 @@ async def test_schema_applies_and_checks_enforced():
             "credentials", "agents", "webhook_registry",
             "execution_node_logs",
             "approval_notifications",
+            # PLAN_12 / ADR-022 — Skill Bootstrap (005_skill_bootstrap.sql)
+            "skills", "skill_sources", "skill_applications",
+            "policy_documents", "policy_extractions",
         }
         assert expected.issubset(tables), f"missing: {expected - tables}"
 
