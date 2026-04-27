@@ -79,14 +79,26 @@ class Settings(BaseSettings):
     # Run instance only. PR B replaces this with Redis-backed counter so the
     # limit holds across the autoscaler.
     ai_compose_rate_per_minute: int = Field(default=10, ge=1)
-    ai_compose_max_tokens: int = Field(default=4096, ge=512, le=16384)
+    # PLAN_12 multi-turn budget: 1024 output tokens per turn (ADR-022 §6).
+    # Single-shot composer used 4096 — multi-turn is many smaller turns,
+    # bigger per-turn caps just inflate worst-case wall time without
+    # benefit (1-C measured generation = wall × 0.97 at this size).
+    ai_compose_max_tokens: int = Field(default=1024, ge=512, le=16384)
 
     # PLAN_11 PR 1 — AI_Agent split. When ai_agent_base_url is set, the
     # container prefers AIAgentHTTPBackend over the in-tree Anthropic/Stub
     # backends. Empty falls back to the PLAN_02 local-backend path so
     # tests and envs without AI_Agent still boot.
     ai_agent_base_url: str = ""
-    ai_agent_timeout_s: float = Field(default=240.0, ge=1.0)
+    # 180s covers two regimes on Modal:
+    #   (a) cold start — container boot ~60-90s + 16.9 GiB GGUF mmap +
+    #       first-turn inference (~20s for 1024 tok at the multi-turn
+    #       budget) ≈ 120-180s wall.
+    #   (b) warm — subsequent turns measured ~3-19s (PR #128 risk 1-C).
+    # PLAN_12 §6 calls for 60-90s but assumes a warm endpoint. Cold-start
+    # mmap is the binding constraint; raising the floor here trades a few
+    # seconds of error-budget for not papering over Modal's own latency.
+    ai_agent_timeout_s: float = Field(default=180.0, ge=1.0)
     # Bearer token attached to outbound calls. Modal endpoint requires it
     # (FastAPI BearerAuth middleware in AI_Agent gates /v1/* on a match).
     # Same value lives in GCP Secret Manager `agent-bearer-token-<env>` and
