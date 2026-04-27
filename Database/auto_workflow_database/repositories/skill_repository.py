@@ -1,10 +1,9 @@
 """Postgres SkillRepository — PLAN_12 W2-7."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from auto_workflow_database.models.skills import Skill as SkillORM
@@ -121,10 +120,11 @@ class PostgresSkillRepository(SkillRepository):
             if row is None or row.owner_user_id != owner_user_id:
                 return None
             row.status = new_status
-            # `updated_at` has a server default for INSERT only; bump
-            # explicitly on UPDATE so the audit trail reflects the
-            # transition time. timezone=True on the column requires aware.
-            row.updated_at = datetime.now(timezone.utc)
+            # Use server-side NOW() (not Python datetime.now) so created_at
+            # and updated_at share a single clock — local-machine clock
+            # skew vs Cloud SQL would otherwise produce updated_at <
+            # created_at on a fast UPDATE-after-INSERT.
+            row.updated_at = func.now()
             await s.flush()
             await s.refresh(row)
             return _to_dto(row)
