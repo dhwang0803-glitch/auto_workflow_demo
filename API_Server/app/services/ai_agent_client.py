@@ -9,14 +9,27 @@ The HTTP contract lives in AI_Agent/app/models/http.py:
 - POST /v1/complete  → `{text}` JSON
 - POST /v1/stream    → chunked text/plain
 
+PLAN_12 W2-7 added the skill-bootstrap helpers (classify_domain,
+analyze_gaps, answer_to_skill) — these wrap the AI_Agent endpoints
+under `/v1/domain/*` and `/v1/skills/*`. They live on the same client
+because they share base_url + bearer token, but they are NOT part of
+the LLMBackend protocol (which stays minimal: complete + stream).
+
 See AI_Agent/docs/SPLIT.md for the boundary spec.
 """
 from __future__ import annotations
 
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
+
+from app.models.skills import (
+    DomainClassificationResponse,
+    ExtractedSkillBody,
+    PolicyGapBody,
+    SkillDraftBody,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,3 +94,51 @@ class AIAgentHTTPBackend:
                 async for chunk in resp.aiter_text():
                     if chunk:
                         yield chunk
+
+    # --- PLAN_12 W2-7 skill-bootstrap helpers ---------------------------
+
+    async def _post_json(self, path: str, body: dict) -> Any:
+        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers) as client:
+            resp = await client.post(f"{self._base_url}{path}", json=body)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def classify_domain(self, text: str) -> DomainClassificationResponse:
+        body = await self._post_json("/v1/domain/classify", {"text": text})
+        return DomainClassificationResponse.model_validate(body)
+
+    async def analyze_gaps(
+        self,
+        domain: str,
+        extracted_skills: list[ExtractedSkillBody],
+    ) -> list[PolicyGapBody]:
+        body = await self._post_json(
+            "/v1/skills/gap_analyze",
+            {
+                "domain": domain,
+                "extracted_skills": [s.model_dump() for s in extracted_skills],
+            },
+        )
+        # AI_Agent's GapAnalysis = {"missing": [PolicyGap]}. We unwrap
+        # because API_Server's BootstrapResponse adds session_id + domain
+        # alongside the missing list.
+        return [PolicyGapBody.model_validate(p) for p in body["missing"]]
+
+    async def answer_to_skill(
+        self,
+        *,
+        domain: str,
+        policy_id: str,
+        question: str,
+        answer: str,
+    ) -> SkillDraftBody:
+        body = await self._post_json(
+            "/v1/skills/answer_to_skill",
+            {
+                "domain": domain,
+                "policy_id": policy_id,
+                "question": question,
+                "answer": answer,
+            },
+        )
+        return SkillDraftBody.model_validate(body)

@@ -21,6 +21,7 @@ from app.routers.credentials import router as credentials_router
 from app.routers.executions import router as executions_router
 from app.routers.node_catalog import router as node_catalog_router
 from app.routers.oauth_google import router as oauth_google_router
+from app.routers.skills import router as skills_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
 from app.services.ai_composer_service import LLMBackend
@@ -69,6 +70,8 @@ def create_app(
         app.state.google_oauth_client = c.google_oauth_client
         app.state.workflow_service = c.workflow_service
         app.state.ai_composer_service = c.ai_composer_service
+        app.state.skill_repo = c.skill_repo
+        app.state.skill_bootstrap_service = c.skill_bootstrap_service
         try:
             yield
         finally:
@@ -115,6 +118,9 @@ def create_app(
     )
     app.include_router(
         ai_composer_router, prefix="/api/v1/ai", tags=["ai-composer"]
+    )
+    app.include_router(
+        skills_router, prefix="/api/v1/skills", tags=["skills"]
     )
 
     @app.get("/health")
