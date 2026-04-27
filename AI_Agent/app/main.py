@@ -29,9 +29,20 @@ from app.container import AIAgentContainer
 from app.dependencies import get_backend, get_settings
 from app.models.domain import DomainClassification, DomainClassifyRequest
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
+from app.models.skills import (
+    AnswerToSkillRequest,
+    GapAnalysis,
+    GapAnalyzeRequest,
+    SkillDraft,
+)
 from app.services.domain_classifier import (
     ClassifierParseError,
     classify_domain,
+)
+from app.services.skill_bootstrap import (
+    SkillBootstrapParseError,
+    analyze_gaps,
+    answer_to_skill,
 )
 
 # Paths exempt from bearer auth even when AGENT_BEARER_TOKEN is set. /v1/health
@@ -119,6 +130,40 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
             # API_Server can decide whether to fall back to "other" or
             # surface a wizard error to the user.
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/v1/skills/gap_analyze", response_model=GapAnalysis)
+    async def skills_gap_analyze(
+        payload: GapAnalyzeRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> GapAnalysis:
+        try:
+            return await analyze_gaps(
+                backend, payload.domain, payload.extracted_skills
+            )
+        except SkillBootstrapParseError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/v1/skills/answer_to_skill", response_model=SkillDraft)
+    async def skills_answer_to_skill(
+        payload: AnswerToSkillRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> SkillDraft:
+        try:
+            return await answer_to_skill(
+                backend,
+                payload.domain,
+                payload.policy_id,
+                payload.question,
+                payload.answer,
+            )
+        except SkillBootstrapParseError as exc:
+            # LLM gave us a shape we cannot interpret. Must come BEFORE
+            # the ValueError handler since SkillBootstrapParseError
+            # inherits from ValueError.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            # Unknown policy_id for the given domain — caller bug.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(
