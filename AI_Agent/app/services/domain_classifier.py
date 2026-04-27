@@ -12,8 +12,6 @@ budget defined in ADR-022.
 """
 from __future__ import annotations
 
-import json
-import re
 from functools import lru_cache
 from pathlib import Path
 from typing import get_args
@@ -22,6 +20,7 @@ import yaml
 
 from app.backends.protocols import LLMBackend
 from app.models.domain import DomainCategory, DomainClassification
+from app.services._llm_json import JsonExtractError, extract_json_object
 
 POLICIES_DIR = Path(__file__).parent.parent.parent / "data" / "policies"
 DOMAIN_MAX_TOKENS = 256
@@ -88,42 +87,11 @@ def _classifier_system_prompt() -> str:
     return "\n".join(lines)
 
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
-
-
-def _extract_json(raw: str) -> dict:
-    """Pull the JSON object out of a model response.
-
-    Tolerates ```json fences (Anthropic) and stray prose before/after the
-    object (small models). Returns the first parseable {...} block.
-    """
-    text = raw.strip()
-    fence = _FENCE_RE.search(text)
-    if fence:
-        text = fence.group(1).strip()
-
-    # Find the first balanced top-level {...}.
-    start = text.find("{")
-    if start == -1:
-        raise ClassifierParseError(f"no JSON object in response: {raw!r}")
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : i + 1])
-                except json.JSONDecodeError as exc:
-                    raise ClassifierParseError(
-                        f"malformed JSON: {exc}"
-                    ) from exc
-    raise ClassifierParseError(f"unbalanced JSON braces: {raw!r}")
-
-
 def _parse_response(raw: str) -> DomainClassification:
-    body = _extract_json(raw)
+    try:
+        body = extract_json_object(raw)
+    except JsonExtractError as exc:
+        raise ClassifierParseError(str(exc)) from exc
 
     domain = body.get("domain")
     valid_domains = set(get_args(DomainCategory))
