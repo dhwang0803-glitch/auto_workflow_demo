@@ -69,6 +69,11 @@ from cryptography.fernet import Fernet   # 자격증명 암호화
 | `users` | 계정 정보 |
 | `agents` | 등록된 Agent 메타데이터 (owner_id, public_key, last_heartbeat) |
 | `webhook_registry` | 동적 Webhook 경로 ↔ workflow_id 매핑 |
+| `skills` | PLAN_12/ADR-022 Skill Bootstrap — 코드화된 팀 정책 (condition+action) |
+| `skill_sources` | 각 skill 의 출처 추적 (document/conversation/observation) — append-only |
+| `skill_applications` | compose 시 skill 적용 감사 (workflow_id 는 hard FK 아님) — append-only |
+| `policy_documents` | 업로드 SOP/핸드북. (owner_user_id, content_hash) UNIQUE 로 중복 차단 |
+| `policy_extractions` | 청크 + BGE-M3 임베딩 (`vector(1024)`, HNSW 인덱스) |
 
 ## 핵심 인덱스
 
