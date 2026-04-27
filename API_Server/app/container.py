@@ -10,6 +10,7 @@ from auto_workflow_database.repositories._session import build_engine, build_ses
 from auto_workflow_database.repositories.agent_repository import PostgresAgentRepository
 from auto_workflow_database.repositories.credential_store import FernetCredentialStore
 from auto_workflow_database.repositories.execution_repository import PostgresExecutionRepository
+from auto_workflow_database.repositories.skill_repository import PostgresSkillRepository
 from auto_workflow_database.repositories.user_repository import PostgresUserRepository
 from auto_workflow_database.repositories.webhook_registry import PostgresWebhookRegistry
 from auto_workflow_database.repositories.workflow_repository import PostgresWorkflowRepository
@@ -31,6 +32,7 @@ from app.services.credential_service import CredentialService
 from app.services.email_sender import EmailSender, make_email_sender
 from app.services.google_oauth_client import GoogleOAuthClient
 from app.services.oauth_state import OAuthStateSigner
+from app.services.skill_bootstrap_service import SkillBootstrapService
 from app.services.wake_worker import WakeWorker
 from app.services.workflow_service import WorkflowService
 
@@ -53,6 +55,7 @@ class AppContainer:
         self.execution_repo = PostgresExecutionRepository(self.sessionmaker)
         self.webhook_registry = PostgresWebhookRegistry(self.sessionmaker)
         self.agent_repo = PostgresAgentRepository(self.sessionmaker)
+        self.skill_repo = PostgresSkillRepository(self.sessionmaker)
         self.credential_store = FernetCredentialStore(
             self.sessionmaker,
             master_key=settings.credential_master_key.encode("utf-8"),
@@ -117,6 +120,22 @@ class AppContainer:
             max_tokens=settings.ai_compose_max_tokens,
         )
 
+
+        # PLAN_12 W2-7 — skill-bootstrap wizard. Wired only when
+        # ai_agent_base_url is set; the router's dependency raises 503
+        # otherwise so dev envs without an AI_Agent endpoint see a clear
+        # "not configured" error instead of an httpx connection failure.
+        self.skill_bootstrap_service: SkillBootstrapService | None = None
+        if settings.ai_agent_base_url:
+            skill_ai_client = AIAgentHTTPBackend(
+                base_url=settings.ai_agent_base_url,
+                timeout_s=settings.ai_agent_timeout_s,
+                bearer_token=settings.agent_bearer_token,
+            )
+            self.skill_bootstrap_service = SkillBootstrapService(
+                ai_agent=skill_ai_client,
+                skill_repo=self.skill_repo,
+            )
 
         self.workflow_service = WorkflowService(
             repo=self.workflow_repo,
