@@ -20,14 +20,19 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.backends.protocols import LLMBackend
 from app.config import Settings
 from app.container import AIAgentContainer
 from app.dependencies import get_backend, get_settings
+from app.models.domain import DomainClassification, DomainClassifyRequest
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
+from app.services.domain_classifier import (
+    ClassifierParseError,
+    classify_domain,
+)
 
 # Paths exempt from bearer auth even when AGENT_BEARER_TOKEN is set. /v1/health
 # stays open so external monitors / Modal cold-start probes don't need the secret.
@@ -101,6 +106,19 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.post("/v1/domain/classify", response_model=DomainClassification)
+    async def domain_classify(
+        payload: DomainClassifyRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> DomainClassification:
+        try:
+            return await classify_domain(backend, payload.text)
+        except ClassifierParseError as exc:
+            # 502 — upstream LLM returned a shape we cannot interpret.
+            # API_Server can decide whether to fall back to "other" or
+            # surface a wizard error to the user.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(
