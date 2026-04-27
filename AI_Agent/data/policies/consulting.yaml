@@ -1,0 +1,159 @@
+# Domain: consulting / B2B project services
+# Format: see ecommerce.yaml header.
+domain: consulting
+display_name: Consulting / B2B Project Services
+description: >
+  Independent or boutique B2B service providers delivering scoped engagements
+  — strategy, technical, design, accounting, legal, marketing. Common
+  workflow surfaces: client intake, scope and change management, status
+  reporting, payment milestones, confidentiality, project closeout.
+policies:
+  - id: consulting.client_intake_gate
+    name: New client intake gate (NDA + SOW)
+    condition: >
+      A new prospective client requests substantive work or shares
+      confidential context (problem details, internal data, named individuals)
+      AND no signed engagement agreement is in place.
+    action: >
+      Pause substantive work. Send the team's standard NDA and Statement of
+      Work for signature before continuing. Do not store client confidential
+      material in working systems until both are executed. Record the
+      executed agreements in the team's contract repository with the
+      effective date.
+    rationale: >
+      Working ahead of paperwork creates billing disputes and leaves the
+      team without confidentiality protection. The gate is unpopular with
+      eager clients but eliminates the most common engagement disasters.
+    parameters:
+      - NDA_TEMPLATE
+      - SOW_TEMPLATE
+      - CONTRACT_REPOSITORY
+    tags: [intake, legal, finance]
+
+  - id: consulting.scope_creep_change_order
+    name: Scope-creep change-order trigger
+    condition: >
+      The client requests work outside the SOW deliverables OR the projected
+      effort to complete a deliverable exceeds the team's variance threshold
+      against the original estimate.
+    action: >
+      Do not silently absorb the additional work. Document the requested
+      scope change, estimate the incremental effort and cost, and send a
+      written change order for the client's signature before starting. If
+      the change is small enough to fall under the team's "courtesy"
+      threshold, log it explicitly and mention it in the next status report.
+    rationale: >
+      Silently absorbed scope is the #1 cause of margin loss in consulting.
+      Even small absorbed changes accumulate and shift the engagement's
+      effective rate.
+    parameters:
+      - EFFORT_VARIANCE_THRESHOLD
+      - COURTESY_HOURS_THRESHOLD
+      - CHANGE_ORDER_TEMPLATE
+    tags: [scope, finance, communication]
+
+  - id: consulting.status_report_cadence
+    name: Status report cadence
+    condition: >
+      An engagement is active and the team's defined status reporting
+      interval has elapsed since the last report.
+    action: >
+      Send the status report on schedule, even when there is nothing
+      dramatic to report. Use the team's standard format: progress against
+      milestones, risks, decisions needed from the client, hours used vs
+      budget. Surface risks early — clients dislike late risk surfacing far
+      more than they dislike early risk surfacing.
+    rationale: >
+      Quiet engagements feel risky to clients. A predictable cadence builds
+      trust and creates a rhythm for surfacing issues before they harden.
+    parameters:
+      - STATUS_REPORT_INTERVAL
+      - STATUS_REPORT_TEMPLATE
+      - STATUS_REPORT_OWNER
+    tags: [communication, project-mgmt, retention]
+
+  - id: consulting.payment_milestone_gating
+    name: Payment milestone gating
+    condition: >
+      A scoped engagement reaches a payment milestone defined in the SOW
+      AND the milestone invoice has not been paid within the team's net-terms
+      window.
+    action: >
+      Pause new work on the milestone immediately past the team's grace
+      period. Send a polite payment reminder before the pause, and a
+      formal pause notification at the pause point with a concrete restart
+      condition. Do not continue accruing work-in-progress on overdue
+      accounts beyond the team's threshold.
+    rationale: >
+      Continued work on overdue accounts compounds the loss. The pause is
+      uncomfortable but is the only honest signal that timely payment is
+      part of the engagement.
+    parameters:
+      - PAYMENT_NET_TERMS_DAYS
+      - GRACE_PERIOD_DAYS
+      - PAUSE_NOTIFICATION_TEMPLATE
+    tags: [finance, communication, scope]
+
+  - id: consulting.internal_confidentiality
+    name: Confidentiality on internal channels
+    condition: >
+      Team members discuss client engagements on internal channels (chat,
+      shared docs, AI assistants, call recordings).
+    action: >
+      Use the team's defined channel-segregation rules — client-named
+      channels for client-specific material, no client confidential data
+      in personal DMs or non-segregated shared spaces. For AI assistants,
+      use only those approved for confidential context per the team's
+      tooling policy. Redact identifiable client material from content
+      shared in marketing or recruiting.
+    rationale: >
+      Confidentiality leaks usually happen through casual sharing, not
+      malicious intent. Channel hygiene is the cheapest control.
+    parameters:
+      - CHANNEL_SEGREGATION_RULES
+      - APPROVED_AI_TOOLS
+      - REDACTION_GUIDELINES
+    tags: [legal, security, communication]
+
+  - id: consulting.subcontractor_disclosure
+    name: Subcontractor and referral disclosure
+    condition: >
+      The team plans to involve a subcontractor on a client engagement OR
+      to refer a client to a partner where the team receives a referral fee
+      or other consideration.
+    action: >
+      Disclose the subcontractor or referral relationship to the client in
+      writing before the engagement starts or the referral is made. For
+      subcontractors, share the team's subcontractor agreement and confirm
+      they are bound by the same confidentiality terms as the team. For
+      referrals with consideration, disclose the existence of the
+      consideration even if the amount is not.
+    rationale: >
+      Clients react badly to discovering subcontractors or referral fees
+      after the fact. Upfront disclosure is professionally expected and
+      legally required in some jurisdictions.
+    parameters:
+      - SUBCONTRACTOR_AGREEMENT_TEMPLATE
+      - DISCLOSURE_TEMPLATE
+      - REFERRAL_DISCLOSURE_THRESHOLD
+    tags: [legal, communication, finance]
+
+  - id: consulting.project_closeout
+    name: Project closeout and retrospective
+    condition: >
+      An engagement reaches its scoped end OR is terminated early.
+    action: >
+      Run the team's standard closeout: final deliverable handoff with
+      written acknowledgement, final invoice, return or destruction of
+      client confidential material per the agreement, internal retrospective
+      capturing what worked and what to adjust. Request a client testimonial
+      or case-study release only if the engagement ended on positive terms.
+    rationale: >
+      Sloppy closeouts leave open billing disputes, lingering confidentiality
+      exposure, and lost learning. The retrospective compounds — most
+      consulting improvement comes from systematic post-engagement review.
+    parameters:
+      - CLOSEOUT_CHECKLIST
+      - DATA_DESTRUCTION_POLICY
+      - TESTIMONIAL_REQUEST_TEMPLATE
+    tags: [project-mgmt, legal, learning]

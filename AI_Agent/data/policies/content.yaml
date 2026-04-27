@@ -1,0 +1,168 @@
+# Domain: content / creator (newsletter, podcast, video, social)
+# Format: see ecommerce.yaml header.
+domain: content
+display_name: Content / Creator
+description: >
+  Independent or small-team content publishers — newsletter writers,
+  podcasters, YouTube and short-form video creators, social media accounts
+  with audiences. Common workflow surfaces: sponsorship and disclosure,
+  comment and DM moderation, brand-safety review, publishing cadence,
+  copyright and fair-use review, audience escalation.
+policies:
+  - id: content.sponsorship_disclosure
+    name: Sponsorship and ad disclosure
+    condition: >
+      A piece of content includes paid promotion, affiliate links, gifted
+      products, or any material connection that a reasonable audience member
+      would not assume.
+    action: >
+      Disclose the material connection clearly and conspicuously per the
+      jurisdiction's standard (FTC in the US; ASA in the UK; equivalent
+      elsewhere). Use the team's standard disclosure language at the start
+      of the relevant segment, in the description, and in any caption — not
+      buried at the end. Disclosure language must use plain words like
+      "sponsored", "ad", or "paid partnership" — not just hashtags.
+    rationale: >
+      Disclosure is legally required and erodes trust slowly when violated;
+      audiences accept disclosed sponsorship and resent discovered
+      sponsorship.
+    parameters:
+      - DISCLOSURE_LANGUAGE_TEMPLATE
+      - JURISDICTION
+      - DISCLOSURE_PLACEMENT_RULES
+    tags: [legal, communication, monetization]
+
+  - id: content.comment_moderation
+    name: Comment and reply moderation
+    condition: >
+      A user comment or reply on the team's content matches the team's
+      moderation criteria — explicit harassment, illegal content, off-topic
+      spam, doxxing, or content violating the team's stated community
+      guidelines.
+    action: >
+      Apply the team's moderation action consistently — hide, delete, or
+      ban per the offense category. Document the action and reason in the
+      team's moderation log so decisions are auditable. Do not engage with
+      bad-faith comments publicly; do engage genuinely with critical but
+      good-faith comments.
+    rationale: >
+      Inconsistent moderation invites accusations of bias. A documented log
+      protects the team if a decision is challenged. Public engagement with
+      bad-faith comments amplifies them.
+    parameters:
+      - MODERATION_CRITERIA
+      - MODERATION_LOG_LOCATION
+      - BAN_DURATION_TIERS
+    tags: [moderation, community, legal]
+
+  - id: content.brand_safety_review
+    name: Brand-safety review for sponsor mentions
+    condition: >
+      A piece of content includes a sponsor mention OR will be published in a
+      brand-controlled program (YouTube monetization, podcast network,
+      cross-promotion).
+    action: >
+      Run the team's brand-safety review before publishing. Check the content
+      against the sponsor's published exclusion list (politics, controversial
+      topics, competitor mentions) and the platform's monetization rules.
+      Flag any potentially adjacent content within the same release window
+      that could affect the sponsor's perception.
+    rationale: >
+      Brand-safety violations cost sponsorship deals and platform monetization
+      access. Catching them pre-publish is cheaper than retroactive editing.
+    parameters:
+      - SPONSOR_EXCLUSION_LIST
+      - PLATFORM_MONETIZATION_RULES
+      - RELEASE_WINDOW_DAYS
+    tags: [monetization, legal, communication]
+
+  - id: content.publishing_cadence
+    name: Publishing cadence and scheduling buffer
+    condition: >
+      A scheduled content release date is within the team's "buffer required"
+      window before going live AND the content has not cleared the team's
+      pre-publish checklist (review, captions, thumbnails, scheduling).
+    action: >
+      Hold the release until the checklist is complete, even if it means
+      delaying the published cadence. Notify the audience proactively if the
+      release will slip past a publicly stated schedule. Do not ship rushed
+      content to hit a date — quality misses compound, schedule misses
+      recover.
+    rationale: >
+      Audience trust survives an explicit delay; it does not survive
+      noticeable quality drops or compliance failures from rushed publishing.
+    parameters:
+      - PRE_PUBLISH_CHECKLIST
+      - BUFFER_WINDOW_HOURS
+      - DELAY_NOTIFICATION_CHANNEL
+    tags: [quality, communication, operations]
+
+  - id: content.copyright_fair_use
+    name: Copyright and fair-use clip review
+    condition: >
+      Content includes third-party material — music, video clips,
+      screenshots, quoted text — beyond the team's "obviously safe"
+      threshold (short attributed quote, public-domain material, licensed
+      stock).
+    action: >
+      Review against the team's fair-use checklist before publishing —
+      transformative purpose, amount used, market effect. For music
+      specifically, prefer licensed catalogs (the team's library) over
+      claimed fair-use of commercial music. Document the team's reasoning
+      for any non-trivial reuse so a future challenge has a defense record.
+    rationale: >
+      Fair use is a defense, not a permission. Platform copyright systems
+      strike first and ask questions later. A reasoning record converts
+      arguments from "we'll figure it out" to "here is the prepared
+      defense".
+    parameters:
+      - FAIR_USE_CHECKLIST
+      - LICENSED_MUSIC_LIBRARY
+      - REASONING_RECORD_LOCATION
+    tags: [legal, quality, monetization]
+
+  - id: content.audience_dm_escalation
+    name: Audience DM escalation
+    condition: >
+      An audience direct message contains legal threats, harassment of the
+      team or a specific community member, indication of self-harm risk, or
+      a credible business inquiry above the team's "auto-respond" threshold.
+    action: >
+      Do not auto-respond with templates for any of these. For legal threats,
+      route to the team's legal contact and do not engage substantively
+      until guided. For self-harm signals, follow the team's pre-approved
+      script that points to professional resources without claiming
+      qualifications the team does not have. For credible business inquiry,
+      route to the team's business contact within the team's response SLA.
+    rationale: >
+      Each category has the wrong default answer if treated as ordinary DM.
+      Pre-defined routes prevent the team from improvising at the worst
+      times.
+    parameters:
+      - LEGAL_CONTACT
+      - SELF_HARM_SCRIPT
+      - BUSINESS_CONTACT
+      - BUSINESS_INQUIRY_SLA
+    tags: [communication, legal, safety]
+
+  - id: content.cross_platform_embargo
+    name: Cross-platform repost embargo
+    condition: >
+      A piece of content was just released on the team's primary platform
+      AND a repost or excerpt is planned for a secondary platform within
+      the team's defined embargo window.
+    action: >
+      Hold the secondary release until the embargo window closes. The
+      primary platform's algorithmic ranking depends on early concentrated
+      engagement; same-content on multiple platforms within the window
+      cannibalizes that signal. Repost outside the window with platform-
+      appropriate framing (not a verbatim copy).
+    rationale: >
+      Algorithmic platforms penalize content that appears to be cross-posted
+      from competitors. Embargo windows protect organic reach on the primary
+      release without abandoning multi-platform distribution.
+    parameters:
+      - PRIMARY_PLATFORM
+      - EMBARGO_WINDOW_HOURS
+      - SECONDARY_PLATFORM_FRAMING
+    tags: [distribution, growth, operations]

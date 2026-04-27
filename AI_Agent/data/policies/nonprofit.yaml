@@ -1,0 +1,176 @@
+# Domain: nonprofit / NGO / charitable organization
+# Format: see ecommerce.yaml header.
+domain: nonprofit
+display_name: Nonprofit / NGO
+description: >
+  Charitable organizations operating with donor funding, volunteer staff,
+  and program beneficiaries. Common workflow surfaces: donor receipts and
+  acknowledgment, donor data privacy, volunteer onboarding, restricted-fund
+  handling, grant deadlines, public communication approval.
+policies:
+  - id: nonprofit.donor_receipt_acknowledgment
+    name: Donor receipt and acknowledgment SLA
+    condition: >
+      A donation is received via any channel (online, check, in-kind, stock
+      transfer) AND meets the team's tax-receipt threshold per the
+      jurisdiction.
+    action: >
+      Issue a tax-compliant receipt within the team's acknowledgment SLA.
+      Receipts must include the team's required jurisdiction-specific fields
+      (legal name, registration ID, deductible amount, date, no-goods-received
+      statement where applicable). Send a personal acknowledgment for
+      donations above the team's "personal thank-you" threshold from a named
+      staff member, not a template-only auto-reply.
+    rationale: >
+      Late receipts create tax-time complaints and tarnish donor experience.
+      Personal acknowledgment for major gifts is the single highest-leverage
+      donor-retention practice.
+    parameters:
+      - TAX_RECEIPT_THRESHOLD
+      - ACKNOWLEDGMENT_SLA_DAYS
+      - PERSONAL_THANKYOU_THRESHOLD
+      - RECEIPT_TEMPLATE
+    tags: [finance, retention, legal]
+
+  - id: nonprofit.major_donor_escalation
+    name: Major donor escalation
+    condition: >
+      A donation amount or cumulative annual giving from a single donor
+      exceeds the team's major-donor threshold OR a known major donor
+      contacts the team via any channel.
+    action: >
+      Route to the team's major-gifts officer or named senior staff member
+      within the team's major-donor response SLA. Pull the donor's full
+      history (gifts, prior interactions, restrictions, family/board
+      connections) into the contact context. Do not handle major donor
+      requests in the standard support queue.
+    rationale: >
+      Major donors carry disproportionate annual budget. Standard-queue
+      treatment of a $50K donor question is a strategic miss the
+      organization may not be able to absorb.
+    parameters:
+      - MAJOR_DONOR_THRESHOLD
+      - MAJOR_DONOR_RESPONSE_SLA
+      - MAJOR_GIFTS_OFFICER
+    tags: [retention, finance, communication]
+
+  - id: nonprofit.donor_data_privacy
+    name: Donor data privacy and segregation
+    condition: >
+      Donor contact data is being added to a mailing list, shared with a
+      partner organization, used in a public communication, or processed by
+      a tool outside the team's approved system.
+    action: >
+      Apply the team's donor-data rules: separate "do not share" donors,
+      separate anonymous donors from named publication, never disclose
+      individual gift amounts publicly without explicit consent. For
+      partner-org sharing, confirm the partner's own data-handling matches
+      the team's standard. For new tooling, run the team's vendor data-
+      review checklist before sending any donor record.
+    rationale: >
+      Donor privacy violations destroy major-gift relationships and trigger
+      regulatory exposure under GDPR, CCPA, and equivalents. Most
+      violations come from convenience-driven partner sharing or unreviewed
+      tool adoption, not malicious leaks.
+    parameters:
+      - DO_NOT_SHARE_FLAG_FIELD
+      - PARTNER_SHARING_CHECKLIST
+      - VENDOR_REVIEW_CHECKLIST
+    tags: [legal, security, retention]
+
+  - id: nonprofit.volunteer_onboarding
+    name: Volunteer onboarding gate
+    condition: >
+      A new volunteer is being assigned to a role AND the role meets the
+      team's defined screening level (working with vulnerable populations,
+      handling money, accessing sensitive data, or unsupervised on-site
+      access).
+    action: >
+      Do not assign to the role until the screening level's required steps
+      complete: background check at the team's defined depth, reference
+      checks, role-specific training, signed code-of-conduct and
+      confidentiality acknowledgements. Track completion in the team's
+      volunteer record system. Apply the same gate to long-tenured
+      volunteers moving to a higher screening tier.
+    rationale: >
+      Volunteer screening failures expose beneficiaries to harm and the
+      organization to liability the insurance often does not cover.
+      Tenure does not substitute for the screening required by the new
+      role's risk level.
+    parameters:
+      - SCREENING_LEVEL_DEFINITIONS
+      - BACKGROUND_CHECK_VENDOR
+      - VOLUNTEER_RECORD_SYSTEM
+    tags: [safety, legal, onboarding]
+
+  - id: nonprofit.restricted_fund_validation
+    name: Restricted-fund spending validation
+    condition: >
+      A spending request draws from a restricted fund (donor-restricted gift,
+      restricted grant, designated campaign) OR a coding decision must be
+      made for an ambiguous expense.
+    action: >
+      Validate the spend against the restriction language before approval.
+      For ambiguous expenses, escalate to the team's finance lead with the
+      original restriction document referenced. Document the reasoning for
+      the coding decision in the financial record so an audit can reconstruct
+      it. Never reclassify expenses post-hoc to fit a fund balance.
+    rationale: >
+      Restriction violations can require donor refunds, trigger regulatory
+      action, and disqualify future grants from the same source. Audit
+      reconstructibility is the single biggest predictor of clean financial
+      audits.
+    parameters:
+      - FINANCE_LEAD
+      - RESTRICTION_DOCUMENT_REPOSITORY
+      - CODING_DECISION_LOG
+    tags: [finance, legal, compliance]
+
+  - id: nonprofit.grant_deadline_tracking
+    name: Grant deadline tracking and reminder
+    condition: >
+      A grant has an upcoming application, reporting, or renewal deadline
+      AND the team's defined reminder lead time before the deadline has
+      been reached.
+    action: >
+      Surface the deadline to the assigned grant lead with the deliverable
+      list and the team's deadline checklist. Escalate to the executive
+      lead at the team's escalation lead time if no progress signal exists.
+      Track deadline-miss incidents and review them in the team's quarterly
+      grants review — pattern misses indicate capacity, not memory,
+      problems.
+    rationale: >
+      Missed grant deadlines are usually fatal — granters rarely re-open.
+      The cost of a missed renewal often exceeds the cost of a full-time
+      grants role; even when it does not, the loss is highly visible to the
+      board.
+    parameters:
+      - GRANT_REMINDER_LEAD_DAYS
+      - ESCALATION_LEAD_DAYS
+      - GRANTS_LEAD
+      - DEADLINE_CHECKLIST
+    tags: [finance, project-mgmt, communication]
+
+  - id: nonprofit.public_communication_approval
+    name: Public communication approval for sensitive topics
+    condition: >
+      A planned public communication (press release, social post, public
+      letter, fundraising appeal) addresses a politically sensitive topic,
+      mentions a beneficiary identifiably, references a partner or
+      regulator, or could be perceived as taking a partisan position.
+    action: >
+      Route through the team's defined approval chain (executive lead, board
+      chair, or board communications committee per the topic). For
+      beneficiary-identifying communications, confirm informed consent on
+      file from the beneficiary. For partisan-perceived communications,
+      apply the team's nonpartisan-language guideline before publication.
+      Hold publication until approvals complete.
+    rationale: >
+      One careless public statement can lose donors across the political
+      spectrum, end partnerships, or jeopardize tax-exempt status in some
+      jurisdictions. The approval chain is slow on purpose.
+    parameters:
+      - APPROVAL_CHAIN
+      - CONSENT_FILE_LOCATION
+      - NONPARTISAN_GUIDELINE
+    tags: [legal, communication, governance]
