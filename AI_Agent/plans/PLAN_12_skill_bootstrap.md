@@ -287,12 +287,13 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 | **#134** | Frontend | 문서 업로드 UI (W3-1) | #133 |
 | **#135** | AI_Agent | gap analysis 통합 (W3-5) | #133 |
 | **#136** | API_Server | compose retrieval+inject (W3-6) | #127, #133 |
-| **#141** | AI_Agent | 시드 YAML 스키마 마이그레이션 + gap_analyze 재구성 + answers_to_skill batch (W2-4a/b/c). stub 백엔드도 새 schema 출력하도록 패치 | — (선행 없음, 시드 YAML / 서비스 / stub 만 건드림) |
-| **#142** | API_Server | `/skills/answer` → `/skills/answers` 시그니처 변경 (정책당 batch). W2-7 의 후속 (이미 머지됐다고 가정) | #141 |
-| **#143** | Frontend | 인터뷰 UI parameter 카드화 + "Use baseline" 버튼 (W2-5b). batch submit 으로 wire 변경 | #141, #142 |
-| **#144** | Frontend | skill 카드 source attribution + `/skills` 라이브러리 뷰 + 글로벌 nav (W2-6b + W2-9) | #141 |
+| **#141** | docs (AI_Agent) | PLAN_12 W2-4 표 갱신 — micro-questions 모델 재설계 (선행 doc-only PR, **머지 완료**) | — |
+| **#142** | AI_Agent | 시드 YAML 스키마 마이그레이션 + gap_analyze 재구성 (deterministic 분기) + answers_to_skill batch (W2-4a/b/c). stub 백엔드도 새 schema 출력하도록 패치. legacy `/v1/skills/answer_to_skill` 은 PR #143 까지 single-shot wrapper 로 유지 | — (시드 YAML / 서비스 / stub 만 건드림) |
+| **#143** | API_Server | `/skills/answer` → `/skills/answers` 시그니처 변경 (정책당 batch) + `PolicyGapBody` 에 parameters/sources/source_kind 필드 추가 | #142 |
+| **#144** | Frontend | 인터뷰 UI parameter 카드화 + "Use baseline" 버튼 (W2-5b). batch submit 으로 wire 변경 | #142, #143 |
+| **#145** | Frontend | skill 카드 source attribution + `/skills` 라이브러리 뷰 + 글로벌 nav (W2-6b + W2-9) | #142 |
 
-총 14 PR. **2026-04-28 폴리시 후 추가**: #141-#144 (4 PR). PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리). PR #141 의 stub 패치는 PR #140 (W2-8a) stub 확장의 직속 확장 — 같은 stub 파일을 다시 건드리므로 #141 가 main 진입한 뒤 라이브 backend 작업이 잇따라야 함.
+총 15 PR. **2026-04-28 폴리시 후 추가**: #141-#145 (5 PR — #141 은 plan 갱신 doc-only). PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리). PR #142 의 stub 패치는 PR #140 (W2-8a) stub 확장의 직속 확장 — 같은 stub 파일을 다시 건드리므로 #142 가 main 진입한 뒤 라이브 backend 작업이 잇따라야 함. PR #142 는 legacy `/v1/skills/answer_to_skill` 엔드포인트를 single-shot wrapper 로 유지해 PR #143 머지 전에도 API_Server 가 깨지지 않게 함.
 
 ## 11. 리스크 + 완화
 

@@ -26,9 +26,20 @@ policies:
       Hidden after-hours charges destroy trust. Both are recoverable only by
       explicit upfront communication.
     parameters:
-      - BUSINESS_HOURS
-      - AFTER_HOURS_SURCHARGE
-      - AFTER_HOURS_SUPPORTED
+      - name: BUSINESS_HOURS
+        prompt: "What are your standard business hours? (days + start/end times)"
+        default_baseline: "Mon-Fri 9:00-18:00"
+        baseline_source: "Synthesized — common small-business default; adjust for your service."
+      - name: AFTER_HOURS_SURCHARGE
+        prompt: "If you take after-hours appointments, what surcharge do you apply?"
+        default_baseline: "+25% on the base service price"
+        baseline_source: "Synthesized — typical service-industry premium for off-hours work."
+      - name: AFTER_HOURS_SUPPORTED
+        prompt: "Do you take after-hours appointments at all? (yes / no / emergency-only)"
+        default_baseline: "no"
+        baseline_source: "Synthesized — most small teams decline after-hours by default to protect staff."
+    sources: []
+    source_kind: synthesized
     tags: [scheduling, communication, pricing]
 
   - id: services.no_show_late_cancel
@@ -47,10 +58,24 @@ policies:
       could not book. The fee disciplines the calendar; the goodwill waiver
       protects relationships with otherwise reliable customers.
     parameters:
-      - NO_SHOW_FEE_AMOUNT
-      - LATE_CANCEL_WINDOW_HOURS
-      - LATE_CANCEL_FEE_AMOUNT
-      - GOODWILL_WAIVER_FREQUENCY
+      - name: NO_SHOW_FEE_AMOUNT
+        prompt: "What's the no-show fee?"
+        default_baseline: "50% of service price"
+        baseline_source: "Synthesized — typical industry midpoint between full-charge and waiver."
+      - name: LATE_CANCEL_WINDOW_HOURS
+        prompt: "Within how many hours of the appointment is a cancellation considered 'late'?"
+        default_baseline: "24 hours"
+        baseline_source: "Synthesized — most service businesses use 24h as the canonical cutoff."
+      - name: LATE_CANCEL_FEE_AMOUNT
+        prompt: "What's the late-cancellation fee?"
+        default_baseline: "25% of service price"
+        baseline_source: "Synthesized — half of typical no-show fee acknowledges the customer notified you."
+      - name: GOODWILL_WAIVER_FREQUENCY
+        prompt: "How often will you waive the fee for a first-time / loyal customer?"
+        default_baseline: "Once per customer per 12 months"
+        baseline_source: "Synthesized — protects relationships without enabling repeat misses."
+    sources: []
+    source_kind: synthesized
     tags: [scheduling, finance, retention]
 
   - id: services.new_customer_intake
@@ -68,10 +93,24 @@ policies:
       First-appointment friction predicts churn. Capturing intake once,
       cleanly, prevents repeated questions and lets the service start on time.
     parameters:
-      - INTAKE_FORM_URL
-      - REQUIRED_CONSENTS
-      - REMINDER_LEAD_TIME_HOURS
-      - PREFERRED_CHANNEL_DEFAULT
+      - name: INTAKE_FORM_URL
+        prompt: "Where is your intake form (link or document path)?"
+        default_baseline: "https://forms.example.com/intake (replace)"
+        baseline_source: "Synthesized — placeholder; replace with your real form URL."
+      - name: REQUIRED_CONSENTS
+        prompt: "Are any consents or waivers required before service? (list them, or 'none')"
+        default_baseline: "none"
+        baseline_source: "Synthesized — most non-regulated services skip; healthcare/fitness add HIPAA/medical-history."
+      - name: REMINDER_LEAD_TIME_HOURS
+        prompt: "How many hours before the appointment do you send a reminder?"
+        default_baseline: "24 hours"
+        baseline_source: "Synthesized — modal lead time across appointment-based businesses."
+      - name: PREFERRED_CHANNEL_DEFAULT
+        prompt: "If a customer doesn't specify, which channel do you use to reach them? (SMS / email / call)"
+        default_baseline: "SMS"
+        baseline_source: "Synthesized — highest read-through for time-sensitive reminders."
+    sources: []
+    source_kind: synthesized
     tags: [onboarding, scheduling, compliance]
 
   - id: services.estimate_validity
@@ -89,9 +128,20 @@ policies:
       Open-ended estimates strand the team when costs move. Explicit
       validity windows protect both sides and force clean re-quoting.
     parameters:
-      - ESTIMATE_VALIDITY_DAYS
-      - SUPPLY_PRICE_VARIANCE_THRESHOLD
-      - REQUOTE_TRIGGERS
+      - name: ESTIMATE_VALIDITY_DAYS
+        prompt: "How many days is a written estimate valid before it expires?"
+        default_baseline: "30 days"
+        baseline_source: "Synthesized — long enough to plan, short enough to insulate from supply moves."
+      - name: SUPPLY_PRICE_VARIANCE_THRESHOLD
+        prompt: "Above what supply-cost change (%) do you trigger a re-quote even within the validity window?"
+        default_baseline: "10%"
+        baseline_source: "Synthesized — protects margin on commodity-driven inputs."
+      - name: REQUOTE_TRIGGERS
+        prompt: "What other triggers force a re-quote? (e.g. scope change, site condition discovered)"
+        default_baseline: "Scope change, site condition not visible at estimate, expiry"
+        baseline_source: "Synthesized — covers the standard three triggers."
+    sources: []
+    source_kind: synthesized
     tags: [pricing, scope, communication]
 
   - id: services.recurring_rebooking
@@ -111,9 +161,20 @@ policies:
       recall prevents drift to competitors. Aggressive reminders feel like
       spam and trigger opt-outs.
     parameters:
-      - SERVICE_REBOOKING_INTERVALS
-      - REMINDER_LEAD_TIME_DAYS
-      - MAX_REMINDERS_PER_PERIOD
+      - name: SERVICE_REBOOKING_INTERVALS
+        prompt: "What's the typical interval between repeat bookings for your services? (one value, or per service type)"
+        default_baseline: "6 weeks (most personal services); adjust per service category"
+        baseline_source: "Synthesized — modal salon / cleaning / personal-care interval."
+      - name: REMINDER_LEAD_TIME_DAYS
+        prompt: "How many days before the typical rebooking date do you send the reminder?"
+        default_baseline: "7 days"
+        baseline_source: "Synthesized — late enough to feel timely, early enough to schedule."
+      - name: MAX_REMINDERS_PER_PERIOD
+        prompt: "What's the maximum number of rebooking reminders you'll send in a year for one customer?"
+        default_baseline: "1 per cycle, max 4 per year"
+        baseline_source: "Synthesized — past 4 hits/year, opt-out rates spike."
+    sources: []
+    source_kind: synthesized
     tags: [retention, communication, scheduling]
 
   - id: services.upset_customer_tone
@@ -133,9 +194,20 @@ policies:
       Templated apologies amplify frustration. A named owner with a specific
       time commitment converts most upset customers to retained customers.
     parameters:
-      - ESCALATION_OWNER
-      - ESCALATION_RESPONSE_SLA
-      - LEGAL_TRIGGER_WORDS
+      - name: ESCALATION_OWNER
+        prompt: "Who personally handles upset-customer escalations? (named role or person)"
+        default_baseline: "Owner / lead service provider"
+        baseline_source: "Synthesized — for small teams the buck stops with the owner; named contact is what de-escalates."
+      - name: ESCALATION_RESPONSE_SLA
+        prompt: "What time commitment do you make in the first reply? (e.g. 'I'll call you within 2 hours')"
+        default_baseline: "Reply within 2 hours, resolution within 1 business day"
+        baseline_source: "Synthesized — concrete commitment is the de-escalation lever."
+      - name: LEGAL_TRIGGER_WORDS
+        prompt: "What words in the customer's message trigger an internal manager loop-in? (e.g. 'lawyer', 'sue', 'cancel')"
+        default_baseline: "lawyer, attorney, sue, refund, chargeback, BBB"
+        baseline_source: "Synthesized — common signals of escalation risk."
+    sources: []
+    source_kind: synthesized
     tags: [communication, retention, escalation]
 
   - id: services.post_service_followup
@@ -155,7 +227,18 @@ policies:
       dissatisfied customers manufacture public negative reviews that the
       team would otherwise have caught privately.
     parameters:
-      - FOLLOWUP_LAG_DAYS
-      - REVIEW_PLATFORM_LINK
-      - SERVICE_RECOVERY_OWNER
+      - name: FOLLOWUP_LAG_DAYS
+        prompt: "How many days after the service do you send the follow-up?"
+        default_baseline: "2 days"
+        baseline_source: "Synthesized — fresh enough to recall, late enough to evaluate outcomes."
+      - name: REVIEW_PLATFORM_LINK
+        prompt: "Where do you direct satisfied customers to leave a public review? (Google / Yelp / your site)"
+        default_baseline: "Google Business Profile review link"
+        baseline_source: "Synthesized — Google reviews carry highest local-search weight for service businesses."
+      - name: SERVICE_RECOVERY_OWNER
+        prompt: "Who handles dissatisfied customers when follow-up surfaces a problem?"
+        default_baseline: "Owner / lead service provider"
+        baseline_source: "Synthesized — same owner as escalation; consistency reduces handoff drag."
+    sources: []
+    source_kind: synthesized
     tags: [retention, reputation, communication]

@@ -27,9 +27,24 @@ policies:
       audiences accept disclosed sponsorship and resent discovered
       sponsorship.
     parameters:
-      - DISCLOSURE_LANGUAGE_TEMPLATE
-      - JURISDICTION
-      - DISCLOSURE_PLACEMENT_RULES
+      - name: DISCLOSURE_LANGUAGE_TEMPLATE
+        prompt: "What disclosure language do you use? (e.g. 'This video is sponsored by X.')"
+        default_baseline: "'This [video/post/episode] is sponsored by [brand].' (placed at start)"
+        baseline_source: "FTC § 16 CFR Part 255 — endorsement guides require clear, conspicuous, plain-language disclosure."
+      - name: JURISDICTION
+        prompt: "Which jurisdiction's disclosure rules apply to your audience? (US FTC / UK ASA / EU / other)"
+        default_baseline: "US (FTC)"
+        baseline_source: "Synthesized — pick by primary audience country; multiple jurisdictions need the strictest applied."
+      - name: DISCLOSURE_PLACEMENT_RULES
+        prompt: "Where do you place the disclosure? (start of content, description, caption — list all)"
+        default_baseline: "Start of content + description + caption (all three)"
+        baseline_source: "FTC guidance — single placement is generally insufficient; disclosure must be where the audience will encounter it."
+    sources:
+      - title: "FTC — Disclosures 101 for Social Media Influencers"
+        url: "https://www.ftc.gov/business-guidance/resources/disclosures-101-social-media-influencers"
+      - title: "UK ASA — Recognition of advertising"
+        url: "https://www.asa.org.uk/codes-and-rulings/advertising-codes.html"
+    source_kind: regulatory
     tags: [legal, communication, monetization]
 
   - id: content.comment_moderation
@@ -50,9 +65,20 @@ policies:
       protects the team if a decision is challenged. Public engagement with
       bad-faith comments amplifies them.
     parameters:
-      - MODERATION_CRITERIA
-      - MODERATION_LOG_LOCATION
-      - BAN_DURATION_TIERS
+      - name: MODERATION_CRITERIA
+        prompt: "What are your moderation categories? (e.g. harassment / spam / off-topic / doxxing)"
+        default_baseline: "Harassment, illegal content, spam, doxxing, off-topic"
+        baseline_source: "Synthesized — the standard five-category split most platforms converge on."
+      - name: MODERATION_LOG_LOCATION
+        prompt: "Where do you log moderation actions for audit?"
+        default_baseline: "Shared spreadsheet or platform's built-in mod log (whichever you actually check)"
+        baseline_source: "Synthesized — minimum: action + comment + reason + timestamp, retrievable later."
+      - name: BAN_DURATION_TIERS
+        prompt: "What's your ban-duration tier for repeat offenders? (e.g. 1d → 7d → permanent)"
+        default_baseline: "Warn → 7-day ban → permanent ban"
+        baseline_source: "Synthesized — three-strike model is the most common; calibrate to your community size."
+    sources: []
+    source_kind: synthesized
     tags: [moderation, community, legal]
 
   - id: content.brand_safety_review
@@ -71,9 +97,20 @@ policies:
       Brand-safety violations cost sponsorship deals and platform monetization
       access. Catching them pre-publish is cheaper than retroactive editing.
     parameters:
-      - SPONSOR_EXCLUSION_LIST
-      - PLATFORM_MONETIZATION_RULES
-      - RELEASE_WINDOW_DAYS
+      - name: SPONSOR_EXCLUSION_LIST
+        prompt: "Where do you store each sponsor's exclusion topics? (link or doc)"
+        default_baseline: "Shared drive: sponsors/<sponsor>/exclusion_list.md per sponsor"
+        baseline_source: "Synthesized — keep the latest version received from each sponsor."
+      - name: PLATFORM_MONETIZATION_RULES
+        prompt: "Which platform monetization rule sets apply to your content?"
+        default_baseline: "YouTube Advertiser-friendly content guidelines + the host platform's TOS"
+        baseline_source: "Synthesized — for YT-focused; podcast / newsletter teams substitute their network's rules."
+      - name: RELEASE_WINDOW_DAYS
+        prompt: "How many days before/after a sponsored release do you watch for adjacency conflicts?"
+        default_baseline: "3 days before / 3 days after"
+        baseline_source: "Synthesized — covers the typical algorithmic engagement window."
+    sources: []
+    source_kind: synthesized
     tags: [monetization, legal, communication]
 
   - id: content.publishing_cadence
@@ -92,9 +129,20 @@ policies:
       Audience trust survives an explicit delay; it does not survive
       noticeable quality drops or compliance failures from rushed publishing.
     parameters:
-      - PRE_PUBLISH_CHECKLIST
-      - BUFFER_WINDOW_HOURS
-      - DELAY_NOTIFICATION_CHANNEL
+      - name: PRE_PUBLISH_CHECKLIST
+        prompt: "What's on your pre-publish checklist? (e.g. review, captions, thumbnail, schedule, legal review)"
+        default_baseline: "Final review pass, captions, thumbnail, scheduling, sponsor disclosure check"
+        baseline_source: "Synthesized — covers the common five-item baseline."
+      - name: BUFFER_WINDOW_HOURS
+        prompt: "How many hours before publish do you require the checklist to be complete?"
+        default_baseline: "12 hours"
+        baseline_source: "Synthesized — leaves room for last-minute fixes; tighter buffers create rush failures."
+      - name: DELAY_NOTIFICATION_CHANNEL
+        prompt: "Where do you notify audience when a publicly scheduled release will slip?"
+        default_baseline: "Same channel as the original release announcement (newsletter / Twitter / social)"
+        baseline_source: "Synthesized — meet the audience where they expected the release."
+    sources: []
+    source_kind: synthesized
     tags: [quality, communication, operations]
 
   - id: content.copyright_fair_use
@@ -116,9 +164,20 @@ policies:
       arguments from "we'll figure it out" to "here is the prepared
       defense".
     parameters:
-      - FAIR_USE_CHECKLIST
-      - LICENSED_MUSIC_LIBRARY
-      - REASONING_RECORD_LOCATION
+      - name: FAIR_USE_CHECKLIST
+        prompt: "Where is your fair-use checklist? (transformative purpose / amount / market effect / nature)"
+        default_baseline: "Shared drive: legal/fair_use_checklist.md (4-factor framework)"
+        baseline_source: "Synthesized — placeholder; the four factors are the US 17 USC § 107 statutory test."
+      - name: LICENSED_MUSIC_LIBRARY
+        prompt: "Which licensed music library do you draw from?"
+        default_baseline: "Epidemic Sound / Artlist / your platform's built-in audio library"
+        baseline_source: "Synthesized — common creator-tier subscription libraries."
+      - name: REASONING_RECORD_LOCATION
+        prompt: "Where do you log your fair-use reasoning per use?"
+        default_baseline: "Shared drive: legal/fair_use_log.md (one row per use)"
+        baseline_source: "Synthesized — minimum: piece, source, factor analysis, date."
+    sources: []
+    source_kind: synthesized
     tags: [legal, quality, monetization]
 
   - id: content.audience_dm_escalation
@@ -139,10 +198,24 @@ policies:
       Pre-defined routes prevent the team from improvising at the worst
       times.
     parameters:
-      - LEGAL_CONTACT
-      - SELF_HARM_SCRIPT
-      - BUSINESS_CONTACT
-      - BUSINESS_INQUIRY_SLA
+      - name: LEGAL_CONTACT
+        prompt: "Who handles incoming legal threats? (named contact or external counsel)"
+        default_baseline: "External counsel on retainer (or 'TBD — engage one before publishing at scale')"
+        baseline_source: "Synthesized — most independent creators don't have one until they need it; engage proactively."
+      - name: SELF_HARM_SCRIPT
+        prompt: "Where is your pre-approved self-harm response script?"
+        default_baseline: "Shared drive: ops/self_harm_response.md (point to professional resources, do not counsel)"
+        baseline_source: "Synthesized — your team is not a crisis service; the script must redirect, not advise."
+      - name: BUSINESS_CONTACT
+        prompt: "Who handles credible business inquiries (sponsorship, partnership, licensing)?"
+        default_baseline: "Owner / agent / dedicated business email"
+        baseline_source: "Synthesized — for solo creators this is usually the owner; agents take over above a deal-flow threshold."
+      - name: BUSINESS_INQUIRY_SLA
+        prompt: "How fast do you respond to credible business inquiries?"
+        default_baseline: "2 business days"
+        baseline_source: "Synthesized — fast enough to feel professional, slow enough to vet."
+    sources: []
+    source_kind: synthesized
     tags: [communication, legal, safety]
 
   - id: content.cross_platform_embargo
@@ -162,7 +235,18 @@ policies:
       from competitors. Embargo windows protect organic reach on the primary
       release without abandoning multi-platform distribution.
     parameters:
-      - PRIMARY_PLATFORM
-      - EMBARGO_WINDOW_HOURS
-      - SECONDARY_PLATFORM_FRAMING
+      - name: PRIMARY_PLATFORM
+        prompt: "Which is your primary platform (where you optimize for the algorithm)?"
+        default_baseline: "YouTube (or substitute your highest-leverage platform)"
+        baseline_source: "Synthesized — pick the one whose algorithm matters most to your growth."
+      - name: EMBARGO_WINDOW_HOURS
+        prompt: "How long after primary release before you repost on secondary platforms?"
+        default_baseline: "48 hours"
+        baseline_source: "Synthesized — covers the typical algorithmic engagement-concentration window."
+      - name: SECONDARY_PLATFORM_FRAMING
+        prompt: "How do you reframe content for the secondary platform? (verbatim / excerpt / re-edit)"
+        default_baseline: "Re-edit with platform-native framing (vertical for shorts, threaded for Twitter, etc.)"
+        baseline_source: "Synthesized — verbatim crossposting hits the algorithmic penalty; re-edits don't."
+    sources: []
+    source_kind: synthesized
     tags: [distribution, growth, operations]

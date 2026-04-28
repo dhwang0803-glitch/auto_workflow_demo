@@ -26,10 +26,26 @@ policies:
       Personal acknowledgment for major gifts is the single highest-leverage
       donor-retention practice.
     parameters:
-      - TAX_RECEIPT_THRESHOLD
-      - ACKNOWLEDGMENT_SLA_DAYS
-      - PERSONAL_THANKYOU_THRESHOLD
-      - RECEIPT_TEMPLATE
+      - name: TAX_RECEIPT_THRESHOLD
+        prompt: "Above what donation amount must you issue a tax receipt? (per your jurisdiction)"
+        default_baseline: "$0 in the US (any amount can be receipted; donor needs receipt for >= $250 to claim deduction)"
+        baseline_source: "IRS Publication 1771 — written acknowledgment required for single contributions of $250 or more."
+      - name: ACKNOWLEDGMENT_SLA_DAYS
+        prompt: "How many days after receiving a donation do you issue the receipt?"
+        default_baseline: "2 business days (automated email); 14 days for non-electronic gifts"
+        baseline_source: "Synthesized — IRS requires acknowledgment by the donor's tax-filing date; sooner is donor experience."
+      - name: PERSONAL_THANKYOU_THRESHOLD
+        prompt: "Above what donation amount do you send a personal (non-template) thank-you?"
+        default_baseline: "$250 single gift OR $1,000 cumulative annual"
+        baseline_source: "Synthesized — aligns with IRS receipt threshold and typical mid-major donor segmentation."
+      - name: RECEIPT_TEMPLATE
+        prompt: "Where is your tax-receipt template? (must include legal name, EIN/charity number, amount, no-goods statement)"
+        default_baseline: "Shared drive: development/templates/receipt_v1.docx"
+        baseline_source: "Synthesized — placeholder; required fields per IRS Pub 1771."
+    sources:
+      - title: "IRS Publication 1771 — Charitable Contributions Substantiation and Disclosure"
+        url: "https://www.irs.gov/pub/irs-pdf/p1771.pdf"
+    source_kind: regulatory
     tags: [finance, retention, legal]
 
   - id: nonprofit.major_donor_escalation
@@ -49,9 +65,20 @@ policies:
       treatment of a $50K donor question is a strategic miss the
       organization may not be able to absorb.
     parameters:
-      - MAJOR_DONOR_THRESHOLD
-      - MAJOR_DONOR_RESPONSE_SLA
-      - MAJOR_GIFTS_OFFICER
+      - name: MAJOR_DONOR_THRESHOLD
+        prompt: "What single-gift or cumulative-annual amount qualifies a donor as 'major' for your organization?"
+        default_baseline: "$5,000 single OR $10,000 cumulative annual"
+        baseline_source: "Synthesized — typical small-NPO cutoff; large foundations use much higher tiers."
+      - name: MAJOR_DONOR_RESPONSE_SLA
+        prompt: "How fast do you respond to a major-donor inquiry?"
+        default_baseline: "Same business day"
+        baseline_source: "Synthesized — major-gift officers treat these as drop-everything contacts."
+      - name: MAJOR_GIFTS_OFFICER
+        prompt: "Who is your major-gifts officer (named role or person)?"
+        default_baseline: "Executive Director (for small NPOs with no dedicated officer)"
+        baseline_source: "Synthesized — separation only at staffing scale; below that the ED owns major-donor relationships."
+    sources: []
+    source_kind: synthesized
     tags: [retention, finance, communication]
 
   - id: nonprofit.donor_data_privacy
@@ -73,9 +100,24 @@ policies:
       violations come from convenience-driven partner sharing or unreviewed
       tool adoption, not malicious leaks.
     parameters:
-      - DO_NOT_SHARE_FLAG_FIELD
-      - PARTNER_SHARING_CHECKLIST
-      - VENDOR_REVIEW_CHECKLIST
+      - name: DO_NOT_SHARE_FLAG_FIELD
+        prompt: "Which CRM field tracks 'do not share' status on a donor?"
+        default_baseline: "do_not_share boolean (or platform-equivalent custom flag)"
+        baseline_source: "Synthesized — schema name is platform-specific; what matters is a single canonical flag."
+      - name: PARTNER_SHARING_CHECKLIST
+        prompt: "Where is your partner data-sharing review checklist?"
+        default_baseline: "Shared drive: development/partner_data_review.md"
+        baseline_source: "Synthesized — placeholder; minimum: partner's privacy policy + data handling + DPA."
+      - name: VENDOR_REVIEW_CHECKLIST
+        prompt: "Where is your vendor data-review checklist for new tools?"
+        default_baseline: "Shared drive: ops/vendor_data_review.md"
+        baseline_source: "Synthesized — placeholder; check data residency, retention, sub-processors."
+    sources:
+      - title: "GDPR (EU 2016/679) — General Data Protection Regulation"
+        url: "https://gdpr.eu/"
+      - title: "California CCPA — Consumer Privacy Act"
+        url: "https://oag.ca.gov/privacy/ccpa"
+    source_kind: regulatory
     tags: [legal, security, retention]
 
   - id: nonprofit.volunteer_onboarding
@@ -98,9 +140,20 @@ policies:
       Tenure does not substitute for the screening required by the new
       role's risk level.
     parameters:
-      - SCREENING_LEVEL_DEFINITIONS
-      - BACKGROUND_CHECK_VENDOR
-      - VOLUNTEER_RECORD_SYSTEM
+      - name: SCREENING_LEVEL_DEFINITIONS
+        prompt: "What are your screening levels? (e.g. Tier 1 = no special access; Tier 2 = $/data; Tier 3 = vulnerable populations)"
+        default_baseline: "Tier 1 (general) / Tier 2 (financial or data access) / Tier 3 (working with minors or vulnerable adults)"
+        baseline_source: "Synthesized — three-tier model is the most common nonprofit screening framework."
+      - name: BACKGROUND_CHECK_VENDOR
+        prompt: "Which background-check vendor do you use, and at what depth per tier?"
+        default_baseline: "Vendor TBD; Tier 2 = standard criminal; Tier 3 = enhanced (sex-offender registry, multi-state)"
+        baseline_source: "Synthesized — Tier 3 must include vulnerable-populations registry checks where the law applies."
+      - name: VOLUNTEER_RECORD_SYSTEM
+        prompt: "Where do you record volunteer screening completion?"
+        default_baseline: "Volunteer management platform (or shared drive: volunteers/<name>/file)"
+        baseline_source: "Synthesized — must be retrievable for audit and insurance."
+    sources: []
+    source_kind: synthesized
     tags: [safety, legal, onboarding]
 
   - id: nonprofit.restricted_fund_validation
@@ -121,9 +174,20 @@ policies:
       reconstructibility is the single biggest predictor of clean financial
       audits.
     parameters:
-      - FINANCE_LEAD
-      - RESTRICTION_DOCUMENT_REPOSITORY
-      - CODING_DECISION_LOG
+      - name: FINANCE_LEAD
+        prompt: "Who is your finance lead (signs off on ambiguous restricted-fund spends)?"
+        default_baseline: "Treasurer or Director of Finance"
+        baseline_source: "Synthesized — board treasurer for small NPOs; full-time DoF at scale."
+      - name: RESTRICTION_DOCUMENT_REPOSITORY
+        prompt: "Where do you store the original restriction language for each restricted fund?"
+        default_baseline: "Shared drive: finance/restricted_funds/<fund>/restriction_doc.pdf"
+        baseline_source: "Synthesized — must be the SOURCE document, not a paraphrase."
+      - name: CODING_DECISION_LOG
+        prompt: "Where do you log coding-decision reasoning for ambiguous spends?"
+        default_baseline: "Shared drive: finance/coding_decisions.md (one entry per decision)"
+        baseline_source: "Synthesized — auditors reconstruct from this log; minimum: expense, fund, reasoning, date, signoff."
+    sources: []
+    source_kind: synthesized
     tags: [finance, legal, compliance]
 
   - id: nonprofit.grant_deadline_tracking
@@ -145,10 +209,24 @@ policies:
       grants role; even when it does not, the loss is highly visible to the
       board.
     parameters:
-      - GRANT_REMINDER_LEAD_DAYS
-      - ESCALATION_LEAD_DAYS
-      - GRANTS_LEAD
-      - DEADLINE_CHECKLIST
+      - name: GRANT_REMINDER_LEAD_DAYS
+        prompt: "How many days before a grant deadline do you send the first reminder?"
+        default_baseline: "30 days"
+        baseline_source: "Synthesized — covers the typical grant-application drafting cycle for small NPOs."
+      - name: ESCALATION_LEAD_DAYS
+        prompt: "If no progress signal exists, how many days before the deadline do you escalate to the executive lead?"
+        default_baseline: "10 days"
+        baseline_source: "Synthesized — leaves room for executive intervention without crisis-mode panic."
+      - name: GRANTS_LEAD
+        prompt: "Who is your grants lead? (named role)"
+        default_baseline: "Development Director, or Executive Director for small NPOs"
+        baseline_source: "Synthesized — small NPOs combine; large ones separate."
+      - name: DEADLINE_CHECKLIST
+        prompt: "Where is your deadline-deliverable checklist? (per grant or generic)"
+        default_baseline: "Shared drive: grants/<grant>/deadline_checklist.md"
+        baseline_source: "Synthesized — placeholder; minimum: required reports + financial docs + signatures."
+    sources: []
+    source_kind: synthesized
     tags: [finance, project-mgmt, communication]
 
   - id: nonprofit.public_communication_approval
@@ -170,7 +248,20 @@ policies:
       spectrum, end partnerships, or jeopardize tax-exempt status in some
       jurisdictions. The approval chain is slow on purpose.
     parameters:
-      - APPROVAL_CHAIN
-      - CONSENT_FILE_LOCATION
-      - NONPARTISAN_GUIDELINE
+      - name: APPROVAL_CHAIN
+        prompt: "Who approves sensitive public comms? (one person or chain — list by topic if it varies)"
+        default_baseline: "Executive Director for routine sensitive; ED + Board Chair for partisan-perceived"
+        baseline_source: "Synthesized — two-step protects against single-point error on the highest-risk content."
+      - name: CONSENT_FILE_LOCATION
+        prompt: "Where do you store informed-consent files for beneficiary-identifying communications?"
+        default_baseline: "Shared drive: comms/consents/<beneficiary>.pdf"
+        baseline_source: "Synthesized — must be retrievable per request; consent records are also subject access targets under GDPR/CCPA."
+      - name: NONPARTISAN_GUIDELINE
+        prompt: "Where is your nonpartisan-language guideline? (avoid endorsing/opposing candidates, parties)"
+        default_baseline: "Shared drive: comms/nonpartisan_guideline.md (US 501(c)(3) — no candidate endorsement)"
+        baseline_source: "IRS § 501(c)(3) — absolute prohibition on political campaign intervention; equivalent rules apply in most jurisdictions."
+    sources:
+      - title: "IRS — The Restriction of Political Campaign Intervention by Section 501(c)(3) Tax-Exempt Organizations"
+        url: "https://www.irs.gov/charities-non-profits/charitable-organizations/the-restriction-of-political-campaign-intervention-by-section-501c3-tax-exempt-organizations"
+    source_kind: regulatory
     tags: [legal, communication, governance]
