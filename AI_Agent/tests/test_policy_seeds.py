@@ -10,6 +10,13 @@ we lock them with cheap structural assertions.
   baseline_source}), not bare strings
 - policy carries `sources: [{title, url}]` and `source_kind`
 - `source_kind` is one of regulatory / industry-baseline / synthesized
+
+W2-4d additions:
+- every parameter must carry `help_text` (jargon explainer, 30-500 chars,
+  2-3 sentences) and `example_answer` (one-line placeholder, 1-200 chars)
+- the wire model treats both as optional (forward-compat for custom
+  seeds), but the shipped seeds in this repo MUST fill them — that's the
+  whole point of the polish C track (memory project_wizard_polish_abc.md)
 """
 from __future__ import annotations
 
@@ -32,8 +39,22 @@ REQUIRED_POLICY_FIELDS = {
     "sources",
     "source_kind",
 }
-REQUIRED_PARAMETER_FIELDS = {"name", "prompt", "default_baseline", "baseline_source"}
+REQUIRED_PARAMETER_FIELDS = {
+    "name",
+    "prompt",
+    "default_baseline",
+    "baseline_source",
+    "help_text",
+    "example_answer",
+}
 ALLOWED_SOURCE_KINDS = {"regulatory", "industry-baseline", "synthesized"}
+
+# W2-4d length bounds — keep wizard rendering predictable.
+# help_text: jargon explainer, 2-3 sentences. Too short = useless tooltip;
+# too long = breaks the inline help row in the wizard card.
+HELP_TEXT_MIN, HELP_TEXT_MAX = 30, 500
+# example_answer: one-line ghost-text placeholder shown inside the input.
+EXAMPLE_ANSWER_MIN, EXAMPLE_ANSWER_MAX = 1, 200
 
 
 def _all_files() -> list[Path]:
@@ -87,10 +108,32 @@ def test_policy_file_parses_and_has_required_shape(path: Path) -> None:
                 f"{p['id']}: duplicate parameter name {param['name']!r}"
             )
             seen_param_names.add(param["name"])
-            for key in ("prompt", "default_baseline", "baseline_source"):
+            for key in (
+                "prompt",
+                "default_baseline",
+                "baseline_source",
+                "help_text",
+                "example_answer",
+            ):
                 assert isinstance(param[key], str) and param[key], (
                     f"{p['id']} {param['name']}: empty `{key}`"
                 )
+            help_len = len(param["help_text"])
+            assert HELP_TEXT_MIN <= help_len <= HELP_TEXT_MAX, (
+                f"{p['id']} {param['name']}: help_text length {help_len} "
+                f"outside [{HELP_TEXT_MIN}, {HELP_TEXT_MAX}]"
+            )
+            example_len = len(param["example_answer"])
+            assert EXAMPLE_ANSWER_MIN <= example_len <= EXAMPLE_ANSWER_MAX, (
+                f"{p['id']} {param['name']}: example_answer length "
+                f"{example_len} outside [{EXAMPLE_ANSWER_MIN}, "
+                f"{EXAMPLE_ANSWER_MAX}]"
+            )
+            # example_answer is meant to be a single line — newlines break
+            # the input ghost-text affordance.
+            assert "\n" not in param["example_answer"], (
+                f"{p['id']} {param['name']}: example_answer must be one line"
+            )
 
         # sources: list (possibly empty) of {title, url}
         assert isinstance(p["sources"], list)

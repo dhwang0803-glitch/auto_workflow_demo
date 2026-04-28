@@ -53,12 +53,20 @@ class WizardQuestion(BaseModel):
     Question text comes verbatim from the seed YAML's
     `parameters[].prompt` — the LLM never generates this. `default_baseline`
     + `baseline_source` let the wizard offer a one-click adopt button with
-    honest attribution.
+    honest attribution. `help_text` (2-3 sentence jargon explainer) and
+    `example_answer` (one-line placeholder) are W2-4d additions that let
+    the wizard render an inline help row + ghost-text example without the
+    LLM inventing them on the fly. Both are optional on the wire (default
+    `""`) for forward-compat with custom seeds, but every shipped seed in
+    `data/policies/*.yaml` is required by `tests/test_policy_seeds.py` to
+    fill them.
     """
     text: str = Field(min_length=1)
     parameter: str | None = None  # one of the seed policy's parameter names
     default_baseline: str = ""
     baseline_source: str = ""
+    help_text: str = ""
+    example_answer: str = ""
 
 
 # Honest labelling of where a policy comes from (memory project_wizard_polish_abc.md):

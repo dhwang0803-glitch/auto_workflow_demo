@@ -5,10 +5,13 @@
 # coverage check (extracted_skills non-empty), and surfaces uncovered policies
 # to the wizard. Each parameter carries a `prompt` that the wizard renders
 # verbatim, plus a `default_baseline` the user can adopt with one click and a
-# `baseline_source` the user sees as attribution. Policy-level `sources` link
-# to industry references when they exist; `source_kind` honestly labels
-# whether the policy is regulatory, industry-baseline (real external doc), or
-# synthesized best-practice (LLM-derived patchwork).
+# `baseline_source` the user sees as attribution. `help_text` (W2-4d) is a
+# 2-3 sentence jargon explainer the wizard renders in an inline help row.
+# `example_answer` is a one-line ghost-text placeholder shown inside the input.
+# Policy-level `sources` link to industry references when they exist;
+# `source_kind` honestly labels whether the policy is regulatory,
+# industry-baseline (real external doc), or synthesized best-practice
+# (LLM-derived patchwork).
 domain: ecommerce
 display_name: E-commerce / Online Retail
 description: >
@@ -36,22 +39,32 @@ policies:
         prompt: "What dollar amount can you refund without manager approval?"
         default_baseline: "$50"
         baseline_source: "Synthesized — solo / small merchants typically auto-approve up to $50; mid-size stores raise to $100-$200 once they have margin headroom."
+        help_text: "Refunds under this dollar amount go through automatically; anything over routes to your approver. Pick a value where you'd be comfortable absorbing a bad call without losing sleep — many small teams use roughly 1-2% of monthly revenue per refund."
+        example_answer: "$100"
       - name: REFUND_APPROVER
         prompt: "Who approves refunds above that limit?"
         default_baseline: "Operations lead"
         baseline_source: "Synthesized — team-specific role."
+        help_text: "The named person or specific role the agent will message when a refund exceeds the auto-approve cap. List a single point of accountability, not a team or channel — the responder needs to know it's their call."
+        example_answer: "Sarah Kim, Operations Lead"
       - name: ESCALATION_CHANNEL
         prompt: "Where does the approver get notified (Slack channel, email, ticket queue)?"
         default_baseline: "#refunds Slack channel"
         baseline_source: "Synthesized — most small teams route refund escalations through a single Slack channel."
+        help_text: "The exact destination where the agent drops the escalation. Pick whatever the approver already checks several times a day — not a channel they'd have to remember to open. Slack channels and email aliases work; shared inboxes often don't."
+        example_answer: "#refunds Slack channel"
       - name: RETURN_WINDOW_DAYS
         prompt: "How many days after delivery do you accept return requests?"
         default_baseline: "30 days"
         baseline_source: "Synthesized — 30 days is a common industry window for physical goods. Legal minimums vary by jurisdiction (FTC mail-order rule, EU Consumer Rights Directive)."
+        help_text: "Counted from the carrier's delivery scan, not the order date. Many jurisdictions set a legal minimum (e.g. EU Consumer Rights Directive — 14 days for distance sales); your stated window can be longer but not shorter than the law that applies."
+        example_answer: "30 days from delivery"
       - name: APPROVER_RESPONSE_SLA
         prompt: "How long should the approver have to respond before you escalate further?"
         default_baseline: "1 business day"
         baseline_source: "Synthesized — common operations SLA."
+        help_text: "Once the agent pings the approver, this is the patience window before bumping to the next level (usually ops lead). Should match how often the approver actually checks the escalation channel during business hours, with a buffer for meetings."
+        example_answer: "1 business day"
     sources:
       - title: "Stripe — Refund and cancel payments"
         url: "https://docs.stripe.com/refunds"
@@ -82,14 +95,20 @@ policies:
         prompt: "How quickly do you contact a customer after an out-of-stock order is detected?"
         default_baseline: "4 hours (business hours)"
         baseline_source: "Synthesized — industry support SLAs cluster around 4-8 hours for OOS notifications."
+        help_text: "The clock starts when your inventory system flags the SKU as unavailable, not when the order was placed. Faster contact converts the customer's emotional state from 'why am I waiting' to 'they're handling it' before they post a complaint or open a chargeback."
+        example_answer: "4 hours during business hours, next business day after 6pm"
       - name: BACKORDER_LEAD_THRESHOLD_DAYS
         prompt: "Above how many days of expected delay do you treat a backorder as out-of-stock for the customer?"
         default_baseline: "7 days"
         baseline_source: "Synthesized — beyond a week most customers expect proactive contact rather than silent wait."
+        help_text: "A backorder means the SKU will arrive but is delayed at the supplier. Below this threshold the order ships normally with a heads-up; above it the customer is offered the swap / wait / cancel choice as if it were truly out of stock."
+        example_answer: "7 days"
       - name: EQUIVALENT_SKU_POLICY
         prompt: "What's your rule for offering a swap SKU? (e.g. same brand only, same price band, never)"
         default_baseline: "Same product family, equal-or-lower price; flag if higher-priced swap"
         baseline_source: "Synthesized — protects margin while keeping the customer choice clean."
+        help_text: "Defines what counts as a fair substitute. Anything noticeably more expensive feels like an upsell trap; anything noticeably cheaper feels like a downgrade. Document the rule so the agent doesn't improvise on the boundary cases."
+        example_answer: "Same product family, equal-or-lower price; flag for review if higher-priced"
     sources: []
     source_kind: synthesized
     tags: [inventory, communication, fulfillment]
@@ -113,14 +132,20 @@ policies:
         prompt: "How many days late is 'late enough' to trigger a proactive notice?"
         default_baseline: "2 business days"
         baseline_source: "Synthesized — most carriers consider 2 business days slip the meaningful threshold."
+        help_text: "Carriers normally bake in a 1-day buffer on the original promise; this is the slip beyond that buffer that triggers an unprompted update from you. Smaller windows mean more notices but better trust; larger windows mean fewer false alarms but more frustrated customer-initiated check-ins."
+        example_answer: "2 business days"
       - name: SIGNIFICANT_DELAY_THRESHOLD_DAYS
         prompt: "How many days late counts as a 'significant' delay that earns a goodwill offer?"
         default_baseline: "5 business days"
         baseline_source: "Synthesized — beyond ~1 week customer goodwill needs active recovery."
+        help_text: "Past this point an apology alone reads as cheap and the customer expects something concrete. The goodwill offer (credit, discount, expedited next order) is the recovery lever. Set it where you'd be embarrassed to NOT offer something on top of the apology."
+        example_answer: "5 business days"
       - name: GOODWILL_CREDIT_AMOUNT
         prompt: "How much store credit (or what perk) do you offer on a significant delay?"
         default_baseline: "$10 store credit OR free expedited next order"
         baseline_source: "Synthesized — small but acknowledged."
+        help_text: "Small enough to absorb on each incident, large enough to feel like meaningful acknowledgment to the customer. Most teams use a flat amount or a fixed perk like free expedited shipping rather than a calculation tied to the length of the delay."
+        example_answer: "$10 store credit OR free expedited shipping on next order"
     sources: []
     source_kind: synthesized
     tags: [shipping, communication, retention]
@@ -146,14 +171,20 @@ policies:
         prompt: "Below what item value will you replace damaged items without requiring the customer to return them?"
         default_baseline: "$75"
         baseline_source: "Synthesized — return shipping + handling typically exceeds replacement cost below this band."
+        help_text: "Below this dollar amount the cost of return shipping + warehouse handling typically exceeds the item value, so making the customer ship the broken thing back is pure friction with no recovery upside. Set above the median return-shipping cost in your category."
+        example_answer: "$75"
       - name: LOST_REPLACEMENT_SLA_HOURS
         prompt: "Once a lost shipment is confirmed, how fast do you replace or refund?"
         default_baseline: "24 hours"
         baseline_source: "Synthesized — same-day or next-business-day is the retention-positive bar."
+        help_text: "'Confirmed lost' means past the carrier's investigation window with no movement. The customer has already been waiting; this clock measures how fast you make them whole regardless of whether the carrier ever reimburses you. Carrier recovery is your back-office problem, not theirs."
+        example_answer: "24 hours from confirmation"
       - name: CARRIER_INVESTIGATION_WINDOW_DAYS
         prompt: "How long after 'delivered' tracking do you treat a non-receipt claim as actionable (vs porch-pirate window)?"
         default_baseline: "3 days"
         baseline_source: "Synthesized — aligns with most major carrier investigation start windows."
+        help_text: "If tracking shows delivered but the customer says nothing arrived, this is the wait period before treating the claim as real (vs a package that may turn up a day later in a neighbor's hands). UPS, FedEx, and USPS all start their investigation processes in the 1-3 day range."
+        example_answer: "3 days"
     sources: []
     source_kind: synthesized
     tags: [fulfillment, customer-care, finance]
@@ -179,14 +210,20 @@ policies:
         prompt: "How many times can the same customer (payment method or address) use a single-use code before it's flagged?"
         default_baseline: "1 use"
         baseline_source: "Synthesized — first-time-buyer codes are single-use by intent."
+        help_text: "'Same customer' is identified by payment method, shipping address, or email — pick the strictest match your platform supports. Single-use codes (first-time-buyer drops, influencer promos) are 1; multi-use seasonal codes might tolerate 3-5 before pattern-of-abuse triggers."
+        example_answer: "1 use per code per customer"
       - name: REVIEW_HOLD_WINDOW_HOURS
         prompt: "After flagging an order for review, how long do you hold it before auto-cancelling?"
         default_baseline: "48 hours"
         baseline_source: "Synthesized — covers a full business day for legitimate customer reply."
+        help_text: "Long enough for a legitimate customer to reply to your clarification email, short enough that abuse orders don't tie up inventory or payment authorization for days. Most teams set this to cover at least one full business day across timezones."
+        example_answer: "48 hours"
       - name: DEVICE_MATCH_THRESHOLD
         prompt: "How aggressive is your device-fingerprint matching for abuse detection? (none / loose / strict)"
         default_baseline: "loose (IP + payment-method match only)"
         baseline_source: "Synthesized — strict device fingerprinting hits false positives on shared networks. See Stripe Radar Rules 101 for actual rule patterns."
+        help_text: "Strict device fingerprinting catches more abusers but false-positives on shared networks, libraries, schools, and family households. Loose matching (IP + payment-method) is the common compromise. Stripe Radar and similar fraud tools default to a loose configuration for exactly this reason."
+        example_answer: "loose (IP + payment-method match only)"
     sources:
       - title: "Stripe — Fraud prevention rules (Radar documentation)"
         url: "https://docs.stripe.com/radar/rules"
@@ -213,14 +250,20 @@ policies:
         prompt: "What lifetime customer spend qualifies as VIP for your store?"
         default_baseline: "$1,000 lifetime"
         baseline_source: "Synthesized — typical small-store cutoff; adjust by AOV and category."
+        help_text: "'Lifetime' is the sum of all orders ever placed by this customer (some platforms call this LTV — lifetime value). Aim for a cutoff where the top ~5-10% of customers fall — high enough to be meaningful, low enough that the VIP queue gets enough volume to stay sharp."
+        example_answer: "$1,000 lifetime spend"
       - name: VIP_FIRST_RESPONSE_SLA
         prompt: "How fast do you respond to a VIP support ticket?"
         default_baseline: "2 hours (business hours)"
         baseline_source: "Synthesized — distinct from standard tier (often 24h)."
+        help_text: "Distinct from your standard SLA — this is the bar that justifies the VIP label. Should be tight enough that the customer notices the difference (most teams target roughly 2x faster than standard) but achievable on 100% of VIP tickets, not aspirational."
+        example_answer: "2 hours during business hours"
       - name: VIP_QUEUE_OWNER
         prompt: "Who owns the VIP queue / who is the named contact?"
         default_baseline: "Lead support agent"
         baseline_source: "Synthesized — team-specific role."
+        help_text: "A named person or specific role, not a team. The VIP experience depends on the customer recognizing a consistent contact across tickets. Rotation works only if every rotated agent is at the same skill tier and has access to the same context."
+        example_answer: "Lead support agent (Marcus)"
     sources: []
     source_kind: synthesized
     tags: [support, retention, segmentation]
@@ -246,14 +289,20 @@ policies:
         prompt: "Who is responsible for filing chargeback evidence packets?"
         default_baseline: "Operations lead"
         baseline_source: "Synthesized — team-specific role."
+        help_text: "A chargeback is a dispute the cardholder filed through their bank, not directly with you. The owner needs both the operational context (order data, shipping proof) and the discipline to file before the processor's deadline — late filing means automatic 100% loss."
+        example_answer: "Operations lead"
       - name: CUSTOMER_CALL_THRESHOLD
         prompt: "Above what dispute amount do you call the customer directly before submitting evidence?"
         default_baseline: "$50"
         baseline_source: "Synthesized — direct contact is widely reported as high-leverage on small-to-mid disputes; specific threshold is team risk-tolerance."
+        help_text: "Direct calls resolve a meaningful share of friendly-fraud cases (cardholder forgot, family member ordered, package found later). Below the threshold the call cost exceeds the dispute amount; above it the call is high-leverage even before formal evidence is filed."
+        example_answer: "$50"
       - name: EVIDENCE_PACKET_TEMPLATE
         prompt: "Where is your evidence-packet checklist or template stored?"
         default_baseline: "Shared drive: ops/chargeback_evidence.md"
         baseline_source: "Synthesized — template should live in the team's standard ops doc location."
+        help_text: "A standard checklist usually covers: order confirmation email, shipping/delivery proof (signature or scan), customer communication log, IP and device match, AVS/CVV match. A reusable template means the responder isn't reinventing it under processor deadline pressure."
+        example_answer: "Shared drive: ops/chargeback_evidence.md"
     sources:
       - title: "Stripe — Disputes documentation"
         url: "https://docs.stripe.com/disputes"
@@ -282,14 +331,20 @@ policies:
         prompt: "At or below what star rating do you treat a public review as 'negative' for escalation?"
         default_baseline: "3 stars (out of 5)"
         baseline_source: "Synthesized — 3★ is the conventional 'mediocre = at-risk' boundary."
+        help_text: "On a 5-star scale, 3★ is the conventional 'mediocre, at-risk' boundary while 1-2★ are clearly negative. Pick the threshold where you actually want a manual response, not where the algorithm flags it. 4★ reviews are usually positive and don't need escalation."
+        example_answer: "3 stars or below (out of 5)"
       - name: REVIEW_RESPONSE_SLA_HOURS
         prompt: "How fast do you publicly respond to a flagged negative review?"
         default_baseline: "24 hours"
         baseline_source: "Synthesized — speed signals attentiveness to other readers."
+        help_text: "Other shoppers reading the review notice fast public responses far more than they notice the original review itself. Speed signals attentiveness even before resolution lands. Most teams target same-day on Mon-Fri with softer expectations on weekends."
+        example_answer: "24 hours"
       - name: REVIEW_RESPONSE_OWNER
         prompt: "Who drafts and posts the public response?"
         default_baseline: "Founder or operations lead"
         baseline_source: "Synthesized — public-facing tone usually owned by senior staff for small teams."
+        help_text: "Public-facing tone matters more than scale here. Senior staff (founder, ops lead) should own this for small teams; larger teams can delegate to a trained support lead with a tone-check rubric. Don't outsource cold without rubric and review."
+        example_answer: "Founder (or operations lead)"
     sources: []
     source_kind: synthesized
     tags: [reputation, communication, retention]

@@ -31,14 +31,20 @@ policies:
         prompt: "What disclosure language do you use? (e.g. 'This video is sponsored by X.')"
         default_baseline: "'This [video/post/episode] is sponsored by [brand].' (placed at start)"
         baseline_source: "FTC § 16 CFR Part 255 — endorsement guides require clear, conspicuous, plain-language disclosure."
+        help_text: "The exact wording the agent will use to flag paid promotion. Use plain English ('sponsored', 'ad', 'paid partnership') — vague hashtags like #ad alone or #sp are typically considered insufficient by the FTC and equivalents because casual viewers don't decode them. Place the disclosure where the audience meets the content, not at the end."
+        example_answer: "'This video is sponsored by [brand].' (verbal at start + description)"
       - name: JURISDICTION
         prompt: "Which jurisdiction's disclosure rules apply to your audience? (US FTC / UK ASA / EU / other)"
         default_baseline: "US (FTC)"
         baseline_source: "Synthesized — pick by primary audience country; multiple jurisdictions need the strictest applied."
+        help_text: "Disclosure rules vary by audience country, not creator country. US uses FTC § 16 CFR Part 255; UK uses ASA's CAP/BCAP codes; EU uses national variations of the Unfair Commercial Practices Directive. If your audience spans multiple jurisdictions, apply the strictest rule by default."
+        example_answer: "US (FTC) — primary audience"
       - name: DISCLOSURE_PLACEMENT_RULES
         prompt: "Where do you place the disclosure? (start of content, description, caption — list all)"
         default_baseline: "Start of content + description + caption (all three)"
         baseline_source: "FTC guidance — single placement is generally insufficient; disclosure must be where the audience will encounter it."
+        help_text: "FTC and ASA guidance both treat single-location disclosure as generally insufficient — the audience must actually encounter it before consuming the sponsored material. Standard practice is to repeat across the start of the content, the description, AND any caption so no entry path misses it."
+        example_answer: "Start of content + description + caption (all three)"
     sources:
       - title: "UK ASA — Advertising codes (CAP / BCAP)"
         url: "https://www.asa.org.uk/codes-and-rulings/advertising-codes.html"
@@ -67,14 +73,20 @@ policies:
         prompt: "What are your moderation categories? (e.g. harassment / spam / off-topic / doxxing)"
         default_baseline: "Harassment, illegal content, spam, doxxing, off-topic"
         baseline_source: "Synthesized — the standard five-category split most platforms converge on."
+        help_text: "The list of comment categories that trigger moderation action. Most platforms converge on roughly the same five: harassment, illegal content, spam, doxxing (publishing private info), off-topic. Defining the categories explicitly upfront prevents accusations of bias when the agent enforces consistently."
+        example_answer: "Harassment, illegal content, spam, doxxing, off-topic"
       - name: MODERATION_LOG_LOCATION
         prompt: "Where do you log moderation actions for audit?"
         default_baseline: "Shared spreadsheet or platform's built-in mod log (whichever you actually check)"
         baseline_source: "Synthesized — minimum: action + comment + reason + timestamp, retrievable later."
+        help_text: "A retrievable record of who got moderated, why, and when. Minimum content: comment text, action taken, category, timestamp, moderator. Some platforms have a built-in mod log; most don't expose it well, so a spreadsheet often beats the platform feature. The log is your defense if a decision is challenged."
+        example_answer: "Shared Google Sheet: ops/mod_log.xlsx"
       - name: BAN_DURATION_TIERS
         prompt: "What's your ban-duration tier for repeat offenders? (e.g. 1d → 7d → permanent)"
         default_baseline: "Warn → 7-day ban → permanent ban"
         baseline_source: "Synthesized — three-strike model is the most common; calibrate to your community size."
+        help_text: "How escalation tiers progress for repeat offenders. The three-strike model (warn → temp ban → permanent) is most common because it gives space for genuine misunderstanding while still ending bad-faith activity. Smaller communities can use shorter ladders; larger ones add more tiers."
+        example_answer: "Warn → 7-day ban → permanent ban"
     sources: []
     source_kind: synthesized
     tags: [moderation, community, legal]
@@ -99,14 +111,20 @@ policies:
         prompt: "Where do you store each sponsor's exclusion topics? (link or doc)"
         default_baseline: "Shared drive: sponsors/<sponsor>/exclusion_list.md per sponsor"
         baseline_source: "Synthesized — keep the latest version received from each sponsor."
+        help_text: "Sponsors typically send a written list of topics they don't want their brand adjacent to (politics, competitors, controversies). Each sponsor's list lives in its own folder, current version only — outdated lists cause violations. Keep the date received in the filename so you can prove diligence."
+        example_answer: "Shared drive: sponsors/<sponsor>/exclusion_list.md (per sponsor)"
       - name: PLATFORM_MONETIZATION_RULES
         prompt: "Which platform monetization rule sets apply to your content?"
         default_baseline: "YouTube Advertiser-friendly content guidelines + the host platform's TOS"
         baseline_source: "Synthesized — for YT-focused; podcast / newsletter teams substitute their network's rules."
+        help_text: "Each platform has its own ad-friendliness guidelines that determine whether content gets monetized. YouTube's 'Advertiser-friendly content guidelines' are the modal reference for video; podcast networks have their own. Newsletter platforms (Substack, beehiiv) layer their TOS on top."
+        example_answer: "YouTube Advertiser-friendly guidelines + Substack TOS"
       - name: RELEASE_WINDOW_DAYS
         prompt: "How many days before/after a sponsored release do you watch for adjacency conflicts?"
         default_baseline: "3 days before / 3 days after"
         baseline_source: "Synthesized — covers the typical algorithmic engagement window."
+        help_text: "Adjacency conflicts = other content in your feed that the sponsor wouldn't want their ad next to. The window covers the typical algorithmic engagement period when the sponsored content is still surfacing recommendations. Outside this window the algorithmic adjacency risk decays sharply."
+        example_answer: "3 days before / 3 days after release"
     sources: []
     source_kind: synthesized
     tags: [monetization, legal, communication]
@@ -131,14 +149,20 @@ policies:
         prompt: "What's on your pre-publish checklist? (e.g. review, captions, thumbnail, schedule, legal review)"
         default_baseline: "Final review pass, captions, thumbnail, scheduling, sponsor disclosure check"
         baseline_source: "Synthesized — covers the common five-item baseline."
+        help_text: "The list of items that must be complete before content can go live. Common five: final review pass, captions/transcripts, thumbnail (if visual), scheduled publish time, sponsor disclosure verified. Missing any single item is the typical root cause of post-publish corrections."
+        example_answer: "Final review, captions, thumbnail, schedule, disclosure check"
       - name: BUFFER_WINDOW_HOURS
         prompt: "How many hours before publish do you require the checklist to be complete?"
         default_baseline: "12 hours"
         baseline_source: "Synthesized — leaves room for last-minute fixes; tighter buffers create rush failures."
+        help_text: "How far ahead of scheduled publish time the checklist must be complete. Tighter buffers create last-minute rush failures (typo missed, thumbnail wrong size); larger buffers feel like overhead but prevent the most common quality slips. 12 hours is a reasonable middle ground."
+        example_answer: "12 hours before scheduled publish"
       - name: DELAY_NOTIFICATION_CHANNEL
         prompt: "Where do you notify audience when a publicly scheduled release will slip?"
         default_baseline: "Same channel as the original release announcement (newsletter / Twitter / social)"
         baseline_source: "Synthesized — meet the audience where they expected the release."
+        help_text: "When a publicly scheduled release will slip, where you tell the audience. Meet them where they expected the release — if you announced 'new episode Friday' in the newsletter, the delay notice goes in the newsletter (or its quickest equivalent), not just Twitter."
+        example_answer: "Newsletter + Twitter (same channels as the release announcement)"
     sources: []
     source_kind: synthesized
     tags: [quality, communication, operations]
@@ -166,14 +190,20 @@ policies:
         prompt: "Where is your fair-use checklist? (transformative purpose / amount / market effect / nature)"
         default_baseline: "Shared drive: legal/fair_use_checklist.md (4-factor framework)"
         baseline_source: "Synthesized — placeholder; the four factors are the US 17 USC § 107 statutory test."
+        help_text: "US fair use is a 4-factor statutory test (17 USC § 107): purpose/transformativeness, nature of original, amount used, market effect. The checklist walks through each factor for the planned reuse. It's an analytical tool, not a permission slip — fair use is a legal defense raised after a copyright claim, not a pre-clearance."
+        example_answer: "Shared drive: legal/fair_use_checklist.md"
       - name: LICENSED_MUSIC_LIBRARY
         prompt: "Which licensed music library do you draw from?"
         default_baseline: "Epidemic Sound / Artlist / your platform's built-in audio library"
         baseline_source: "Synthesized — common creator-tier subscription libraries."
+        help_text: "A subscription music library that grants the licenses your content needs (sync, monetization). Always preferable to claiming fair use on commercial music — platform copyright systems (Content ID, Soundscan) strike first and resolve disputes later, often after the video has lost its launch window."
+        example_answer: "Epidemic Sound (creator subscription)"
       - name: REASONING_RECORD_LOCATION
         prompt: "Where do you log your fair-use reasoning per use?"
         default_baseline: "Shared drive: legal/fair_use_log.md (one row per use)"
         baseline_source: "Synthesized — minimum: piece, source, factor analysis, date."
+        help_text: "Per-use record of why you concluded fair use applied — source, amount, transformative purpose, market effect analysis, date. If a copyright claim or DMCA strike comes later, the reasoning record converts the dispute from 'we'll figure it out' to 'here is the defense we prepared at publish time.'"
+        example_answer: "Shared drive: legal/fair_use_log.md (one row per use)"
     sources: []
     source_kind: synthesized
     tags: [legal, quality, monetization]
@@ -200,18 +230,26 @@ policies:
         prompt: "Who handles incoming legal threats? (named contact or external counsel)"
         default_baseline: "External counsel on retainer (or 'TBD — engage one before publishing at scale')"
         baseline_source: "Synthesized — most independent creators don't have one until they need it; engage proactively."
+        help_text: "The named lawyer or firm to forward legal threats to. Most independent creators don't have one on retainer until they urgently need one — and that's the wrong time to be searching. Engage proactively before publishing at audience scale; even a 1-hour annual consult creates the relationship."
+        example_answer: "Smith & Jones LLP (entertainment counsel) — bob@smithjones.com"
       - name: SELF_HARM_SCRIPT
         prompt: "Where is your pre-approved self-harm response script?"
         default_baseline: "Shared drive: ops/self_harm_response.md (point to professional resources, do not counsel)"
         baseline_source: "Synthesized — your team is not a crisis service; the script must redirect, not advise."
+        help_text: "A pre-approved short reply that redirects to professional crisis resources (988 Suicide & Crisis Lifeline in the US, Samaritans in the UK, equivalents elsewhere). Critically: the script must NOT counsel or claim qualifications you don't have. Improvising under stress is how creators end up amplifying harm with good intentions."
+        example_answer: "Shared drive: ops/self_harm_response.md"
       - name: BUSINESS_CONTACT
         prompt: "Who handles credible business inquiries (sponsorship, partnership, licensing)?"
         default_baseline: "Owner / agent / dedicated business email"
         baseline_source: "Synthesized — for solo creators this is usually the owner; agents take over above a deal-flow threshold."
+        help_text: "Where credible business inquiries get routed — sponsorship offers, partnership proposals, licensing requests. For solo creators this is usually the owner with a dedicated 'business@' email; once deal flow exceeds ~1 inquiry/week, an agent or manager typically takes over."
+        example_answer: "business@example.com (owner-monitored) or agent at XYZ"
       - name: BUSINESS_INQUIRY_SLA
         prompt: "How fast do you respond to credible business inquiries?"
         default_baseline: "2 business days"
         baseline_source: "Synthesized — fast enough to feel professional, slow enough to vet."
+        help_text: "Response time on credible business inquiries (vet first, then reply). Fast enough to feel professional and not lose serious deals to slower reply, slow enough to actually research the company and offer before replying. 2 business days is the modal compromise."
+        example_answer: "2 business days"
     sources: []
     source_kind: synthesized
     tags: [communication, legal, safety]
@@ -237,14 +275,20 @@ policies:
         prompt: "Which is your primary platform (where you optimize for the algorithm)?"
         default_baseline: "YouTube (or substitute your highest-leverage platform)"
         baseline_source: "Synthesized — pick the one whose algorithm matters most to your growth."
+        help_text: "The single platform where you most rely on algorithmic distribution for growth. Embargo logic protects this platform's launch from being cannibalized by reposts. Pick the one whose ranking moves the most needle on your audience growth — usually YouTube for video, Instagram for short-form image."
+        example_answer: "YouTube (primary growth platform)"
       - name: EMBARGO_WINDOW_HOURS
         prompt: "How long after primary release before you repost on secondary platforms?"
         default_baseline: "48 hours"
         baseline_source: "Synthesized — covers the typical algorithmic engagement-concentration window."
+        help_text: "How long the secondary platforms must wait after the primary release. Covers the typical algorithmic engagement-concentration period when the primary platform is still surfacing recommendations. Outside the window, secondary platform reposts no longer cannibalize the primary signal in any meaningful way."
+        example_answer: "48 hours"
       - name: SECONDARY_PLATFORM_FRAMING
         prompt: "How do you reframe content for the secondary platform? (verbatim / excerpt / re-edit)"
         default_baseline: "Re-edit with platform-native framing (vertical for shorts, threaded for Twitter, etc.)"
         baseline_source: "Synthesized — verbatim crossposting hits the algorithmic penalty; re-edits don't."
+        help_text: "How the content is adapted before going on secondary platforms. Verbatim cross-posting often triggers the algorithmic penalty for 'cross-posted from competitor.' Re-edits (vertical for Shorts/TikTok/Reels, threaded for Twitter, image carousel for Instagram) avoid the penalty and feel native."
+        example_answer: "Re-edit with platform-native framing (vertical clip for Shorts, thread for Twitter)"
     sources: []
     source_kind: synthesized
     tags: [distribution, growth, operations]

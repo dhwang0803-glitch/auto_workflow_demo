@@ -244,6 +244,7 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 | W2-4a | **시드 YAML 스키마 마이그레이션** — `parameters` 가 string list → object list `{name, prompt, default_baseline, baseline_source}`, policy 레벨에 `sources: [{title, url}]` + `source_kind: synthesized\|industry-baseline\|regulatory` 추가. 5 도메인 × 정책 × 평균 4 parameter ≈ 160 베이스라인 + 정책당 sources 1차는 LLM 합성 후 사용자 sanity check. 합성된 부분은 `source_kind: synthesized` 로 정직하게 표시 | AI_Agent (정적 데이터) | 0.5d |
 | W2-4b | **gap_analyze 재구성** — `extracted_skills` 비면 deterministic 분기 (전 시드를 gap 으로 emit, LLM 미호출). 비어있지 않으면 LLM 은 coverage 판정만. **질문 텍스트는 시드 `parameters[].prompt` 그대로 첨부** (LLM 생성 X). 응답 schema: `{missing: [{policy_id, parameters: [{name, prompt, default_baseline, baseline_source}], sources, source_kind}]}` | AI_Agent | 0.5d |
 | W2-4c | **answers_to_skill (batch)** — 입력 (정책 id, [(parameter_name, answer)] N개) → 1 SkillDraft. 기존 `answer_to_skill` (1 Q-A → 1 skill) 폐기. baseline 채택 답변과 사용자 작성 답변을 동등하게 다룸. needs_clarification 은 답변 N개 중 하나라도 모호하면 true | AI_Agent | 0.5d |
+| W2-4d | **micro-question UX 보조 필드** — 시드 5 도메인 × 모든 parameter 에 `help_text` (jargon explainer 2-3 문장, 30-500자) + `example_answer` (1줄 placeholder, 1-200자) optional 필드 채움. `WizardQuestion` 모델에도 두 필드 추가 (default `""`, 기존 호출자 깨짐 X). `_build_policy_gap` 패스스루. `test_policy_seeds` invariant 추가 (모든 시드는 두 필드 채워야 + 길이 범위). 프론트 렌더링은 PR #144 에 흡수 | AI_Agent (정적 데이터 + 모델 + 테스트) | 0.25d |
 | W2-5 | 인터뷰 UI (ChatPanel 재사용 + 도메인 칩 + 진행도) — **머지 완료 (PR #137)** | Frontend | 1d |
 | W2-5b | **인터뷰 UI 폴리시** — 정책당 1 textarea → parameter 카드 N개. 카드마다 prompt + baseline preview + "Use baseline" 버튼 (B). 사용자가 클릭하면 텍스트필드에 baseline 자동 채움 (편집 가능). 진행도는 정책 단위 유지 (parameter 카드는 그 안에서 펼침/접힘) | Frontend | 0.75d |
 | W2-6 | skill 카드 컴포넌트 + 검토 UI (편집/거절/승인) — **머지 완료 (PR #138)** | Frontend | 1d |
@@ -251,7 +252,7 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 | W2-7 | API 엔드포인트: `POST /api/v1/skills/bootstrap` (인터뷰 시작) + `POST /api/v1/skills/answer` (턴) + `POST /api/v1/skills/{id}/approve`. **W2-4c 의 batch 시그니처 반영해 `/answer` → `/answers` (정책당 N 답변)** | API_Server | 1d |
 | W2-8 | E2E 검증 (Persona A 풀세트, 문서 없이 5 정책 × 평균 4 parameter ≈ 20 micro-questions → 5 skill 생성 → 활성) | 통합 | 1d |
 | W2-9 | **라이브러리 뷰** — Frontend `/skills` 라우트 + 글로벌 nav 진입점. 활성 skill markdown render + sources references 섹션 (C). 평소 사용자가 정책 라이브러리를 들여다볼 수 있는 tangible 산출물. compose 시 자동 retrieval (W3-6) 과는 별도 surface | Frontend | 1d |
-| **W2 합계** | | | **9d** (~9d 가용 안에 fit, 0d 버퍼. W2-3/W2-5/W2-6 머지분 제외 시 잔여 ~5.5d) |
+| **W2 합계** | | | **9.25d** (~9d 가용 거의 fit. W2-3/W2-5/W2-6 머지분 제외 시 잔여 ~5.75d) |
 
 ### W3 (05/05-05/12, 7일 가용)
 
@@ -292,8 +293,9 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 | **#143** | API_Server | `/skills/answer` → `/skills/answers` 시그니처 변경 (정책당 batch) + `PolicyGapBody` 에 parameters/sources/source_kind 필드 추가 | #142 |
 | **#144** | Frontend | 인터뷰 UI parameter 카드화 + "Use baseline" 버튼 (W2-5b). batch submit 으로 wire 변경 | #142, #143 |
 | **#145** | Frontend | skill 카드 source attribution + `/skills` 라이브러리 뷰 + 글로벌 nav (W2-6b + W2-9) | #142 |
+| **#146** | AI_Agent | `help_text` + `example_answer` 시드 폴리시 풀세트 + `WizardQuestion` 모델 두 필드 + `_build_policy_gap` 패스스루 + `test_policy_seeds` invariant (W2-4d). Frontend 카드 렌더링은 PR #144 에 흡수 | #142 |
 
-총 15 PR. **2026-04-28 폴리시 후 추가**: #141-#145 (5 PR — #141 은 plan 갱신 doc-only). PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리). PR #142 의 stub 패치는 PR #140 (W2-8a) stub 확장의 직속 확장 — 같은 stub 파일을 다시 건드리므로 #142 가 main 진입한 뒤 라이브 backend 작업이 잇따라야 함. PR #142 는 legacy `/v1/skills/answer_to_skill` 엔드포인트를 single-shot wrapper 로 유지해 PR #143 머지 전에도 API_Server 가 깨지지 않게 함.
+총 16 PR. **2026-04-28 폴리시 후 추가**: #141-#146 (6 PR — #141 은 plan 갱신 doc-only, #146 은 #142 머지 후 W2-4d 보조 필드 채움). PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리). PR #142 의 stub 패치는 PR #140 (W2-8a) stub 확장의 직속 확장 — 같은 stub 파일을 다시 건드리므로 #142 가 main 진입한 뒤 라이브 backend 작업이 잇따라야 함. PR #142 는 legacy `/v1/skills/answer_to_skill` 엔드포인트를 single-shot wrapper 로 유지해 PR #143 머지 전에도 API_Server 가 깨지지 않게 함. PR #146 은 #142 의 시드 + 스키마를 그대로 두고 두 optional 필드만 채우므로 PR #143/#144/#145 와 직접 충돌 없음 (Frontend 는 #144 에서 두 필드 surface).
 
 ## 11. 리스크 + 완화
 
