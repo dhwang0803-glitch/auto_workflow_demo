@@ -9,6 +9,7 @@ import {
 } from "@/lib/skills";
 import { useSkillWizardStore } from "@/store/skill-wizard-store";
 import { ApiError } from "@/lib/api";
+import { SkillCard, makeReviewHandlers } from "./skill-card";
 
 // Persona A interview wizard (PLAN_12 W2-5).
 //
@@ -46,7 +47,19 @@ export function SkillWizard() {
   const acceptBootstrap = useSkillWizardStore((s) => s.acceptBootstrap);
   const acceptAnswer = useSkillWizardStore((s) => s.acceptAnswer);
   const setError = useSkillWizardStore((s) => s.setError);
+  const setDraftActionStatus = useSkillWizardStore(
+    (s) => s.setDraftActionStatus,
+  );
+  const applyServerStatus = useSkillWizardStore((s) => s.applyServerStatus);
+  const pushFollowUpQuestion = useSkillWizardStore(
+    (s) => s.pushFollowUpQuestion,
+  );
   const reset = useSkillWizardStore((s) => s.reset);
+
+  const reviewHandlers = makeReviewHandlers({
+    setDraftActionStatus,
+    applyServerStatus,
+  });
 
   const [input, setInput] = useState("");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -151,7 +164,12 @@ export function SkillWizard() {
           </div>
         )}
 
-        {(phase === "asking" || phase === "loading" || phase === "done") &&
+        {/* While the user is still answering, the prior turns stay as
+          compact bubbles so the chat reads chronologically. The full
+          SkillCard with review controls only appears in the `done`
+          phase — until then, drafts are still accumulating and locking
+          half of them behind approve/reject would be confusing. */}
+        {(phase === "asking" || phase === "loading") &&
           drafts.map((d, i) => (
             <AnsweredTurn
               key={d.skillId}
@@ -179,8 +197,19 @@ export function SkillWizard() {
           </p>
         )}
 
-        {phase === "done" && total > 0 && (
-          <DoneBanner count={drafts.length} />
+        {phase === "done" && drafts.length > 0 && (
+          <div data-testid="wizard-review">
+            <DoneHeader count={drafts.length} />
+            {drafts.map((d) => (
+              <SkillCard
+                key={d.skillId}
+                draft={d}
+                onApprove={reviewHandlers.approve}
+                onReject={reviewHandlers.reject}
+                onAskFollowUp={pushFollowUpQuestion}
+              />
+            ))}
+          </div>
         )}
 
         {phase === "done" && total === 0 && <NoGapsBanner />}
@@ -338,14 +367,15 @@ function AnsweredTurn({
   );
 }
 
-function DoneBanner({ count }: { count: number }) {
+function DoneHeader({ count }: { count: number }) {
   return (
     <div
-      className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+      className="mb-3 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
       data-testid="wizard-done"
     >
-      {count} skill draft{count === 1 ? "" : "s"} created. The next step is
-      review and activation. (Review UI lands in the W2-6 PR.)
+      {count} skill draft{count === 1 ? "" : "s"} ready for review. Approve
+      to activate, reject to discard, or expand a clarification prompt to
+      refine the answer.
     </div>
   );
 }
