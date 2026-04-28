@@ -4,8 +4,9 @@ Owns the wizard flow:
 
 1. classify_domain  — proxy to AI_Agent so the frontend can label the user
 2. analyze_gaps     — pull missing-policy questions from AI_Agent (no DB write)
-3. answer_question  — invoke answer_to_skill on AI_Agent + INSERT a skill
-                      with status=pending_review (single audit-paired write)
+3. answer_questions — invoke answers_to_skill on AI_Agent (batch — N answers
+                      per policy → 1 SkillDraft) + INSERT a skill with
+                      status=pending_review (single audit-paired write)
 4. approve / reject — pending_review → active|rejected (in-place transition,
                       not row delete — the row keeps its id so the audit
                       trail in skill_sources stays intact)
@@ -32,11 +33,11 @@ from auto_workflow_database.repositories.base import (
 
 from app.errors import DomainError, NotFoundError
 from app.models.skills import (
-    AnswerResponse,
+    AnswersResponse,
     BootstrapResponse,
     DomainClassificationResponse,
     ExtractedSkillBody,
-    SkillDraftBody,
+    ParameterAnswerBody,
     SkillResponse,
 )
 from app.services.ai_agent_client import AIAgentHTTPBackend
@@ -92,23 +93,21 @@ class SkillBootstrapService:
             missing=gaps,
         )
 
-    # --- 3. answer turn → draft skill ----------------------------------
+    # --- 3. answers turn → draft skill ---------------------------------
 
-    async def answer_question(
+    async def answer_questions(
         self,
         *,
         owner_user_id: UUID,
         session_id: UUID,
         domain: str,
         policy_id: str,
-        question: str,
-        answer: str,
-    ) -> AnswerResponse:
-        draft = await self._ai.answer_to_skill(
+        answers: list[ParameterAnswerBody],
+    ) -> AnswersResponse:
+        draft = await self._ai.answers_to_skill(
             domain=domain,
             policy_id=policy_id,
-            question=question,
-            answer=answer,
+            answers=answers,
         )
         # Persist as pending_review immediately. Approve/reject mutates in
         # place (no separate drafts table) — keeps the audit row in
@@ -124,11 +123,10 @@ class SkillBootstrapService:
             source_ref={
                 "session_id": str(session_id),
                 "policy_id": policy_id,
-                "question": question,
-                "answer": answer,
+                "answers": [a.model_dump() for a in answers],
             },
         )
-        return AnswerResponse(
+        return AnswersResponse(
             session_id=session_id,
             skill_id=skill.id,
             draft=draft,

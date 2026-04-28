@@ -15,6 +15,12 @@ under `/v1/domain/*` and `/v1/skills/*`. They live on the same client
 because they share base_url + bearer token, but they are NOT part of
 the LLMBackend protocol (which stays minimal: complete + stream).
 
+W2-4 batch cut-over (this PR replaces `answer_to_skill` with
+`answers_to_skill` — N (parameter, answer) pairs per policy → 1
+SkillDraft, hitting AI_Agent's `/v1/skills/answers_to_skill`. AI_Agent
+keeps a legacy single-shot wrapper at `/v1/skills/answer_to_skill` but
+no caller in this repo uses it anymore.
+
 See AI_Agent/docs/SPLIT.md for the boundary spec.
 """
 from __future__ import annotations
@@ -27,6 +33,7 @@ import httpx
 from app.models.skills import (
     DomainClassificationResponse,
     ExtractedSkillBody,
+    ParameterAnswerBody,
     PolicyGapBody,
     SkillDraftBody,
 )
@@ -124,21 +131,19 @@ class AIAgentHTTPBackend:
         # alongside the missing list.
         return [PolicyGapBody.model_validate(p) for p in body["missing"]]
 
-    async def answer_to_skill(
+    async def answers_to_skill(
         self,
         *,
         domain: str,
         policy_id: str,
-        question: str,
-        answer: str,
+        answers: list[ParameterAnswerBody],
     ) -> SkillDraftBody:
         body = await self._post_json(
-            "/v1/skills/answer_to_skill",
+            "/v1/skills/answers_to_skill",
             {
                 "domain": domain,
                 "policy_id": policy_id,
-                "question": question,
-                "answer": answer,
+                "answers": [a.model_dump() for a in answers],
             },
         )
         return SkillDraftBody.model_validate(body)

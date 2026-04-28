@@ -6,7 +6,7 @@ Six endpoints for the Persona A wizard + skill review:
 |--------|---------------------------------|---------|
 | POST   | /classify_domain                | free-text → domain category |
 | POST   | /bootstrap                      | gap analysis for a (domain, declared skills) pair |
-| POST   | /answer                         | one wizard turn → pending_review skill row |
+| POST   | /answers                        | per-policy batch (N answers → 1 SkillDraft + pending_review row) |
 | GET    | /                               | list owner's skills, optional status filter |
 | GET    | /{id}                           | single owner-scoped fetch |
 | POST   | /{id}/approve                   | pending_review → active |
@@ -27,8 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.dependencies import get_current_user
 from app.models.skills import (
-    AnswerRequest,
-    AnswerResponse,
+    AnswersRequest,
+    AnswersResponse,
     BootstrapRequest,
     BootstrapResponse,
     ClassifyDomainRequest,
@@ -98,20 +98,19 @@ async def bootstrap(
         raise _wrap_upstream(exc) from exc
 
 
-@router.post("/answer", response_model=AnswerResponse)
-async def answer(
-    payload: AnswerRequest,
+@router.post("/answers", response_model=AnswersResponse)
+async def answers(
+    payload: AnswersRequest,
     user: User = Depends(get_current_user),
     svc: SkillBootstrapService = Depends(get_skill_bootstrap_service),
-) -> AnswerResponse:
+) -> AnswersResponse:
     try:
-        return await svc.answer_question(
+        return await svc.answer_questions(
             owner_user_id=user.id,
             session_id=payload.session_id,
             domain=payload.domain,
             policy_id=payload.policy_id,
-            question=payload.question,
-            answer=payload.answer,
+            answers=payload.answers,
         )
     except httpx.HTTPStatusError as exc:
         raise _wrap_upstream(exc) from exc

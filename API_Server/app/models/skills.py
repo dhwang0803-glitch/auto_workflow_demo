@@ -5,6 +5,15 @@ Mirrors AI_Agent's wire shapes (`AI_Agent/app/models/skills.py`,
 don't need to know which service emitted a value. Backend forwarding
 re-validates through these so a malformed AI_Agent response becomes a 502
 at the API_Server layer rather than slipping through to the client.
+
+W2-7 batch cut-over (this PR): `/answer` (single-shot) replaced by
+`/answers` (batch — N (parameter, answer) pairs per policy → 1 SkillDraft).
+PolicyGapBody now carries `parameters` / `sources` / `source_kind` from
+the W2-4 polish redesign + `help_text` / `example_answer` from W2-4d so
+the wizard can render parameter cards with attribution and inline help
+without a second round-trip. `questions` stays as a backward-compat
+alias of `parameters` for any client still on the old shape — drop after
+Frontend ships PR #144.
 """
 from __future__ import annotations
 
@@ -63,12 +72,23 @@ class BootstrapRequest(BaseModel):
     extracted_skills: list[ExtractedSkillBody] = Field(default_factory=list)
 
 
-class AnswerRequest(BaseModel):
+class ParameterAnswerBody(BaseModel):
+    """One (parameter_name, user_answer) pair within an /answers batch.
+
+    `parameter` MUST be one of the seed policy's parameter names — AI_Agent
+    rejects unknown names so a Frontend bug cannot smuggle phantom params
+    into the LLM prompt.
+    """
+    parameter: str = Field(min_length=1)
+    answer: str = Field(min_length=1, max_length=4000)
+
+
+class AnswersRequest(BaseModel):
+    """Batch input: one policy + per-parameter answers → one SkillDraft."""
     session_id: UUID
     domain: DomainCategory
     policy_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
-    answer: str = Field(min_length=1, max_length=4000)
+    answers: list[ParameterAnswerBody] = Field(min_length=1)
 
 
 # --- response bodies ------------------------------------------------------
@@ -80,15 +100,45 @@ class DomainClassificationResponse(BaseModel):
     rationale: str
 
 
+# Honest labelling of where a policy comes from (memory project_wizard_polish_abc.md):
+# - regulatory: grounded in a real legal/regulatory source
+# - industry-baseline: linkable external industry references (Stripe, NRF, etc.)
+# - synthesized: best-practice patchwork derived from training data; no
+#   external authoritative URL exists. Library view shows this honestly.
+SourceKindLiteral = Literal["regulatory", "industry-baseline", "synthesized"]
+
+
+class PolicySourceBody(BaseModel):
+    title: str
+    url: str
+
+
 class WizardQuestionBody(BaseModel):
+    """One micro-question targeted at a specific seed parameter.
+
+    `default_baseline` + `baseline_source` let the wizard offer a
+    one-click "Use baseline" button with honest attribution.
+    `help_text` (jargon explainer, 2-3 sentences) and `example_answer`
+    (one-line placeholder) come from W2-4d.
+    """
     text: str
     parameter: str | None = None
+    default_baseline: str = ""
+    baseline_source: str = ""
+    help_text: str = ""
+    example_answer: str = ""
 
 
 class PolicyGapBody(BaseModel):
     policy_id: str
     policy_name: str
-    questions: list[WizardQuestionBody]
+    parameters: list[WizardQuestionBody] = Field(default_factory=list)
+    sources: list[PolicySourceBody] = Field(default_factory=list)
+    source_kind: SourceKindLiteral = "synthesized"
+    # Backward-compat alias of `parameters` for any client still on the
+    # pre-#143 shape. AI_Agent emits the same payload in both fields;
+    # drop after Frontend cuts over (PR #144).
+    questions: list[WizardQuestionBody] = Field(default_factory=list)
 
 
 class BootstrapResponse(BaseModel):
@@ -107,7 +157,7 @@ class SkillDraftBody(BaseModel):
     clarification_hint: str = ""
 
 
-class AnswerResponse(BaseModel):
+class AnswersResponse(BaseModel):
     session_id: UUID
     skill_id: UUID
     draft: SkillDraftBody
