@@ -37,7 +37,7 @@ pytestmark = pytest.mark.skipif(
 
 
 class FakeAIAgent:
-    """Duck-types AIAgentHTTPBackend.{classify_domain, analyze_gaps, answer_to_skill}.
+    """Duck-types AIAgentHTTPBackend.{classify_domain, analyze_gaps, answers_to_skill}.
 
     Each test instantiates one with the canned responses it expects to see.
     Setting any of `*_error` triggers an httpx.HTTPStatusError on that
@@ -52,18 +52,18 @@ class FakeAIAgent:
         draft: SkillDraftBody | None = None,
         classify_error: int | None = None,
         gaps_error: int | None = None,
-        answer_error: int | None = None,
+        answers_error: int | None = None,
     ) -> None:
         self._classify = classify
         self._gaps = gaps or []
         self._draft = draft
         self._classify_error = classify_error
         self._gaps_error = gaps_error
-        self._answer_error = answer_error
+        self._answers_error = answers_error
         # Capture last call args for assertion.
         self.last_classify_text: str | None = None
         self.last_gap_args: tuple[str, list] | None = None
-        self.last_answer_args: dict | None = None
+        self.last_answers_args: dict | None = None
 
     @staticmethod
     def _err(status: int) -> httpx.HTTPStatusError:
@@ -84,15 +84,16 @@ class FakeAIAgent:
             raise self._err(self._gaps_error)
         return self._gaps
 
-    async def answer_to_skill(self, *, domain, policy_id, question, answer):
-        self.last_answer_args = {
+    async def answers_to_skill(self, *, domain, policy_id, answers):
+        self.last_answers_args = {
             "domain": domain,
             "policy_id": policy_id,
-            "question": question,
-            "answer": answer,
+            # answers is list[ParameterAnswerBody] — capture as plain dicts so
+            # tests assert the wire shape without depending on the model class.
+            "answers": [a.model_dump() for a in answers],
         }
-        if self._answer_error is not None:
-            raise self._err(self._answer_error)
+        if self._answers_error is not None:
+            raise self._err(self._answers_error)
         assert self._draft is not None
         return self._draft
 
@@ -262,7 +263,7 @@ async def test_bootstrap_mints_session_id_when_omitted(skills_client_factory):
 # --- /answer + DB write ---------------------------------------------------
 
 
-async def test_answer_persists_pending_review_skill(skills_client_factory):
+async def test_answers_persists_pending_review_skill(skills_client_factory):
     fake = FakeAIAgent(
         draft=SkillDraftBody(
             name="Refund threshold escalation",
@@ -280,13 +281,16 @@ async def test_answer_persists_pending_review_skill(skills_client_factory):
 
         sid = "22222222-2222-2222-2222-222222222222"
         r = await client.post(
-            "/api/v1/skills/answer",
+            "/api/v1/skills/answers",
             json={
                 "session_id": sid,
                 "domain": "ecommerce",
                 "policy_id": "ecommerce.refund_threshold",
-                "question": "What dollar amount triggers manager approval?",
-                "answer": "$500. Goes to my co-founder Sarah on Slack.",
+                "answers": [
+                    {"parameter": "REFUND_AUTO_APPROVE_LIMIT", "answer": "$500"},
+                    {"parameter": "REFUND_APPROVER", "answer": "Sarah (co-founder)"},
+                    {"parameter": "ESCALATION_CHANNEL", "answer": "#refunds Slack channel"},
+                ],
             },
         )
         assert r.status_code == 200, r.text
@@ -309,7 +313,9 @@ async def test_answer_persists_pending_review_skill(skills_client_factory):
         assert skills[0]["action"] == {"text": "Forward to manager via #refunds Slack channel"}
 
         # Fake recorded the right inputs.
-        assert fake.last_answer_args["policy_id"] == "ecommerce.refund_threshold"
+        assert fake.last_answers_args["policy_id"] == "ecommerce.refund_threshold"
+        assert len(fake.last_answers_args["answers"]) == 3
+        assert fake.last_answers_args["answers"][0]["parameter"] == "REFUND_AUTO_APPROVE_LIMIT"
 
         await _truncate(app)
 
@@ -320,13 +326,14 @@ async def test_answer_persists_pending_review_skill(skills_client_factory):
 async def _create_pending_skill(client, fake) -> str:
     sid = "33333333-3333-3333-3333-333333333333"
     r = await client.post(
-        "/api/v1/skills/answer",
+        "/api/v1/skills/answers",
         json={
             "session_id": sid,
             "domain": "ecommerce",
             "policy_id": "ecommerce.refund_threshold",
-            "question": "Q?",
-            "answer": "A.",
+            "answers": [
+                {"parameter": "REFUND_AUTO_APPROVE_LIMIT", "answer": "$500"},
+            ],
         },
     )
     assert r.status_code == 200, r.text

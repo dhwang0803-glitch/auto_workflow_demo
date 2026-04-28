@@ -56,6 +56,11 @@ def _make_settings(**overrides) -> Settings:
         google_oauth_client_id="test-client-id",
         google_oauth_client_secret="test-client-secret",
         google_oauth_redirect_uri="http://testserver/api/v1/oauth/google/callback",
+        # Hermetic: pin ai_agent_base_url empty so the .env value (used for
+        # local dev where AI_Agent runs on :8100) doesn't leak into tests
+        # that exercise the unconfigured 503 path. memory:
+        # feedback_pydantic_settings_test.md
+        ai_agent_base_url="",
     )
     base.update(overrides)
     return Settings(**base)
