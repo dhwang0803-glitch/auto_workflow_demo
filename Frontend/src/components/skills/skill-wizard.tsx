@@ -1,27 +1,30 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
-  answerWizardQuestion,
+  answerWizardQuestions,
   bootstrapSkills,
   DOMAIN_LABELS,
   type DomainCategory,
+  type ParameterAnswer,
 } from "@/lib/skills";
-import { useSkillWizardStore } from "@/store/skill-wizard-store";
+import {
+  useSkillWizardStore,
+  type PolicyTurn,
+  type WizardDraft,
+} from "@/store/skill-wizard-store";
 import { ApiError } from "@/lib/api";
+import { ParameterCard } from "./parameter-card";
 import { SkillCard, makeReviewHandlers } from "./skill-card";
 
-// Persona A interview wizard (PLAN_12 W2-5).
+// Persona A interview wizard (PLAN_12 W2-5 + W2-5b).
 //
-// Flow: user picks a domain chip → POST /skills/bootstrap returns a flat
-// queue of (policy_id, question) pairs → for each turn the user types an
-// answer → POST /skills/answer returns a SkillDraft. When the queue is
-// empty we land on `done` and show a read-only summary. The W2-6 PR will
-// replace the summary with the editable skill-card review UI.
-//
-// Drafts are persisted server-side as `pending_review` rows (skill ID
-// returned in AnswerResponse), so a refresh mid-wizard loses chat state
-// but not the skills already produced.
+// Flow: user picks a domain chip → POST /skills/bootstrap returns one
+// policy gap per missing standard policy → for each policy the user
+// fills N parameter cards (with help_text / example_answer / Use
+// baseline affordances) → POST /skills/answers batches the parameter
+// answers into one SkillDraft. When the queue is empty we land on
+// `done` and the W2-6 SkillCard list takes over for review.
 
 const DOMAIN_OPTIONS: DomainCategory[] = [
   "ecommerce",
@@ -40,12 +43,14 @@ export function SkillWizard() {
   const domain = useSkillWizardStore((s) => s.domain);
   const queue = useSkillWizardStore((s) => s.queue);
   const currentIndex = useSkillWizardStore((s) => s.currentIndex);
+  const currentAnswers = useSkillWizardStore((s) => s.currentAnswers);
   const drafts = useSkillWizardStore((s) => s.drafts);
   const lastError = useSkillWizardStore((s) => s.lastError);
   const start = useSkillWizardStore((s) => s.start);
   const setLoading = useSkillWizardStore((s) => s.setLoading);
   const acceptBootstrap = useSkillWizardStore((s) => s.acceptBootstrap);
-  const acceptAnswer = useSkillWizardStore((s) => s.acceptAnswer);
+  const setCurrentAnswer = useSkillWizardStore((s) => s.setCurrentAnswer);
+  const acceptAnswers = useSkillWizardStore((s) => s.acceptAnswers);
   const setError = useSkillWizardStore((s) => s.setError);
   const setDraftActionStatus = useSkillWizardStore(
     (s) => s.setDraftActionStatus,
@@ -61,7 +66,6 @@ export function SkillWizard() {
     applyServerStatus,
   });
 
-  const [input, setInput] = useState("");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the transcript pinned to the bottom as new turns land.
@@ -69,6 +73,18 @@ export function SkillWizard() {
     const el = transcriptRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [currentIndex, drafts.length, phase]);
+
+  const currentTurn = queue[currentIndex];
+
+  // The submit button is disabled until every parameter on the current
+  // policy has a non-empty answer — batch is all-or-nothing per policy.
+  const allAnswered = useMemo(() => {
+    if (!currentTurn) return false;
+    return currentTurn.parameters.every((p) => {
+      const key = p.parameter ?? p.text;
+      return (currentAnswers[key] ?? "").trim().length > 0;
+    });
+  }, [currentTurn, currentAnswers]);
 
   const onPickDomain = async (picked: DomainCategory) => {
     const sid = newSessionId();
@@ -85,38 +101,34 @@ export function SkillWizard() {
     }
   };
 
-  const submitAnswer = async () => {
-    if (!sessionId || !domain) return;
-    const turn = queue[currentIndex];
-    if (!turn) return;
-    const text = input.trim();
-    if (!text) return;
-    setInput("");
+  const submitPolicyAnswers = async () => {
+    if (!sessionId || !domain || !currentTurn) return;
+    if (!allAnswered) return;
+    const answers: ParameterAnswer[] = currentTurn.parameters.map((p) => {
+      const key = p.parameter ?? p.text;
+      return {
+        // The server requires a non-empty parameter name; for follow-up
+        // turns with no seed parameter we fall back to the prompt key.
+        parameter: p.parameter ?? key,
+        answer: (currentAnswers[key] ?? "").trim(),
+      };
+    });
     setLoading();
     try {
-      const resp = await answerWizardQuestion({
+      const resp = await answerWizardQuestions({
         session_id: sessionId,
         domain,
-        policy_id: turn.policyId,
-        question: turn.question,
-        answer: text,
+        policy_id: currentTurn.policyId,
+        answers,
       });
-      acceptAnswer(resp, turn.policyId, turn.question, text);
+      acceptAnswers(resp, currentTurn, answers);
     } catch (e) {
-      // Restore the typed answer so the user doesn't have to retype it.
-      setInput(text);
       setError(formatError(e));
     }
   };
 
-  const onFormSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    void submitAnswer();
-  };
-
   const total = queue.length;
   const answered = drafts.length;
-  const currentTurn = queue[currentIndex];
 
   return (
     <main
@@ -148,7 +160,7 @@ export function SkillWizard() {
 
       <div
         ref={transcriptRef}
-        className="flex-1 overflow-y-auto px-4 py-3 text-sm"
+        className="flex-1 overflow-y-auto bg-gray-50 px-4 py-3 text-sm"
         data-testid="wizard-transcript"
       >
         {phase === "domain" && (
@@ -164,27 +176,19 @@ export function SkillWizard() {
           </div>
         )}
 
-        {/* While the user is still answering, the prior turns stay as
-          compact bubbles so the chat reads chronologically. The full
-          SkillCard with review controls only appears in the `done`
-          phase — until then, drafts are still accumulating and locking
-          half of them behind approve/reject would be confusing. */}
+        {/* Prior policy turns stay as compact summaries; the SkillCard
+            with full review controls only appears in the `done` phase
+            so the user isn't approving half a session's drafts mid-flow. */}
         {(phase === "asking" || phase === "loading") &&
           drafts.map((d, i) => (
-            <AnsweredTurn
-              key={d.skillId}
-              index={i + 1}
-              question={d.question}
-              answer={d.answer}
-              draftName={d.draft.name}
-              needsClarification={d.draft.needs_clarification}
-            />
+            <AnsweredPolicyTurn key={d.skillId} index={i + 1} draft={d} />
           ))}
 
         {phase === "asking" && currentTurn && (
-          <AskingTurn
-            policyName={currentTurn.policyName}
-            question={currentTurn.question}
+          <AskingPolicyTurn
+            turn={currentTurn}
+            currentAnswers={currentAnswers}
+            onAnswerChange={setCurrentAnswer}
           />
         )}
 
@@ -223,32 +227,19 @@ export function SkillWizard() {
       </div>
 
       {phase === "asking" && currentTurn && (
-        <form
-          onSubmit={onFormSubmit}
-          className="flex gap-2 border-t p-3"
-        >
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                onFormSubmit(e as unknown as React.FormEvent);
-              }
-            }}
-            rows={2}
-            placeholder="Type your answer…"
-            className="flex-1 resize-none rounded border px-2 py-1 text-sm"
-            data-testid="wizard-input"
-          />
+        <div className="border-t bg-white p-3">
           <button
-            type="submit"
-            disabled={!input.trim()}
-            className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:bg-gray-300"
+            type="button"
+            onClick={() => void submitPolicyAnswers()}
+            disabled={!allAnswered}
+            className="w-full rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:bg-gray-300"
+            data-testid="wizard-submit-policy"
           >
-            Send
+            {allAnswered
+              ? "Submit policy answers"
+              : `Answer all ${currentTurn.parameters.length} questions to continue`}
           </button>
-        </form>
+        </div>
       )}
     </main>
   );
@@ -266,7 +257,7 @@ function ProgressGauge({
     <div className="border-b px-4 py-2" data-testid="wizard-progress">
       <div className="mb-1 flex justify-between text-xs text-gray-600">
         <span>
-          {answered} / {total} answered
+          {answered} / {total} policies answered
         </span>
         <span>{pct}%</span>
       </div>
@@ -311,50 +302,102 @@ function DomainPicker({
   );
 }
 
-function AskingTurn({
-  policyName,
-  question,
+function AskingPolicyTurn({
+  turn,
+  currentAnswers,
+  onAnswerChange,
 }: {
-  policyName: string;
-  question: string;
+  turn: PolicyTurn;
+  currentAnswers: Record<string, string>;
+  onAnswerChange: (parameter: string, answer: string) => void;
 }) {
   return (
-    <div className="mb-3" data-testid="wizard-current-question">
+    <div className="mb-3" data-testid="wizard-current-policy">
       <div className="mb-1 text-[11px] uppercase tracking-wide text-gray-500">
-        {policyName}
+        Policy {turn.policyId}
       </div>
-      <div className="max-w-[90%] whitespace-pre-wrap rounded-lg bg-gray-100 px-3 py-2 text-gray-900">
-        {question}
+      <div className="mb-2 text-sm font-semibold text-gray-900">
+        {turn.policyName}
       </div>
+      {turn.sourceKind && turn.sourceKind !== "synthesized" && (
+        <SourceKindPill kind={turn.sourceKind} sources={turn.sources} />
+      )}
+      {turn.parameters.map((p) => {
+        const key = p.parameter ?? p.text;
+        return (
+          <ParameterCard
+            key={key}
+            question={p}
+            value={currentAnswers[key] ?? ""}
+            onChange={(next) => onAnswerChange(key, next)}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function AnsweredTurn({
+function SourceKindPill({
+  kind,
+  sources,
+}: {
+  kind: PolicyTurn["sourceKind"];
+  sources: PolicyTurn["sources"];
+}) {
+  const label =
+    kind === "regulatory" ? "Regulatory" : "Industry baseline";
+  const className =
+    kind === "regulatory"
+      ? "bg-purple-50 text-purple-800 border-purple-200"
+      : "bg-emerald-50 text-emerald-800 border-emerald-200";
+  return (
+    <div
+      className={`mb-3 inline-flex max-w-full flex-wrap items-center gap-2 rounded border px-2 py-1 text-[11px] ${className}`}
+      data-testid={`source-kind-${kind}`}
+    >
+      <span className="font-semibold uppercase tracking-wide">{label}</span>
+      {sources.slice(0, 2).map((s) => (
+        <a
+          key={s.url}
+          href={s.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:no-underline"
+        >
+          {s.title}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function AnsweredPolicyTurn({
   index,
-  question,
-  answer,
-  draftName,
-  needsClarification,
+  draft,
 }: {
   index: number;
-  question: string;
-  answer: string;
-  draftName: string;
-  needsClarification: boolean;
+  draft: WizardDraft;
 }) {
   return (
-    <div className="mb-3 space-y-1" data-testid={`wizard-turn-${index}`}>
-      <div className="max-w-[90%] whitespace-pre-wrap rounded-lg bg-gray-100 px-3 py-1.5 text-gray-900">
-        {question}
+    <div
+      className="mb-3 rounded border border-gray-200 bg-white p-3"
+      data-testid={`wizard-turn-${index}`}
+    >
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-gray-500">
+        {draft.policyName}
       </div>
-      <div className="ml-auto max-w-[90%] whitespace-pre-wrap rounded-lg bg-blue-600 px-3 py-1.5 text-right text-white">
-        {answer}
+      <div className="space-y-1 text-xs">
+        {draft.answers.map((a) => (
+          <div key={a.parameter} className="flex gap-2">
+            <span className="font-mono text-gray-500">{a.parameter}</span>
+            <span className="text-gray-900">{a.answer}</span>
+          </div>
+        ))}
       </div>
-      <div className="ml-2 text-[11px] text-gray-500">
+      <div className="mt-2 text-[11px] text-gray-500">
         →{" "}
-        <span className="font-mono">{draftName}</span>
-        {needsClarification && (
+        <span className="font-mono">{draft.draft.name}</span>
+        {draft.draft.needs_clarification && (
           <span
             className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-800"
             data-testid="needs-clarification-badge"

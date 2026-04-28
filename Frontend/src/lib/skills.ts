@@ -1,9 +1,10 @@
-// Skill bootstrap wizard client (PLAN_12 W2-5).
+// Skill bootstrap wizard client (PLAN_12 W2-5 + W2-5b batch cut-over).
 //
 // Mirrors API_Server/app/models/skills.py. Both endpoints are plain JSON
-// (non-SSE) — the wizard turn cadence is bounded (one POST per question)
-// so we don't pay the SSE plumbing cost. The server is stateless: the
-// frontend mints `session_id` and round-trips it through every /answer.
+// (non-SSE) — the wizard cadence is bounded (one POST per policy after
+// W2-5b: N parameter answers batched into a single SkillDraft) so we
+// don't pay the SSE plumbing cost. The server is stateless: the frontend
+// mints `session_id` and round-trips it through every /answers.
 import { apiFetch } from "./api";
 
 export type DomainCategory =
@@ -35,15 +36,37 @@ export interface BootstrapRequest {
   extracted_skills?: ExtractedSkill[];
 }
 
+// Honest labelling of where a policy comes from. Drives the source-kind
+// pill on skill cards and library view (memory: project_wizard_polish_abc.md).
+export type SourceKind = "regulatory" | "industry-baseline" | "synthesized";
+
+export interface PolicySource {
+  title: string;
+  url: string;
+}
+
 export interface WizardQuestion {
   text: string;
   parameter: string | null;
+  // W2-4 polish + W2-4d additions (default `""` for forward-compat with
+  // pre-#143 PolicyGap payloads — the wizard renders fields conditionally
+  // when these are empty).
+  default_baseline: string;
+  baseline_source: string;
+  help_text: string;
+  example_answer: string;
 }
 
 export interface PolicyGap {
   policy_id: string;
   policy_name: string;
-  questions: WizardQuestion[];
+  // `parameters` is the authoritative list (W2-4 polish). `questions`
+  // stays as a backward-compat alias of `parameters` while API_Server
+  // keeps both fields populated. Frontend always reads `parameters`.
+  parameters: WizardQuestion[];
+  sources: PolicySource[];
+  source_kind: SourceKind;
+  questions?: WizardQuestion[];
 }
 
 export interface BootstrapResponse {
@@ -52,12 +75,16 @@ export interface BootstrapResponse {
   missing: PolicyGap[];
 }
 
-export interface AnswerRequest {
+export interface ParameterAnswer {
+  parameter: string;
+  answer: string;
+}
+
+export interface AnswersRequest {
   session_id: string;
   domain: DomainCategory;
   policy_id: string;
-  question: string;
-  answer: string;
+  answers: ParameterAnswer[];
 }
 
 export interface SkillDraft {
@@ -70,7 +97,7 @@ export interface SkillDraft {
   clarification_hint: string;
 }
 
-export interface AnswerResponse {
+export interface AnswersResponse {
   session_id: string;
   skill_id: string;
   draft: SkillDraft;
@@ -111,8 +138,8 @@ const jsonInit = (body: unknown): RequestInit => ({
 export const bootstrapSkills = (req: BootstrapRequest) =>
   apiFetch<BootstrapResponse>("/api/v1/skills/bootstrap", jsonInit(req));
 
-export const answerWizardQuestion = (req: AnswerRequest) =>
-  apiFetch<AnswerResponse>("/api/v1/skills/answer", jsonInit(req));
+export const answerWizardQuestions = (req: AnswersRequest) =>
+  apiFetch<AnswersResponse>("/api/v1/skills/answers", jsonInit(req));
 
 export const approveSkill = (skillId: string) =>
   apiFetch<SkillRecord>(`/api/v1/skills/${skillId}/approve`, {
