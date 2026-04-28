@@ -95,3 +95,10 @@ output "broker_port" {
   description = "Memorystore port (6379 by default). Exposed as an output so scripts don't hard-code."
   value       = google_redis_instance.broker.port
 }
+
+# ---- AI_Agent (Modal pivot — bearer secret only) ---------------------------
+
+output "agent_bearer_token_secret_id" {
+  description = "Secret Manager resource ID for the AI_Agent bearer token. API_Server boot fetches with: gcloud secrets versions access latest --secret=<this>. Modal Secret `agent-bearer-token` (key AGENT_BEARER_TOKEN) holds the same value."
+  value       = google_secret_manager_secret.agent_bearer_token.secret_id
+}

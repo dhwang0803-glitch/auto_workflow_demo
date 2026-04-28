@@ -215,3 +215,13 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+# AI_Agent runtime is on Modal (`AI_Agent/scripts/modal_app.py`). The bearer
+# secret lives in ai_agent.tf; the public Modal endpoint URL goes here so
+# Cloud Run can inject it as AI_AGENT_BASE_URL env.
+
+variable "ai_agent_base_url" {
+  description = "Public HTTPS URL of the Modal AI_Agent endpoint (e.g. https://<user>--auto-workflow-agent-agentservice-fastapi.modal.run). Empty disables the AI_AGENT route — API_Server falls back to the in-tree Anthropic/Stub backend."
+  type        = string
+  default     = ""
+}

@@ -369,11 +369,21 @@ async def test_stub_backend_drives_non_stream_path():
         await _truncate(app)
 
 
-async def test_disabled_when_no_api_key(composer_client_factory):
-    """The container builds AIComposerService with backend=None when the
-    Anthropic key is empty AND no test backend is injected. The router
-    surfaces this as 503 instead of crashing in the SDK."""
-    settings = _make_settings(anthropic_api_key="")
+async def test_disabled_when_no_backend_configured():
+    """No Anthropic key, no stub, no AI_Agent URL, and no injected test
+    backend → container builds AIComposerService with backend=None and the
+    router surfaces 503 instead of crashing.
+
+    Each backend-selection knob must be overridden explicitly because
+    pydantic-settings still reads `.env` for any field not listed here —
+    a developer's local `AI_COMPOSER_USE_STUB=true` would otherwise wire
+    StubLLMBackend and flip this test to a silent 200.
+    """
+    settings = _make_settings(
+        anthropic_api_key="",
+        ai_composer_use_stub=False,
+        ai_agent_base_url="",
+    )
     app = create_app(
         settings, email_sender=NoopEmailSender(), ai_composer_backend=None
     )

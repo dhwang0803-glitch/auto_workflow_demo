@@ -31,6 +31,9 @@ build/
 
 # Data & artifacts
 data/
+!AI_Agent/data/
+!AI_Agent/data/policies/
+!AI_Agent/data/policies/**
 *.parquet
 *.pkl
 *.sqlite

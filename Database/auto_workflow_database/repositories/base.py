@@ -29,6 +29,11 @@ ExecutionStatus = Literal[
     "cancelled",
 ]
 
+# PLAN_12 / ADR-022 Skill Bootstrap
+SkillStatus = Literal["active", "pending_review", "rejected", "archived"]
+SkillScope = Literal["workspace", "user", "team"]
+SkillSourceType = Literal["document", "conversation", "observation"]
+
 
 @dataclass
 class User:
@@ -558,3 +563,104 @@ class NodeCatalogRepository(ABC):
 
     @abstractmethod
     async def list_all(self) -> list[NodeDefinition]: ...
+
+
+# --- PLAN_12 / ADR-022 Skill Bootstrap ----------------------------------------
+
+
+@dataclass
+class Skill:
+    """Codified team policy — see ADR-022 + PLAN_12 §5.
+
+    `condition` and `action` are JSONB columns. The wizard path (W2-7)
+    stores prose answers as `{"text": "..."}`; future structured policies
+    (e.g. compose-time matchers) extend the schema in-place.
+
+    `owner_user_id` mirrors the SQL — see schemas/005_skill_bootstrap.sql
+    for the MVP-vs-workspace_id rationale.
+    """
+
+    id: UUID
+    owner_user_id: UUID
+    name: str
+    condition: dict
+    action: dict
+    description: str | None = None
+    scope: SkillScope = "workspace"
+    status: SkillStatus = "pending_review"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SkillRepository(ABC):
+    """Skills + skill_sources persistence for the bootstrap wizard.
+
+    All reads/writes are owner-scoped — every method takes
+    `owner_user_id` and the repository must filter on it. Cross-owner
+    access returns None / empty list, never raises.
+    """
+
+    @abstractmethod
+    async def create(
+        self,
+        *,
+        owner_user_id: UUID,
+        name: str,
+        condition: dict,
+        action: dict,
+        description: str | None = None,
+        scope: SkillScope = "workspace",
+        status: SkillStatus = "pending_review",
+        source_type: SkillSourceType | None = None,
+        source_ref: dict | None = None,
+    ) -> Skill:
+        """Insert a skill (and optionally a paired skill_sources row).
+
+        When `source_type` is provided, `source_ref` MUST also be — the
+        two are stored atomically with the skill so the audit trail can't
+        drift. When neither is provided, only the `skills` row is written.
+        """
+        ...
+
+    @abstractmethod
+    async def get_owned(
+        self, owner_user_id: UUID, skill_id: UUID
+    ) -> Skill | None:
+        """Fetch a single skill if owned by the caller, else None.
+
+        Used by the approve/reject endpoints — the None case maps to 404
+        regardless of whether the skill exists at all (don't leak the
+        existence of other owners' skills via 403-vs-404 distinctions).
+        """
+        ...
+
+    @abstractmethod
+    async def list_owned(
+        self,
+        owner_user_id: UUID,
+        *,
+        status: SkillStatus | None = None,
+    ) -> list[Skill]:
+        """List the caller's skills, newest first.
+
+        `status=None` returns all statuses. The review UI typically calls
+        with `status='pending_review'`; the active-skills query for
+        compose-time retrieval calls with `status='active'`.
+        """
+        ...
+
+    @abstractmethod
+    async def update_status(
+        self,
+        owner_user_id: UUID,
+        skill_id: UUID,
+        new_status: SkillStatus,
+    ) -> Skill | None:
+        """Transition a skill's status; bumps `updated_at`.
+
+        Returns the post-update DTO, or None if the skill is missing
+        or owned by someone else. Transition validity (which old→new
+        pairs are allowed) is enforced at the API layer, not here —
+        the repository accepts any allowed enum value.
+        """
+        ...

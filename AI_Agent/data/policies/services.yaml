@@ -1,0 +1,161 @@
+# Domain: service business (appointment-driven local/remote services)
+# Format: see ecommerce.yaml header.
+domain: services
+display_name: Service Business (Appointment-driven)
+description: >
+  Small to medium service businesses that schedule appointments with
+  customers — repair, cleaning, salon, healthcare, fitness, home services.
+  Common workflow surfaces: booking and rescheduling, cancellation handling,
+  customer intake, estimate or quote management, recurring rebooking,
+  follow-up after service.
+policies:
+  - id: services.after_hours_booking
+    name: After-hours and conflict booking
+    condition: >
+      A customer requests an appointment slot that conflicts with an existing
+      booking OR falls outside the team's stated business hours.
+    action: >
+      Do not double-book or extend hours unilaterally. Offer the customer the
+      three nearest available in-hours slots. If the customer insists on
+      after-hours and the team supports it, route to the premium support
+      queue with the team's after-hours surcharge disclosed before booking.
+      If the team does not support after-hours, decline politely and surface
+      the next-day first-available slot.
+    rationale: >
+      Silent overbooking causes overlapping appointments and burns staff.
+      Hidden after-hours charges destroy trust. Both are recoverable only by
+      explicit upfront communication.
+    parameters:
+      - BUSINESS_HOURS
+      - AFTER_HOURS_SURCHARGE
+      - AFTER_HOURS_SUPPORTED
+    tags: [scheduling, communication, pricing]
+
+  - id: services.no_show_late_cancel
+    name: No-show and late-cancellation fee
+    condition: >
+      A customer fails to arrive for a confirmed appointment OR cancels
+      within the team's late-cancellation window.
+    action: >
+      Apply the team's no-show or late-cancellation fee per the booking terms
+      the customer agreed to. Send the fee notification with the original
+      booking confirmation timestamp and the policy excerpt the customer
+      accepted. Offer one goodwill waiver per customer per defined period for
+      first-time offenders if the team policy allows it.
+    rationale: >
+      No-shows cost the time slot AND opportunity cost of the customer who
+      could not book. The fee disciplines the calendar; the goodwill waiver
+      protects relationships with otherwise reliable customers.
+    parameters:
+      - NO_SHOW_FEE_AMOUNT
+      - LATE_CANCEL_WINDOW_HOURS
+      - LATE_CANCEL_FEE_AMOUNT
+      - GOODWILL_WAIVER_FREQUENCY
+    tags: [scheduling, finance, retention]
+
+  - id: services.new_customer_intake
+    name: New customer intake checklist
+    condition: >
+      A customer books their first appointment with the team, regardless of
+      booking channel.
+    action: >
+      Before the appointment, collect the team's required intake information
+      via the team's intake form (contact preferences, relevant history or
+      requirements, parking or access notes for in-person services). For
+      regulated services, capture required consents or waivers. Confirm the
+      appointment 24-48 hours in advance via the customer's preferred channel.
+    rationale: >
+      First-appointment friction predicts churn. Capturing intake once,
+      cleanly, prevents repeated questions and lets the service start on time.
+    parameters:
+      - INTAKE_FORM_URL
+      - REQUIRED_CONSENTS
+      - REMINDER_LEAD_TIME_HOURS
+      - PREFERRED_CHANNEL_DEFAULT
+    tags: [onboarding, scheduling, compliance]
+
+  - id: services.estimate_validity
+    name: Estimate or quote validity period
+    condition: >
+      A customer requests work that requires a written estimate or quote
+      (vs. a fixed-price service tier).
+    action: >
+      Provide the estimate in writing with line-item scope, total, and an
+      explicit validity-until date matching the team's standard. State the
+      team's policy for what triggers a re-quote (scope change, supply price
+      change beyond a threshold, expiry). Require customer acknowledgement
+      before scheduling the work.
+    rationale: >
+      Open-ended estimates strand the team when costs move. Explicit
+      validity windows protect both sides and force clean re-quoting.
+    parameters:
+      - ESTIMATE_VALIDITY_DAYS
+      - SUPPLY_PRICE_VARIANCE_THRESHOLD
+      - REQUOTE_TRIGGERS
+    tags: [pricing, scope, communication]
+
+  - id: services.recurring_rebooking
+    name: Recurring customer rebooking reminder
+    condition: >
+      A customer who completed a service has a typical rebooking interval
+      based on the service type (routine cleaning, follow-up appointment,
+      maintenance) AND has reached the team's reminder lead time before that
+      interval.
+    action: >
+      Send a personalized rebooking reminder via the customer's preferred
+      channel with one-click rebooking to the same provider where possible.
+      Do not send if the customer opted out of marketing or has an open
+      complaint. Cap reminder frequency at the team's defined maximum.
+    rationale: >
+      Recurring service customers are the highest-margin segment. Active
+      recall prevents drift to competitors. Aggressive reminders feel like
+      spam and trigger opt-outs.
+    parameters:
+      - SERVICE_REBOOKING_INTERVALS
+      - REMINDER_LEAD_TIME_DAYS
+      - MAX_REMINDERS_PER_PERIOD
+    tags: [retention, communication, scheduling]
+
+  - id: services.upset_customer_tone
+    name: Upset customer tone matching
+    condition: >
+      A customer message shows signs of frustration: explicit complaint
+      language, multiple unsuccessful prior contacts, waiting longer than
+      stated SLA, or escalation to public channels.
+    action: >
+      First reply must validate the frustration explicitly without templated
+      apology language. Take ownership with a named contact ("I will
+      personally handle this"). Provide a concrete next step with a specific
+      time commitment matching the team's escalation SLA. Loop in a manager
+      via internal note if the customer mentions cancellation or legal
+      action.
+    rationale: >
+      Templated apologies amplify frustration. A named owner with a specific
+      time commitment converts most upset customers to retained customers.
+    parameters:
+      - ESCALATION_OWNER
+      - ESCALATION_RESPONSE_SLA
+      - LEGAL_TRIGGER_WORDS
+    tags: [communication, retention, escalation]
+
+  - id: services.post_service_followup
+    name: Post-service follow-up and review request
+    condition: >
+      A service appointment was completed AND the team's post-service waiting
+      period has elapsed (long enough for the customer to evaluate the work
+      but short enough for the experience to be fresh).
+    action: >
+      Send a follow-up via the customer's preferred channel asking about
+      satisfaction. If the customer indicates satisfaction, surface the team's
+      review request with a one-click link. If the customer indicates
+      dissatisfaction, route to a service recovery owner — never request a
+      public review from a dissatisfied customer.
+    rationale: >
+      Reviews from satisfied customers compound. Review requests sent to
+      dissatisfied customers manufacture public negative reviews that the
+      team would otherwise have caught privately.
+    parameters:
+      - FOLLOWUP_LAG_DAYS
+      - REVIEW_PLATFORM_LINK
+      - SERVICE_RECOVERY_OWNER
+    tags: [retention, reputation, communication]

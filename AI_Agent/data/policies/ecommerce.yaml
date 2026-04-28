@@ -1,0 +1,183 @@
+# Domain: e-commerce / online retail
+# Format: each policy is a generic, parameterized condition+action pair that a
+# typical team in this domain should declare. The gap_analyze LLM (W2-4) reads
+# this list, compares against a team's extracted/declared skills, and turns
+# remaining `parameters` into wizard questions for the team.
+domain: ecommerce
+display_name: E-commerce / Online Retail
+description: >
+  Direct-to-consumer online stores selling physical or digital goods. Common
+  workflow surfaces: order processing, returns, shipping notifications,
+  abandoned-cart recovery, customer support triage, payment dispute handling.
+policies:
+  - id: ecommerce.refund_threshold
+    name: Refund threshold escalation
+    condition: >
+      Customer requests a refund AND the original purchase amount exceeds the
+      team's auto-approval limit AND the request occurs within the team's
+      stated return window.
+    action: >
+      Do not auto-approve. Forward the request to the designated refund
+      approver via the team's escalation channel with the customer email,
+      original order id, refund amount, and reason. Wait for the approver's
+      response before replying to the customer. If no response within the
+      stated SLA, escalate to operations lead.
+    rationale: >
+      Large refunds materially affect monthly margin and require human
+      judgement on goodwill vs precedent.
+    parameters:
+      - REFUND_AUTO_APPROVE_LIMIT
+      - REFUND_APPROVER
+      - ESCALATION_CHANNEL
+      - RETURN_WINDOW_DAYS
+      - APPROVER_RESPONSE_SLA
+    tags: [refund, escalation, finance]
+
+  - id: ecommerce.out_of_stock_handling
+    name: Out-of-stock order handling
+    condition: >
+      An order is placed for a SKU that the inventory system reports as
+      unavailable OR backordered with a lead time longer than the team's
+      acceptable threshold.
+    action: >
+      Do not silently delay. Within the team's first-contact SLA, send the
+      customer a notification with three options: wait for restock with
+      estimated date, swap to a listed equivalent SKU, or cancel for full
+      refund. Hold the payment authorization (do not capture) until the
+      customer chooses.
+    rationale: >
+      Silent delays drive chargebacks and negative reviews. Early disclosure
+      converts a problem into a controlled customer choice.
+    parameters:
+      - OOS_NOTIFY_SLA_HOURS
+      - BACKORDER_LEAD_THRESHOLD_DAYS
+      - EQUIVALENT_SKU_POLICY
+    tags: [inventory, communication, fulfillment]
+
+  - id: ecommerce.shipping_delay_proactive
+    name: Proactive shipping delay communication
+    condition: >
+      A shipped order has not received a tracking scan within the carrier's
+      expected first-scan window OR the projected delivery date has slipped
+      past the original promise by more than the team's tolerance.
+    action: >
+      Send a proactive update from the support address before the customer
+      asks. Include the new ETA, the reason if known, and a goodwill offer
+      (free expedited shipping on next order, small store credit) if the slip
+      exceeds the team's "significant delay" threshold.
+    rationale: >
+      Customers forgive carrier delays they hear about first; they punish
+      carrier delays they discover by checking tracking themselves.
+    parameters:
+      - DELAY_TOLERANCE_DAYS
+      - SIGNIFICANT_DELAY_THRESHOLD_DAYS
+      - GOODWILL_CREDIT_AMOUNT
+    tags: [shipping, communication, retention]
+
+  - id: ecommerce.damaged_lost_compensation
+    name: Damaged or lost shipment compensation
+    condition: >
+      Customer reports an order arrived damaged with photo evidence, OR
+      tracking shows delivered but customer reports non-receipt and the
+      delivery occurred more than the carrier's investigation window ago.
+    action: >
+      For damaged with photo: issue replacement immediately at no cost; do
+      not require return of the damaged item below a configurable value
+      threshold. For lost: file the carrier claim AND issue replacement or
+      refund within the team's SLA without waiting for the carrier outcome.
+      The carrier reimbursement is a back-office concern, not the customer's.
+    rationale: >
+      Making the customer wait on carrier investigations destroys trust. The
+      cost of a single replacement is far less than the lifetime value lost
+      to a frustrated customer.
+    parameters:
+      - DAMAGE_NO_RETURN_THRESHOLD
+      - LOST_REPLACEMENT_SLA_HOURS
+      - CARRIER_INVESTIGATION_WINDOW_DAYS
+    tags: [fulfillment, customer-care, finance]
+
+  - id: ecommerce.discount_abuse_detection
+    name: Discount code abuse detection
+    condition: >
+      A discount code intended for a specific audience (newsletter, influencer,
+      first-time buyer) is used in a pattern inconsistent with that intent —
+      multiple uses from the same payment method, addresses, or device
+      fingerprint exceeding the team's per-customer limit.
+    action: >
+      Do not block the order automatically — that creates support escalations
+      from legitimate customers. Flag the order for review, hold fulfillment,
+      and email the customer requesting clarification. If no satisfactory
+      response within the team's hold window, cancel and refund.
+    rationale: >
+      Code abuse erodes margin on already-discounted orders. False positives
+      on first-time buyers cost more than the abuse itself, so review beats
+      block.
+    parameters:
+      - PER_CUSTOMER_USE_LIMIT
+      - REVIEW_HOLD_WINDOW_HOURS
+      - DEVICE_MATCH_THRESHOLD
+    tags: [fraud, finance, marketing]
+
+  - id: ecommerce.vip_customer_routing
+    name: VIP customer support routing
+    condition: >
+      A support inquiry arrives from a customer whose lifetime spend, order
+      count, or tier flag in the CRM exceeds the team's VIP threshold.
+    action: >
+      Bypass the standard ticket queue. Route to a named senior support agent
+      or the team's VIP queue. First response SLA is the team's VIP-tier
+      target, not the standard target. Include the customer's full purchase
+      history in the ticket context for the agent.
+    rationale: >
+      VIP customers represent disproportionate revenue and attrition risk.
+      Standard queue treatment for them is a strategic loss.
+    parameters:
+      - VIP_LIFETIME_SPEND_THRESHOLD
+      - VIP_FIRST_RESPONSE_SLA
+      - VIP_QUEUE_OWNER
+    tags: [support, retention, segmentation]
+
+  - id: ecommerce.chargeback_response
+    name: Chargeback dispute response
+    condition: >
+      The payment processor notifies of a chargeback or pre-arbitration on
+      an order, regardless of dispute reason code.
+    action: >
+      Respond within the processor's deadline (do not let it lapse). Compile
+      the standard evidence packet: order confirmation email, shipping proof
+      (signature or scan), customer communication log, IP/device match. If
+      the customer is reachable and the dispute looks like a misunderstanding
+      (not fraud), call them once before submitting evidence — many disputes
+      are withdrawn by the cardholder. Tag the customer record after outcome.
+    rationale: >
+      Lapsed chargebacks lose 100% of the disputed amount automatically. A
+      direct customer call resolves a meaningful share of friendly-fraud
+      cases at zero processing cost.
+    parameters:
+      - CHARGEBACK_RESPONSE_OWNER
+      - CUSTOMER_CALL_THRESHOLD
+      - EVIDENCE_PACKET_TEMPLATE
+    tags: [finance, fraud, communication]
+
+  - id: ecommerce.negative_review_response
+    name: Negative public review escalation
+    condition: >
+      A public review at or below the team's "negative" star threshold is
+      posted on a monitored platform (own site, marketplace, or major review
+      aggregator) AND the reviewer is identifiable to a specific order.
+    action: >
+      Do not respond defensively in public. Within the team's review-response
+      SLA, post a public reply that acknowledges the issue without admitting
+      fault on disputed facts, and offers to continue the conversation
+      privately with a direct contact. Privately, contact the customer with
+      a real resolution offer. Do not request review removal or modification
+      as a condition of resolution.
+    rationale: >
+      Public defensive replies amplify damage. Private real resolution often
+      converts the reviewer into a follow-up positive review or organic
+      revision without being asked.
+    parameters:
+      - NEGATIVE_REVIEW_THRESHOLD_STARS
+      - REVIEW_RESPONSE_SLA_HOURS
+      - REVIEW_RESPONSE_OWNER
+    tags: [reputation, communication, retention]

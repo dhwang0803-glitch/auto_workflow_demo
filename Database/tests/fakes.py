@@ -33,6 +33,11 @@ from auto_workflow_database.repositories.base import (
     NodeDefinition,
     NodeLogStatus,
     PlanTier,
+    Skill,
+    SkillRepository,
+    SkillScope,
+    SkillSourceType,
+    SkillStatus,
     User,
     UserRepository,
     WebhookBinding,
@@ -527,3 +532,89 @@ class InMemoryAgentRepository(AgentRepository):
 
     async def list_by_owner(self, owner_id: UUID) -> list[Agent]:
         return [deepcopy(a) for a in self._store.values() if a.owner_id == owner_id]
+
+
+class InMemorySkillRepository(SkillRepository):
+    def __init__(self) -> None:
+        self._store: dict[UUID, Skill] = {}
+        # source rows are append-only — kept here so tests can assert audit
+        # trails were written without standing up a separate fake repo.
+        self._sources: list[dict] = []
+
+    async def create(
+        self,
+        *,
+        owner_user_id: UUID,
+        name: str,
+        condition: dict,
+        action: dict,
+        description: str | None = None,
+        scope: SkillScope = "workspace",
+        status: SkillStatus = "pending_review",
+        source_type: SkillSourceType | None = None,
+        source_ref: dict | None = None,
+    ) -> Skill:
+        if (source_type is None) != (source_ref is None):
+            raise ValueError(
+                "source_type and source_ref must both be set or both be None"
+            )
+        now = datetime.now(timezone.utc)
+        skill = Skill(
+            id=uuid4(),
+            owner_user_id=owner_user_id,
+            name=name,
+            description=description,
+            condition=deepcopy(condition),
+            action=deepcopy(action),
+            scope=scope,
+            status=status,
+            created_at=now,
+            updated_at=now,
+        )
+        self._store[skill.id] = skill
+        if source_type is not None:
+            self._sources.append(
+                {
+                    "skill_id": skill.id,
+                    "source_type": source_type,
+                    "source_ref": deepcopy(source_ref),
+                    "extracted_at": now,
+                }
+            )
+        return deepcopy(skill)
+
+    async def get_owned(
+        self, owner_user_id: UUID, skill_id: UUID
+    ) -> Skill | None:
+        s = self._store.get(skill_id)
+        if s is None or s.owner_user_id != owner_user_id:
+            return None
+        return deepcopy(s)
+
+    async def list_owned(
+        self,
+        owner_user_id: UUID,
+        *,
+        status: SkillStatus | None = None,
+    ) -> list[Skill]:
+        rows = [
+            s
+            for s in self._store.values()
+            if s.owner_user_id == owner_user_id
+            and (status is None or s.status == status)
+        ]
+        rows.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
+        return [deepcopy(s) for s in rows]
+
+    async def update_status(
+        self,
+        owner_user_id: UUID,
+        skill_id: UUID,
+        new_status: SkillStatus,
+    ) -> Skill | None:
+        s = self._store.get(skill_id)
+        if s is None or s.owner_user_id != owner_user_id:
+            return None
+        s.status = new_status
+        s.updated_at = datetime.now(timezone.utc)
+        return deepcopy(s)
