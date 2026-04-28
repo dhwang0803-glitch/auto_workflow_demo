@@ -7,6 +7,7 @@ import {
 } from "@/lib/skills";
 import { ApiError } from "@/lib/api";
 import type { WizardDraft } from "@/store/skill-wizard-store";
+import { SourceKindPill } from "./source-kind-pill";
 
 // Single skill review card (PLAN_12 W2-6).
 //
@@ -29,8 +30,15 @@ export function SkillCard({
   onReject: (skillId: string) => Promise<void> | void;
   onAskFollowUp: (skillId: string) => void;
 }) {
-  const { skillId, draft: body, actionStatus, actionError, followUpAsked } =
-    draft;
+  const {
+    skillId,
+    draft: body,
+    actionStatus,
+    actionError,
+    followUpAsked,
+    sourceKind,
+    sources,
+  } = draft;
   const needsClarification = body.needs_clarification;
   const inFlight =
     actionStatus === "approving" || actionStatus === "rejecting";
@@ -61,6 +69,18 @@ export function SkillCard({
       <Field label="CONDITION">{body.condition}</Field>
       <Field label="ACTION">{body.action}</Field>
       {body.rationale && <Field label="RATIONALE">{body.rationale}</Field>}
+
+      {/* W2-6b: source attribution carried from the originating policy
+          turn so the user sees the same honest pill the wizard surfaced
+          mid-flow — and can follow the source link if industry-baseline
+          or regulatory. */}
+      <div className="mt-2">
+        <SourceKindPill
+          kind={sourceKind}
+          sources={sources}
+          testIdSuffix={`card-${skillId}`}
+        />
+      </div>
 
       {needsClarification && (
         <div

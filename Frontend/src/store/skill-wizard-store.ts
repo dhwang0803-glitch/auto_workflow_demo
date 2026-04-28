@@ -49,6 +49,13 @@ export interface WizardDraft {
   // question/answer pair). The review summary renders these so the
   // user can see exactly what was sent.
   answers: ParameterAnswer[];
+  // W2-6b: source attribution carried from the originating PolicyTurn
+  // so the SkillCard can render the same pill the wizard shows mid-flow.
+  // Server-persisted SkillRecord doesn't carry these yet, so the
+  // library view (W2-9) shows them only for drafts that round-trip
+  // through this in-memory store; persistence is a follow-up.
+  sourceKind: SourceKind;
+  sources: PolicySource[];
   // 'pending'    — awaiting user decision (server status pending_review)
   // 'approving' / 'rejecting' — API call in flight (UI lock)
   // 'approved'   — server returned status active
@@ -169,6 +176,8 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
           policyId: turn.policyId,
           policyName: turn.policyName,
           answers,
+          sourceKind: turn.sourceKind,
+          sources: turn.sources,
           actionStatus: "pending",
           actionError: null,
           followUpAsked: false,
