@@ -5,6 +5,7 @@ import type {
   DomainCategory,
   PolicyGap,
   SkillDraft,
+  SkillStatus,
 } from "@/lib/skills";
 
 // Wizard phases drive which view the panel renders:
@@ -16,15 +17,30 @@ import type {
 export type WizardPhase = "domain" | "loading" | "asking" | "done" | "error";
 
 // One produced skill draft, paired with its source question for the
-// review summary. `parameter` is whatever the gap_analyze prompt tagged
-// the slot with (free-form for now) — we surface it so W2-6's edit UI
-// can match drafts back to the question that generated them.
+// review summary. `actionStatus` tracks the user's review decision
+// optimistically so the SkillCard can show "Approving…" / "Approved"
+// without a refetch round-trip. `followUpAsked` stays true after the
+// user clicks the clarification button so the affordance hides.
 export interface WizardDraft {
   skillId: string;
   draft: SkillDraft;
   policyId: string;
   question: string;
   answer: string;
+  // 'pending'    — awaiting user decision (server status pending_review)
+  // 'approving' / 'rejecting' — API call in flight (UI lock)
+  // 'approved'   — server returned status active
+  // 'rejected'   — server returned status rejected
+  // 'failed'     — API call failed; UI shows error + lets user retry
+  actionStatus:
+    | "pending"
+    | "approving"
+    | "rejecting"
+    | "approved"
+    | "rejected"
+    | "failed";
+  actionError: string | null;
+  followUpAsked: boolean;
 }
 
 interface WizardState {
@@ -50,6 +66,14 @@ interface WizardState {
     answer: string,
   ) => void;
   setError: (msg: string) => void;
+  // W2-6: per-draft review actions.
+  setDraftActionStatus: (
+    skillId: string,
+    actionStatus: WizardDraft["actionStatus"],
+    actionError?: string | null,
+  ) => void;
+  applyServerStatus: (skillId: string, status: SkillStatus) => void;
+  pushFollowUpQuestion: (skillId: string) => void;
   reset: () => void;
 }
 
@@ -101,7 +125,7 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
 
   acceptAnswer: (resp, policyId, question, answer) =>
     set((s) => {
-      const drafts = [
+      const drafts: WizardDraft[] = [
         ...s.drafts,
         {
           skillId: resp.skill_id,
@@ -109,6 +133,9 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
           policyId,
           question,
           answer,
+          actionStatus: "pending",
+          actionError: null,
+          followUpAsked: false,
         },
       ];
       const nextIndex = s.currentIndex + 1;
@@ -123,6 +150,56 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
     }),
 
   setError: (lastError) => set({ phase: "error", lastError }),
+
+  setDraftActionStatus: (skillId, actionStatus, actionError = null) =>
+    set((s) => ({
+      drafts: s.drafts.map((d) =>
+        d.skillId === skillId ? { ...d, actionStatus, actionError } : d,
+      ),
+    })),
+
+  applyServerStatus: (skillId, status) =>
+    set((s) => ({
+      drafts: s.drafts.map((d) =>
+        d.skillId === skillId
+          ? {
+              ...d,
+              actionStatus:
+                status === "active"
+                  ? "approved"
+                  : status === "rejected"
+                  ? "rejected"
+                  : d.actionStatus,
+              actionError: null,
+            }
+          : d,
+      ),
+    })),
+
+  pushFollowUpQuestion: (skillId) =>
+    set((s) => {
+      const target = s.drafts.find((d) => d.skillId === skillId);
+      if (!target) return {};
+      const hint = target.draft.clarification_hint || target.question;
+      // Drop a fresh turn at the current end of the queue and re-enter
+      // asking. acceptAnswer's `nextIndex < queue.length` check handles
+      // the re-done transition once the user submits an answer for it.
+      return {
+        queue: [
+          ...s.queue,
+          {
+            policyId: target.policyId,
+            policyName: `Follow-up: ${target.policyId}`,
+            question: hint,
+          },
+        ],
+        currentIndex: s.queue.length,
+        phase: "asking",
+        drafts: s.drafts.map((d) =>
+          d.skillId === skillId ? { ...d, followUpAsked: true } : d,
+        ),
+      };
+    }),
 
   reset: () =>
     set({

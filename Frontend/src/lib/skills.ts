@@ -76,6 +76,32 @@ export interface AnswerResponse {
   draft: SkillDraft;
 }
 
+// Persisted skill row. Mirrors API_Server's SkillResponse — `condition`
+// and `action` arrive as JSONB dicts because ADR-022 §1 leaves room for
+// structured matchers. The wizard always wraps prose answers as
+// `{"text": "..."}`, so the W2-6 review UI reads `.text` defensively.
+export type SkillStatus =
+  | "active"
+  | "pending_review"
+  | "rejected"
+  | "archived";
+
+export interface SkillRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  scope: string;
+  status: SkillStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SkillListResponse {
+  skills: SkillRecord[];
+}
+
 const jsonInit = (body: unknown): RequestInit => ({
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -87,3 +113,21 @@ export const bootstrapSkills = (req: BootstrapRequest) =>
 
 export const answerWizardQuestion = (req: AnswerRequest) =>
   apiFetch<AnswerResponse>("/api/v1/skills/answer", jsonInit(req));
+
+export const approveSkill = (skillId: string) =>
+  apiFetch<SkillRecord>(`/api/v1/skills/${skillId}/approve`, {
+    method: "POST",
+  });
+
+export const rejectSkill = (skillId: string) =>
+  apiFetch<SkillRecord>(`/api/v1/skills/${skillId}/reject`, {
+    method: "POST",
+  });
+
+export const listSkills = (status?: SkillStatus) => {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  return apiFetch<SkillListResponse>(`/api/v1/skills${qs}`);
+};
+
+export const getSkill = (skillId: string) =>
+  apiFetch<SkillRecord>(`/api/v1/skills/${skillId}`);
