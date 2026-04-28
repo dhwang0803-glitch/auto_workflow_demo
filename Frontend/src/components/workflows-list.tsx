@@ -21,12 +21,21 @@ export function WorkflowsList() {
               : "Loading…"}
           </p>
         </div>
-        <Link
-          href="/workflows/new"
-          className="text-sm bg-blue-600 text-white rounded px-3 py-1.5 hover:bg-blue-700"
-        >
-          + New workflow
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            href="/skills/new"
+            className="text-sm border rounded px-3 py-1.5 hover:bg-gray-50"
+            data-testid="link-skill-wizard"
+          >
+            정책 인터뷰
+          </Link>
+          <Link
+            href="/workflows/new"
+            className="text-sm bg-blue-600 text-white rounded px-3 py-1.5 hover:bg-blue-700"
+          >
+            + New workflow
+          </Link>
+        </div>
       </header>
 
       {isLoading && <p className="text-gray-500 text-sm">Loading…</p>}
