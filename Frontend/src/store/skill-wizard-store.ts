@@ -1,23 +1,42 @@
 import { create } from "zustand";
 import type {
-  AnswerResponse,
+  AnswersResponse,
   BootstrapResponse,
   DomainCategory,
+  ParameterAnswer,
   PolicyGap,
+  PolicySource,
   SkillDraft,
   SkillStatus,
+  SourceKind,
+  WizardQuestion,
 } from "@/lib/skills";
 
 // Wizard phases drive which view the panel renders:
 //   domain   — chip picker (no session yet)
 //   loading  — bootstrap or answer in flight
-//   asking   — questions[currentIndex] is awaiting an answer
-//   done     — every gap question answered; show drafts summary
+//   asking   — queue[currentIndex] is the policy awaiting all parameter answers
+//   done     — every policy answered; show drafts summary
 //   error    — terminal failure surface (user retries from "domain")
 export type WizardPhase = "domain" | "loading" | "asking" | "done" | "error";
 
-// One produced skill draft, paired with its source question for the
-// review summary. `actionStatus` tracks the user's review decision
+// W2-5b: queue is now policy-grained, not flat-question-grained. Each
+// turn is one policy with N parameter cards the user fills in together
+// before submitting a single batch (`POST /skills/answers`).
+export interface PolicyTurn {
+  policyId: string;
+  policyName: string;
+  parameters: WizardQuestion[];
+  sources: PolicySource[];
+  sourceKind: SourceKind;
+  // Set when the wizard pushes a follow-up turn from a clarification
+  // hint — used to render a fallback prompt when the seed parameters
+  // aren't reusable as-is.
+  followUpQuestion?: string;
+}
+
+// One produced skill draft, paired with the per-parameter answers used
+// to generate it. `actionStatus` tracks the user's review decision
 // optimistically so the SkillCard can show "Approving…" / "Approved"
 // without a refetch round-trip. `followUpAsked` stays true after the
 // user clicks the clarification button so the affordance hides.
@@ -25,8 +44,11 @@ export interface WizardDraft {
   skillId: string;
   draft: SkillDraft;
   policyId: string;
-  question: string;
-  answer: string;
+  policyName: string;
+  // W2-5b: per-parameter answer trail (instead of the old single
+  // question/answer pair). The review summary renders these so the
+  // user can see exactly what was sent.
+  answers: ParameterAnswer[];
   // 'pending'    — awaiting user decision (server status pending_review)
   // 'approving' / 'rejecting' — API call in flight (UI lock)
   // 'approved'   — server returned status active
@@ -47,11 +69,13 @@ interface WizardState {
   phase: WizardPhase;
   sessionId: string | null;
   domain: DomainCategory | null;
-  // Flat queue of (policy_id, question) pairs derived from the
-  // BootstrapResponse. We flatten gaps × questions up front so the panel
-  // only needs a single index — gap-aware grouping is W2-6 territory.
-  queue: { policyId: string; policyName: string; question: string }[];
+  // Policy-grained queue (W2-5b). One entry per gap; the user fills in
+  // every parameter card on it before the batch submit.
+  queue: PolicyTurn[];
   currentIndex: number;
+  // Working answers for the current policy turn. Cleared on policy
+  // advance (acceptAnswers) and on reset.
+  currentAnswers: Record<string, string>;
   drafts: WizardDraft[];
   lastError: string | null;
 
@@ -59,11 +83,11 @@ interface WizardState {
   start: (domain: DomainCategory, sessionId: string) => void;
   setLoading: () => void;
   acceptBootstrap: (resp: BootstrapResponse) => void;
-  acceptAnswer: (
-    resp: AnswerResponse,
-    policyId: string,
-    question: string,
-    answer: string,
+  setCurrentAnswer: (parameter: string, answer: string) => void;
+  acceptAnswers: (
+    resp: AnswersResponse,
+    turn: PolicyTurn,
+    answers: ParameterAnswer[],
   ) => void;
   setError: (msg: string) => void;
   // W2-6: per-draft review actions.
@@ -77,16 +101,20 @@ interface WizardState {
   reset: () => void;
 }
 
-const flattenGaps = (
-  missing: PolicyGap[],
-): WizardState["queue"] =>
-  missing.flatMap((gap) =>
-    gap.questions.map((q) => ({
-      policyId: gap.policy_id,
-      policyName: gap.policy_name,
-      question: q.text,
-    })),
-  );
+// W2-5b: gaps stay grouped by policy so the wizard can render N
+// parameter cards under one policy header. PolicyGap is normalised
+// here — `parameters` wins, `questions` is the deprecated alias and is
+// only used as a fallback for callers stuck on the pre-#143 shape.
+const buildQueue = (missing: PolicyGap[]): PolicyTurn[] =>
+  missing.map((gap) => ({
+    policyId: gap.policy_id,
+    policyName: gap.policy_name,
+    parameters: gap.parameters?.length
+      ? gap.parameters
+      : (gap.questions ?? []),
+    sources: gap.sources ?? [],
+    sourceKind: gap.source_kind ?? "synthesized",
+  }));
 
 export const useSkillWizardStore = create<WizardState>()((set) => ({
   phase: "domain",
@@ -94,6 +122,7 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
   domain: null,
   queue: [],
   currentIndex: 0,
+  currentAnswers: {},
   drafts: [],
   lastError: null,
 
@@ -104,6 +133,7 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
       sessionId,
       queue: [],
       currentIndex: 0,
+      currentAnswers: {},
       drafts: [],
       lastError: null,
     }),
@@ -111,28 +141,34 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
   setLoading: () => set({ phase: "loading", lastError: null }),
 
   acceptBootstrap: (resp) => {
-    const queue = flattenGaps(resp.missing);
+    const queue = buildQueue(resp.missing);
     set({
       phase: queue.length > 0 ? "asking" : "done",
       sessionId: resp.session_id,
       domain: resp.domain,
       queue,
       currentIndex: 0,
+      currentAnswers: {},
       drafts: [],
       lastError: null,
     });
   },
 
-  acceptAnswer: (resp, policyId, question, answer) =>
+  setCurrentAnswer: (parameter, answer) =>
+    set((s) => ({
+      currentAnswers: { ...s.currentAnswers, [parameter]: answer },
+    })),
+
+  acceptAnswers: (resp, turn, answers) =>
     set((s) => {
       const drafts: WizardDraft[] = [
         ...s.drafts,
         {
           skillId: resp.skill_id,
           draft: resp.draft,
-          policyId,
-          question,
-          answer,
+          policyId: turn.policyId,
+          policyName: turn.policyName,
+          answers,
           actionStatus: "pending",
           actionError: null,
           followUpAsked: false,
@@ -143,6 +179,7 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
       return {
         drafts,
         currentIndex: nextIndex,
+        currentAnswers: {},
         phase: more ? "asking" : "done",
         sessionId: resp.session_id,
         lastError: null,
@@ -180,20 +217,35 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
     set((s) => {
       const target = s.drafts.find((d) => d.skillId === skillId);
       if (!target) return {};
-      const hint = target.draft.clarification_hint || target.question;
-      // Drop a fresh turn at the current end of the queue and re-enter
-      // asking. acceptAnswer's `nextIndex < queue.length` check handles
-      // the re-done transition once the user submits an answer for it.
-      return {
-        queue: [
-          ...s.queue,
+      const hint =
+        target.draft.clarification_hint ||
+        target.answers[0]?.parameter ||
+        "Please clarify your previous answer.";
+      // Drop a fresh policy turn at the end of the queue with a single
+      // follow-up "parameter" so the existing parameter-card UI works
+      // without a special-case branch. The server-side answers_to_skill
+      // accepts a 1-element batch.
+      const followUpTurn: PolicyTurn = {
+        policyId: target.policyId,
+        policyName: `Follow-up: ${target.policyName}`,
+        parameters: [
           {
-            policyId: target.policyId,
-            policyName: `Follow-up: ${target.policyId}`,
-            question: hint,
+            text: hint,
+            parameter: target.answers[0]?.parameter ?? "FOLLOW_UP",
+            default_baseline: "",
+            baseline_source: "",
+            help_text: "",
+            example_answer: "",
           },
         ],
+        sources: [],
+        sourceKind: "synthesized",
+        followUpQuestion: hint,
+      };
+      return {
+        queue: [...s.queue, followUpTurn],
         currentIndex: s.queue.length,
+        currentAnswers: {},
         phase: "asking",
         drafts: s.drafts.map((d) =>
           d.skillId === skillId ? { ...d, followUpAsked: true } : d,
@@ -208,6 +260,7 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
       domain: null,
       queue: [],
       currentIndex: 0,
+      currentAnswers: {},
       drafts: [],
       lastError: null,
     }),
