@@ -29,11 +29,11 @@ policies:
       - name: TAX_RECEIPT_THRESHOLD
         prompt: "Above what donation amount must you issue a tax receipt? (per your jurisdiction)"
         default_baseline: "$0 in the US (any amount can be receipted; donor needs receipt for >= $250 to claim deduction)"
-        baseline_source: "IRS Publication 1771 — written acknowledgment required for single contributions of $250 or more."
+        baseline_source: "Synthesized — the $250 written-acknowledgment threshold is a widely-cited US tax rule (IRS Publication 1771); confirm against current IRS guidance for your jurisdiction."
       - name: ACKNOWLEDGMENT_SLA_DAYS
         prompt: "How many days after receiving a donation do you issue the receipt?"
         default_baseline: "2 business days (automated email); 14 days for non-electronic gifts"
-        baseline_source: "Synthesized — IRS requires acknowledgment by the donor's tax-filing date; sooner is donor experience."
+        baseline_source: "Synthesized — donor experience standard. Legal deadline (US) is the donor's tax-filing date for the year of the gift."
       - name: PERSONAL_THANKYOU_THRESHOLD
         prompt: "Above what donation amount do you send a personal (non-template) thank-you?"
         default_baseline: "$250 single gift OR $1,000 cumulative annual"
@@ -41,13 +41,9 @@ policies:
       - name: RECEIPT_TEMPLATE
         prompt: "Where is your tax-receipt template? (must include legal name, EIN/charity number, amount, no-goods statement)"
         default_baseline: "Shared drive: development/templates/receipt_v1.docx"
-        baseline_source: "Synthesized — placeholder; required fields per IRS Pub 1771."
-    sources:
-      - title: "IRS Publication 1771 — Charitable Contributions Substantiation and Disclosure"
-        url: "https://www.irs.gov/pub/irs-pdf/p1771.pdf"
-      - title: "AFP — Donor Bill of Rights"
-        url: "https://afpglobal.org/donor-bill-rights"
-    source_kind: regulatory
+        baseline_source: "Synthesized — placeholder. Required fields are jurisdiction-specific (US: see IRS Pub 1771)."
+    sources: []
+    source_kind: synthesized
     tags: [finance, retention, legal]
 
   - id: nonprofit.major_donor_escalation
@@ -79,12 +75,8 @@ policies:
         prompt: "Who is your major-gifts officer (named role or person)?"
         default_baseline: "Executive Director (for small NPOs with no dedicated officer)"
         baseline_source: "Synthesized — separation only at staffing scale; below that the ED owns major-donor relationships."
-    sources:
-      - title: "AFP — Code of Ethical Standards"
-        url: "https://afpglobal.org/ethics/code-ethical-standards"
-      - title: "AFP — Donor Bill of Rights"
-        url: "https://afpglobal.org/donor-bill-rights"
-    source_kind: industry-baseline
+    sources: []
+    source_kind: synthesized
     tags: [retention, finance, communication]
 
   - id: nonprofit.donor_data_privacy
@@ -119,12 +111,8 @@ policies:
         default_baseline: "Shared drive: ops/vendor_data_review.md"
         baseline_source: "Synthesized — placeholder; check data residency, retention, sub-processors."
     sources:
-      - title: "GDPR (EU 2016/679) — General Data Protection Regulation"
-        url: "https://gdpr.eu/"
-      - title: "California CCPA — Consumer Privacy Act"
+      - title: "California Consumer Privacy Act (CCPA) — California Office of the Attorney General"
         url: "https://oag.ca.gov/privacy/ccpa"
-      - title: "AFP — Donor Bill of Rights (privacy & confidentiality clauses)"
-        url: "https://afpglobal.org/donor-bill-rights"
     source_kind: regulatory
     tags: [legal, security, retention]
 
@@ -151,11 +139,11 @@ policies:
       - name: SCREENING_LEVEL_DEFINITIONS
         prompt: "What are your screening levels? (e.g. Tier 1 = no special access; Tier 2 = $/data; Tier 3 = vulnerable populations)"
         default_baseline: "Tier 1 (general) / Tier 2 (financial or data access) / Tier 3 (working with minors or vulnerable adults)"
-        baseline_source: "Synthesized — three-tier model is the most common nonprofit screening framework."
+        baseline_source: "Synthesized tier framework — NRMC guidance recommends matching screening depth to role risk but does not prescribe a 1/2/3 tier structure."
       - name: BACKGROUND_CHECK_VENDOR
         prompt: "Which background-check vendor do you use, and at what depth per tier?"
-        default_baseline: "Vendor TBD; Tier 2 = standard criminal; Tier 3 = enhanced (sex-offender registry, multi-state)"
-        baseline_source: "NRMC — Tier 3 should include vulnerable-populations registry checks. Note: per FTC 2011 guidance the Fair Credit Reporting Act (FCRA) applies to volunteer screening, so the vendor must be FCRA-compliant."
+        default_baseline: "Vendor TBD; standard criminal for financial/data roles; enhanced (sex-offender registry, multi-state) for vulnerable-populations roles"
+        baseline_source: "Synthesized depth recommendations. Verified: per the FTC's July 2011 staff report (cited in NRMC's Background Checks article), the Fair Credit Reporting Act (FCRA) applies to volunteer screening, so the vendor must be FCRA-compliant."
       - name: VOLUNTEER_RECORD_SYSTEM
         prompt: "Where do you record volunteer screening completion?"
         default_baseline: "Volunteer management platform (or shared drive: volunteers/<name>/file)"
@@ -197,11 +185,9 @@ policies:
       - name: CODING_DECISION_LOG
         prompt: "Where do you log coding-decision reasoning for ambiguous spends?"
         default_baseline: "Shared drive: finance/coding_decisions.md (one entry per decision)"
-        baseline_source: "FASB ASU 2016-14 — auditors require reconstructible records of donor-restriction adherence; minimum: expense, fund, reasoning, date, signoff."
-    sources:
-      - title: "FASB ASU 2016-14 — Presentation of Financial Statements of Not-for-Profit Entities"
-        url: "https://storage.fasb.org/ASU_2016-14.pdf"
-    source_kind: regulatory
+        baseline_source: "Synthesized — auditors reconstruct from this log; minimum: expense, fund, reasoning, date, signoff."
+    sources: []
+    source_kind: synthesized
     tags: [finance, legal, compliance]
 
   - id: nonprofit.grant_deadline_tracking
@@ -238,9 +224,9 @@ policies:
       - name: DEADLINE_CHECKLIST
         prompt: "Where is your deadline-deliverable checklist? (per grant or generic)"
         default_baseline: "Shared drive: grants/<grant>/deadline_checklist.md"
-        baseline_source: "Council on Foundations Grantmaking Basics — checklist should cover required reports + financial docs + signatures so the foundation can document stewardship if reviewed."
+        baseline_source: "Synthesized — minimum: required reports + financial docs + signatures. See Council on Foundations Grants Management for general guidance on grantmaker stewardship documentation."
     sources:
-      - title: "Council on Foundations — Complete Guide to Grantmaking Basics"
+      - title: "Council on Foundations — The Complete Guide to Grantmaking Basics: A Field Guide for Funders"
         url: "https://cof.org/content/complete-guide-grantmaking-basics-field-guide-funders"
       - title: "Council on Foundations — Grants Management"
         url: "https://cof.org/content/grants-management"
@@ -279,11 +265,9 @@ policies:
         default_baseline: "Shared drive: comms/nonpartisan_guideline.md (US 501(c)(3) — no candidate endorsement)"
         baseline_source: "IRS § 501(c)(3) — absolute prohibition on political campaign intervention; equivalent rules apply in most jurisdictions."
     sources:
-      - title: "IRS — Restriction of Political Campaign Intervention by 501(c)(3) Tax-Exempt Organizations"
+      - title: "IRS — Restriction of political campaign intervention by Section 501(c)(3) tax-exempt organizations"
         url: "https://www.irs.gov/charities-non-profits/charitable-organizations/the-restriction-of-political-campaign-intervention-by-section-501c3-tax-exempt-organizations"
       - title: "IRS — Lobbying (501(c)(3) limits + 501(h) election)"
         url: "https://www.irs.gov/charities-non-profits/lobbying"
-      - title: "National Council of Nonprofits — Federal Law Protects Nonprofit Advocacy & Lobbying"
-        url: "https://www.councilofnonprofits.org/federal-law-protects-nonprofit-advocacy-lobbying"
     source_kind: regulatory
     tags: [legal, communication, governance]
