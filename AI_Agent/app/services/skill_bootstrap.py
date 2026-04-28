@@ -1,21 +1,32 @@
-"""gap_analyze + answer_to_skill LLM services (PLAN_12 W2-4).
+"""gap_analyze + answers_to_skill LLM services (PLAN_12 W2-4).
 
-Two single-shot LLM calls in the Persona A wizard pipeline:
+The 2026-04-28 polish redesign (memory `project_wizard_polish_abc.md`)
+shifted question generation OUT of the LLM and INTO the seed YAML. The
+service now does:
 
 - analyze_gaps(domain, extracted_skills) — once per interview, after domain
-  classification (W2-2). Compares the team's declared skills against the
-  domain seed and emits the missing policies + 1-2 wizard questions per
-  missing policy. For "other" domain or empty seed, short-circuits without
-  hitting the LLM.
+  classification. Two paths:
+    * extracted_skills empty (Persona A) → deterministic short-circuit:
+      emit every seed policy as missing, attach seed prompts/baselines/
+      sources verbatim. NO LLM call.
+    * extracted_skills non-empty (Persona B) → LLM coverage check ONLY:
+      decides which seed policy_ids the team's declared skills already
+      cover. Service then enriches the missing list with seed prompts/
+      baselines/sources (LLM never sees or generates question text).
 
-- answer_to_skill(domain, policy_id, question, answer) — once per wizard
-  answer. Compiles the user's free-text answer into a structured Skill
-  draft mirroring the `skills` DB table shape, with a needs_clarification
-  flag per ADR-022 §8.2.
+- answers_to_skill(domain, policy_id, [(parameter_name, answer)]) — once
+  per policy at interview-end. Compiles all per-parameter answers for a
+  single policy into ONE structured Skill draft with values substituted
+  inline. Replaces the old answer_to_skill (1 Q+A → 1 skill) which
+  fragmented one policy's parameters across multiple skills.
 
-Both prompts are built dynamically from data/policies/{domain}.yaml so the
-seed YAMLs remain the single source of truth. The seed loader is shared
-between both functions and cached at module load.
+- answer_to_skill(domain, policy_id, question, answer) — legacy single-
+  question shim. Routes through `answers_to_skill` with a one-element
+  batch so the live LLM prompt is identical. Kept for the W2-7 API_Server
+  contract until PR #143 cuts over.
+
+Both prompts read the seed YAML once at module load. The seed loader is
+shared across the service, the stub backend, and tests.
 """
 from __future__ import annotations
 
@@ -30,19 +41,23 @@ from app.models.domain import DomainCategory
 from app.models.skills import (
     ExtractedSkill,
     GapAnalysis,
+    ParameterAnswer,
     PolicyGap,
+    PolicySource,
     SkillDraft,
+    SourceKind,
     WizardQuestion,
 )
 from app.services._llm_json import JsonExtractError, extract_json_object
 
 POLICIES_DIR = Path(__file__).parent.parent.parent / "data" / "policies"
 
-# Per ADR-022 §6 multi-turn budget: gap_analyze is the heavier of the two
-# (full seed + extracted skills in prompt) so it gets the bigger output
-# allowance. answer_to_skill returns a tight schema so 512 is plenty.
+# Per ADR-022 §6 multi-turn budget. answers_to_skill compiles a whole
+# policy's worth of parameters into one draft, so it gets a wider window
+# than the legacy single-shot (which had 512). gap_analyze stays at 1024
+# since the deterministic path doesn't hit the LLM at all.
 GAP_ANALYZE_MAX_TOKENS = 1024
-ANSWER_TO_SKILL_MAX_TOKENS = 512
+ANSWERS_TO_SKILL_MAX_TOKENS = 768
 
 
 class SkillBootstrapParseError(ValueError):
@@ -77,17 +92,66 @@ def _find_policy(domain: str, policy_id: str) -> dict | None:
     return None
 
 
+def _param_names(seed_policy: dict) -> list[str]:
+    """Extract parameter names from the new object-list schema."""
+    return [p["name"] for p in seed_policy.get("parameters", [])]
+
+
+def _find_parameter(seed_policy: dict, name: str) -> dict | None:
+    for p in seed_policy.get("parameters", []):
+        if p["name"] == name:
+            return p
+    return None
+
+
+def _build_policy_gap(seed_policy: dict) -> PolicyGap:
+    """Turn a seed policy into a PolicyGap with all wizard fields filled in.
+
+    Used by both deterministic short-circuit (extracted_skills empty) and
+    LLM-judged path (after LLM tells us which policy_ids are missing). The
+    wizard fields (`prompt`, `default_baseline`, `baseline_source`,
+    `sources`, `source_kind`) come straight from the seed YAML — the LLM
+    never generates them.
+    """
+    questions = [
+        WizardQuestion(
+            text=p["prompt"],
+            parameter=p["name"],
+            default_baseline=p.get("default_baseline", "") or "",
+            baseline_source=p.get("baseline_source", "") or "",
+        )
+        for p in seed_policy.get("parameters", [])
+    ]
+    sources = [
+        PolicySource(title=s["title"], url=s["url"])
+        for s in seed_policy.get("sources", []) or []
+    ]
+    kind: SourceKind = seed_policy.get("source_kind", "synthesized")
+    return PolicyGap(
+        policy_id=seed_policy["id"],
+        policy_name=seed_policy["name"],
+        parameters=questions,
+        sources=sources,
+        source_kind=kind,
+        # Backward-compat alias — same payload, drop after PR #143.
+        questions=questions,
+    )
+
+
 # --- gap_analyze ----------------------------------------------------------
 
 
 def _gap_analyze_system_prompt(domain: str) -> str:
+    """Coverage-only prompt. LLM picks which policy_ids are missing; the
+    service attaches seed prompts/baselines/sources after parsing.
+    """
     seed = _seed_policies(domain)
     lines = [
         "You are the gap analyzer for a workflow-automation product's "
         "skill-bootstrap flow. The user has classified their domain as "
         f"`{domain}`. Below are the typical policies we expect a {domain} "
         "team to have. The user's already-declared skills will arrive in "
-        "the next message as a JSON array (which may be empty).",
+        "the next message as a JSON array.",
         "",
         f"## Typical {domain} policies",
         "",
@@ -96,7 +160,7 @@ def _gap_analyze_system_prompt(domain: str) -> str:
         lines.append(f"### {p['id']} — {p['name']}")
         lines.append(f"- condition: {p['condition'].strip()}")
         lines.append(f"- action: {p['action'].strip()}")
-        lines.append(f"- parameters: {', '.join(p['parameters'])}")
+        lines.append(f"- parameters: {', '.join(_param_names(p))}")
         lines.append("")
     lines.extend(
         [
@@ -104,32 +168,20 @@ def _gap_analyze_system_prompt(domain: str) -> str:
             "",
             "For each typical policy, decide whether the user's declared "
             "skills already cover it. Coverage requires the same condition "
-            "AND the same action — not just the same topic. For each "
-            "policy NOT covered, generate 1-2 short wizard questions that "
-            "would elicit the user's specific values for that policy's "
-            "parameters.",
+            "AND the same action — not just the same topic. Return ONLY "
+            "the policy_ids that are NOT covered. Do not write questions "
+            "or commentary; the service will attach the seed-defined "
+            "wizard questions after parsing your output.",
             "",
             "Output ONLY a single JSON object. No prose, no markdown fences.",
             "Schema:",
-            '  {"missing": [',
-            '    {"policy_id": "<exact id from list above>",',
-            '     "questions": [',
-            '       {"text": "...", "parameter": "<one of the policy\'s parameters>"}',
-            "     ]}",
-            "  ]}",
+            '  {"missing_policy_ids": ["<exact id>", "<exact id>", ...]}',
             "",
             "Rules:",
-            "- `policy_id` MUST be an EXACT id from the typical policy list "
+            "- Each id MUST be an EXACT id from the typical policy list "
             "above. Do not invent ids or paraphrase them.",
-            "- Each question targets one parameter. Combining two parameters "
-            "in one question is OK only when they read naturally together.",
-            "- Phrase questions in plain language. Do not use parameter "
-            "names verbatim (e.g. ask 'What dollar amount triggers a "
-            "manager approval for refunds?', not 'What is your "
-            "REFUND_AUTO_APPROVE_LIMIT?').",
-            "- Cap to 2 questions per missing policy.",
-            "- Skip policies fully covered by declared skills (do not "
-            "include them in `missing`).",
+            "- Skip ids fully covered by declared skills.",
+            "- Empty list is a valid answer when every policy is covered.",
         ]
     )
     return "\n".join(lines)
@@ -141,55 +193,43 @@ def _parse_gap_response(raw: str, domain: str) -> GapAnalysis:
     except JsonExtractError as exc:
         raise SkillBootstrapParseError(str(exc)) from exc
 
-    missing_raw = body.get("missing")
-    if not isinstance(missing_raw, list):
+    # Tolerate both the new `missing_policy_ids` key and the legacy
+    # `missing: [{policy_id, ...}]` shape (so a stub or older live LLM
+    # still parses while the prompt rolls out).
+    missing_ids: list[str] = []
+    if "missing_policy_ids" in body:
+        ids_raw = body["missing_policy_ids"]
+        if not isinstance(ids_raw, list):
+            raise SkillBootstrapParseError(
+                "`missing_policy_ids` must be a list"
+            )
+        missing_ids = [str(x) for x in ids_raw]
+    elif "missing" in body:
+        miss_raw = body["missing"]
+        if not isinstance(miss_raw, list):
+            raise SkillBootstrapParseError("`missing` must be a list")
+        for entry in miss_raw:
+            if isinstance(entry, dict) and "policy_id" in entry:
+                missing_ids.append(str(entry["policy_id"]))
+            elif isinstance(entry, str):
+                missing_ids.append(entry)
+            else:
+                raise SkillBootstrapParseError(
+                    f"missing entry must be object or string, got {entry!r}"
+                )
+    else:
         raise SkillBootstrapParseError(
-            f"`missing` must be a list, got {type(missing_raw).__name__}"
+            "response missing both `missing_policy_ids` and `missing`"
         )
 
     seed_index = {p["id"]: p for p in _seed_policies(domain)}
     enriched: list[PolicyGap] = []
-
-    for entry in missing_raw:
-        if not isinstance(entry, dict):
-            raise SkillBootstrapParseError(
-                f"missing entry must be object, got {type(entry).__name__}"
-            )
-        pid = entry.get("policy_id")
+    for pid in missing_ids:
         if pid not in seed_index:
             raise SkillBootstrapParseError(
                 f"policy_id {pid!r} not in seed for domain {domain!r}"
             )
-
-        questions_raw = entry.get("questions") or []
-        if not isinstance(questions_raw, list):
-            raise SkillBootstrapParseError(
-                f"`questions` for {pid} must be a list"
-            )
-        seed_params = set(seed_index[pid]["parameters"])
-        questions: list[WizardQuestion] = []
-        for q in questions_raw:
-            if not isinstance(q, dict) or "text" not in q:
-                raise SkillBootstrapParseError(
-                    f"question for {pid} missing `text`: {q!r}"
-                )
-            param = q.get("parameter")
-            # Trust the LLM on parameter names but null out anything not in
-            # the seed — that prevents downstream consumers from acting on
-            # phantom parameter names.
-            if param is not None and param not in seed_params:
-                param = None
-            questions.append(
-                WizardQuestion(text=str(q["text"]).strip(), parameter=param)
-            )
-
-        enriched.append(
-            PolicyGap(
-                policy_id=pid,
-                policy_name=seed_index[pid]["name"],
-                questions=questions,
-            )
-        )
+        enriched.append(_build_policy_gap(seed_index[pid]))
 
     return GapAnalysis(missing=enriched)
 
@@ -199,10 +239,19 @@ async def analyze_gaps(
     domain: DomainCategory,
     extracted_skills: list[ExtractedSkill],
 ) -> GapAnalysis:
-    if not _seed_policies(domain):
+    seeds = _seed_policies(domain)
+    if not seeds:
         # "other" or any future un-seeded domain. Wizard handles the empty
         # case by falling back to a free-form skill capture flow.
         return GapAnalysis(missing=[])
+
+    if not extracted_skills:
+        # Persona A short-circuit: every policy is a gap by construction.
+        # Skip the LLM entirely — the seed already has all wizard fields,
+        # so an LLM call would only add latency.
+        return GapAnalysis(
+            missing=[_build_policy_gap(p) for p in seeds]
+        )
 
     user_payload = json.dumps(
         [s.model_dump() for s in extracted_skills],
@@ -216,48 +265,62 @@ async def analyze_gaps(
     return _parse_gap_response(raw, domain)
 
 
-# --- answer_to_skill ------------------------------------------------------
+# --- answers_to_skill (batch) --------------------------------------------
 
 
-def _answer_to_skill_system_prompt(domain: str, seed_policy: dict) -> str:
+def _answers_to_skill_system_prompt(domain: str, seed_policy: dict) -> str:
+    """Compile prompt for the batch (per-policy) draft.
+
+    Includes every parameter's name + question + baseline so the LLM can
+    weave the user's specific answers into a coherent condition/action.
+    """
+    param_block_lines: list[str] = []
+    for p in seed_policy.get("parameters", []):
+        param_block_lines.append(
+            f"- {p['name']}: prompt={p['prompt']!r}, baseline={p.get('default_baseline', '')!r}"
+        )
+    param_block = "\n".join(param_block_lines) or "(no parameters)"
+
     return (
         "You are the answer-to-skill compiler for a workflow-automation "
         "product's skill-bootstrap flow. The user's domain is "
-        f"`{domain}`. You will receive a wizard question and the user's "
-        "answer in the next message. Your job is to compile the answer "
-        "into an executable Skill record.\n\n"
+        f"`{domain}`. You will receive the user's per-parameter answers "
+        "for ONE policy in the next message. Your job is to compile those "
+        "answers into a single executable Skill record that captures the "
+        "team's specific values for every parameter.\n\n"
         f"## Source policy template ({seed_policy['id']})\n"
         f"- name: {seed_policy['name']}\n"
         f"- condition (template): {seed_policy['condition'].strip()}\n"
         f"- action (template): {seed_policy['action'].strip()}\n"
         f"- rationale: {seed_policy['rationale'].strip()}\n"
-        f"- parameters: {', '.join(seed_policy['parameters'])}\n\n"
+        f"- parameters:\n{param_block}\n\n"
         "## Output\n\n"
         "Output ONLY a single JSON object. No prose, no markdown fences. "
         "Schema:\n"
         "  {\n"
-        '    "name": "<short imperative name>",\n'
+        '    "name": "<short imperative name reflecting the policy>",\n'
         '    "description": "<one-sentence summary the user will recognize>",\n'
         '    "condition": "<concrete trigger with the user\'s specific '
-        'values substituted>",\n'
+        'values substituted for every parameter>",\n'
         '    "action": "<concrete action with the user\'s specific values '
-        'substituted>",\n'
+        'substituted for every parameter>",\n'
         '    "rationale": "<one sentence on why this matters>",\n'
-        '    "needs_clarification": <true if answer is ambiguous, '
+        '    "needs_clarification": <true if ANY answer is ambiguous, '
         "contradictory, or non-actionable>,\n"
-        '    "clarification_hint": "<concrete follow-up question if '
-        'needs_clarification, else empty>"\n'
+        '    "clarification_hint": "<concrete follow-up question naming '
+        'the parameter that needs clarification, if needs_clarification, '
+        'else empty>"\n'
         "  }\n\n"
         "## Rules\n"
-        "- Embed the user's exact values into condition/action. E.g. answer "
-        '"$500" → condition contains "$500", not the parameter name.\n'
-        "- If the user answered \"I don't know\" / \"it depends\" without "
+        "- Embed every parameter's user value into condition/action. "
+        "Never echo a raw parameter name (e.g. answer \"$500\" → "
+        "condition contains \"$500\", not REFUND_AUTO_APPROVE_LIMIT).\n"
+        "- If multiple answers conflict (e.g. two different thresholds), "
+        "set needs_clarification=true and write a clarification_hint that "
+        "names which parameter is in conflict.\n"
+        "- If any answer is \"I don't know\" / \"it depends\" without "
         "specifics, set needs_clarification=true and write a concrete "
         "clarification_hint.\n"
-        "- If the user gave specifics that conflict with the source policy "
-        "template (e.g. opted out entirely), still produce a valid skill "
-        "reflecting their actual answer; set needs_clarification=true only "
-        "when ambiguity blocks execution.\n"
         "- Reuse the source rationale verbatim if the user gave no "
         "team-specific reason.\n"
         "- Keep all fields concise; users will review every skill."
@@ -295,6 +358,48 @@ def _parse_skill_response(raw: str) -> SkillDraft:
     )
 
 
+async def answers_to_skill(
+    backend: LLMBackend,
+    domain: DomainCategory,
+    policy_id: str,
+    answers: list[ParameterAnswer],
+) -> SkillDraft:
+    seed_policy = _find_policy(domain, policy_id)
+    if seed_policy is None:
+        raise ValueError(
+            f"unknown policy_id {policy_id!r} for domain {domain!r}"
+        )
+
+    seed_param_names = set(_param_names(seed_policy))
+    for entry in answers:
+        if entry.parameter not in seed_param_names:
+            raise ValueError(
+                f"unknown parameter {entry.parameter!r} for policy "
+                f"{policy_id!r}"
+            )
+
+    # Render the user's answers as one block per parameter so the LLM can
+    # weave them into condition/action without hallucinating param names.
+    user_lines: list[str] = []
+    for entry in answers:
+        param = _find_parameter(seed_policy, entry.parameter)
+        prompt_text = param["prompt"] if param else entry.parameter
+        user_lines.append(
+            f"- {entry.parameter}: question={prompt_text!r}, "
+            f"answer={entry.answer.strip()!r}"
+        )
+
+    raw = await backend.complete(
+        system=_answers_to_skill_system_prompt(domain, seed_policy),
+        user_message="Per-parameter answers:\n" + "\n".join(user_lines),
+        max_tokens=ANSWERS_TO_SKILL_MAX_TOKENS,
+    )
+    return _parse_skill_response(raw)
+
+
+# --- legacy single-shot wrapper ------------------------------------------
+
+
 async def answer_to_skill(
     backend: LLMBackend,
     domain: DomainCategory,
@@ -302,17 +407,28 @@ async def answer_to_skill(
     question: str,
     answer: str,
 ) -> SkillDraft:
+    """Legacy single-shot shim. PR #143 removes the caller; until then we
+    pass through to the batch path with a one-element list. The `question`
+    arg is ignored — the seed prompt is used so the live LLM sees the
+    same prompt regardless of which client called it.
+    """
     seed_policy = _find_policy(domain, policy_id)
     if seed_policy is None:
-        # Surface as ValueError; the endpoint maps it to 422 (caller bug,
-        # not LLM bug — they passed an unknown policy_id).
         raise ValueError(
             f"unknown policy_id {policy_id!r} for domain {domain!r}"
         )
 
-    raw = await backend.complete(
-        system=_answer_to_skill_system_prompt(domain, seed_policy),
-        user_message=f"Question: {question.strip()}\nAnswer: {answer.strip()}",
-        max_tokens=ANSWER_TO_SKILL_MAX_TOKENS,
+    # Pick the first parameter as the target — the legacy contract had no
+    # parameter binding on the answer, and PR #143 retires this path.
+    params = seed_policy.get("parameters", [])
+    if not params:
+        raise ValueError(
+            f"policy {policy_id!r} has no parameters — legacy answer_to_skill "
+            "cannot route this answer"
+        )
+    return await answers_to_skill(
+        backend,
+        domain,
+        policy_id,
+        [ParameterAnswer(parameter=params[0]["name"], answer=answer)],
     )
-    return _parse_skill_response(raw)

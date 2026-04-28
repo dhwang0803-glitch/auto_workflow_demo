@@ -5,13 +5,13 @@ Drives both the AI Composer (PLAN_02) and the skill-bootstrap interview
 via `LLM_BACKEND=stub`.
 
 Branching is by **system prompt first line**, which is the only stable
-distinguishing marker across the four call types we serve:
+distinguishing marker across the call types we serve:
 
 | First line contains... | Path |
 |------------------------|------|
 | "domain classifier" | classify_domain (W2-2) |
-| "gap analyzer" | gap_analyze (W2-4) |
-| "answer-to-skill compiler" | answer_to_skill (W2-4) |
+| "gap analyzer" | gap_analyze (W2-4b, coverage-only) |
+| "answer-to-skill compiler" | answers_to_skill (W2-4c, batch) and the legacy single-shot wrapper |
 | (anything else) | AI Composer compose (PLAN_02) |
 
 Each path returns a JSON shape that the matching parser in
@@ -20,6 +20,12 @@ Each path returns a JSON shape that the matching parser in
 pulled from the same `data/policies/*.yaml` seeds the live LLM is
 prompted with, so a Persona A walkthrough on stub mode mirrors the live
 flow without hitting Modal.
+
+2026-04-28 polish: gap_analyze service now returns deterministically when
+extracted_skills is empty (no LLM call). The stub's gap_analyze branch
+only fires for the non-empty case (Persona B-style). It returns a
+coverage-only shape (`{missing_policy_ids: [...]}`) — the service does
+all per-parameter / sources / source_kind enrichment from the seed.
 """
 from __future__ import annotations
 
@@ -133,50 +139,27 @@ class StubLLMBackend:
         )
 
     def _gap_analyze_response(self, system: str) -> str:
-        # Pull the active domain straight out of the prompt. The live
-        # services/skill_bootstrap module formats it as `domain as `<x>``,
-        # which is the only stable place the value appears verbatim.
+        # Coverage-only shape: just policy_ids. The service enriches with
+        # parameters/sources/source_kind from the seed YAML — the live LLM
+        # never sees those fields, and neither do we.
+        #
+        # Hits this branch only when the service couldn't short-circuit
+        # (i.e. extracted_skills was non-empty). For the demo case we
+        # claim every seed policy is still missing — the stub does not
+        # reason about coverage.
         m = re.search(r"domain as `([a-z_]+)`", system or "")
         domain = m.group(1) if m else "other"
         seeds = _stub_seeds().get(domain, [])
-
-        # For Persona A demo (docs-empty start) the wizard is most
-        # interesting with ~5 missing policies. Cap at 5 for any domain
-        # so the interview length stays predictable in tests/scripted
-        # walkthroughs. Domains with fewer seeds (none currently) just
-        # surface what they have.
-        #
-        # Question text mirrors what the live gap_analyze prompt asks the
-        # LLM to produce: plain-language phrasing that does NOT echo the
-        # raw `parameters` list (e.g. ask "policy on refund threshold
-        # escalation" not "What is your REFUND_AUTO_APPROVE_LIMIT?"). The
-        # `parameter` field still carries the canonical name so downstream
-        # consumers can align answers to the seed schema.
-        missing = []
-        for seed in seeds[:5]:
-            params = seed.get("parameters") or []
-            primary = params[0] if params else None
-            policy_phrase = seed["name"].rstrip(".").lower()
-            question_text = (
-                f"What is your team's policy on {policy_phrase}?"
-            )
-            missing.append(
-                {
-                    "policy_id": seed["id"],
-                    "questions": [
-                        {"text": question_text, "parameter": primary}
-                    ],
-                }
-            )
-
-        return json.dumps({"missing": missing})
+        # Cap at 5 so a Persona B-style walkthrough on the stub keeps the
+        # interview length predictable in tests / scripted demos.
+        missing_ids = [seed["id"] for seed in seeds[:5]]
+        return json.dumps({"missing_policy_ids": missing_ids})
 
     def _answer_to_skill_response(self, system: str, user_message: str) -> str:
-        # System prompt header includes `## Source policy template (X.Y)`
-        # plus a `- name: <human title>` line. The id stays as the technical
-        # anchor for condition/name fields; the human-readable name is what
-        # the user sees on the clarification hint so we mirror live LLM
-        # phrasing instead of leaking dotted ids into the UI.
+        # New batch user_message format from services.answers_to_skill:
+        #   "Per-parameter answers:\n- <param>: question=..., answer='...'\n..."
+        # Legacy single-shot wrapper still routes through the same prompt
+        # by passing one parameter, so the same stub serves both.
         id_match = re.search(r"Source policy template \(([^)]+)\)", system or "")
         policy_id = id_match.group(1) if id_match else "unknown.policy"
         name_match = re.search(r"^- name:\s*(.+)$", system or "", flags=re.MULTILINE)
@@ -186,20 +169,20 @@ class StubLLMBackend:
             else policy_id
         )
 
-        # User message is "Question: ...\nAnswer: ...". Pull the answer
-        # text so the stub can decide whether to flag clarification.
-        answer_match = re.search(r"Answer:\s*(.+)", user_message or "", flags=re.DOTALL)
-        answer = answer_match.group(1).strip() if answer_match else ""
+        # Extract every "answer='...'" so the stub can:
+        #   1) detect if any answer triggers needs_clarification,
+        #   2) embed the user values into the synthesized condition/action
+        #      so tests can assert "$200" appears in the draft.
+        answer_blobs = re.findall(r"answer='([^']*)'", user_message or "")
+        if not answer_blobs:
+            # Fallback for tests that pass a freeform user_message.
+            answer_blobs = [user_message.strip()] if user_message else []
 
-        # ADR-022 §8.2: needs_clarification when answer is non-actionable.
-        # Heuristic the stub uses (deterministic for tests):
-        #   - ends with "?", or
-        #   - contains "I don't know" / "depends" / "not sure", or
-        #   - is shorter than 4 chars after stripping
-        clarify = (
-            len(answer) < 4
-            or answer.endswith("?")
-            or any(p in answer.lower() for p in ("i don't know", "depends", "not sure"))
+        clarify = any(
+            len(a) < 4
+            or a.endswith("?")
+            or any(p in a.lower() for p in ("i don't know", "depends", "not sure"))
+            for a in answer_blobs
         )
         hint = (
             f"Could you give a specific rule or value for {policy_phrase}?"
@@ -207,11 +190,14 @@ class StubLLMBackend:
             else ""
         )
 
+        # Substituted-values surface: join the blobs so a test asserting
+        # `"$200" in draft.condition` keeps passing across single + batch.
+        values = "; ".join(answer_blobs) if answer_blobs else "(empty)"
         draft = {
             "name": f"{policy_id}_skill",
             "description": f"Stubbed skill for {policy_id}.",
-            "condition": f"policy:{policy_id}",
-            "action": f"value:{answer or '(empty)'}",
+            "condition": f"policy:{policy_id} with values [{values}]",
+            "action": f"apply values [{values}] per team's {policy_phrase}",
             "rationale": "Stubbed — set per team's standard.",
             "needs_clarification": clarify,
             "clarification_hint": hint,

@@ -25,9 +25,20 @@ policies:
       team without confidentiality protection. The gate is unpopular with
       eager clients but eliminates the most common engagement disasters.
     parameters:
-      - NDA_TEMPLATE
-      - SOW_TEMPLATE
-      - CONTRACT_REPOSITORY
+      - name: NDA_TEMPLATE
+        prompt: "Where does your standard NDA template live? (link or path)"
+        default_baseline: "Shared drive: contracts/templates/nda_v1.docx"
+        baseline_source: "Synthesized — placeholder; substitute your real NDA storage."
+      - name: SOW_TEMPLATE
+        prompt: "Where does your Statement of Work template live?"
+        default_baseline: "Shared drive: contracts/templates/sow_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+      - name: CONTRACT_REPOSITORY
+        prompt: "Where do you record executed contracts (so you can find them later)?"
+        default_baseline: "Shared drive: contracts/executed/<client>"
+        baseline_source: "Synthesized — minimum: searchable single location with effective dates."
+    sources: []
+    source_kind: synthesized
     tags: [intake, legal, finance]
 
   - id: consulting.scope_creep_change_order
@@ -47,9 +58,20 @@ policies:
       Even small absorbed changes accumulate and shift the engagement's
       effective rate.
     parameters:
-      - EFFORT_VARIANCE_THRESHOLD
-      - COURTESY_HOURS_THRESHOLD
-      - CHANGE_ORDER_TEMPLATE
+      - name: EFFORT_VARIANCE_THRESHOLD
+        prompt: "Above what % effort variance vs original estimate do you require a written change order?"
+        default_baseline: "15%"
+        baseline_source: "Synthesized — under 15% is usually within scoping precision; above demands renegotiation."
+      - name: COURTESY_HOURS_THRESHOLD
+        prompt: "How many hours of out-of-scope work will you absorb as 'courtesy' before triggering a change order?"
+        default_baseline: "2 hours per request, 4 hours per engagement"
+        baseline_source: "Synthesized — protects relationship without compounding."
+      - name: CHANGE_ORDER_TEMPLATE
+        prompt: "Where is your change-order template stored?"
+        default_baseline: "Shared drive: contracts/templates/change_order_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+    sources: []
+    source_kind: synthesized
     tags: [scope, finance, communication]
 
   - id: consulting.status_report_cadence
@@ -67,9 +89,20 @@ policies:
       Quiet engagements feel risky to clients. A predictable cadence builds
       trust and creates a rhythm for surfacing issues before they harden.
     parameters:
-      - STATUS_REPORT_INTERVAL
-      - STATUS_REPORT_TEMPLATE
-      - STATUS_REPORT_OWNER
+      - name: STATUS_REPORT_INTERVAL
+        prompt: "How often do you send status reports during an active engagement?"
+        default_baseline: "Weekly (every Friday)"
+        baseline_source: "Synthesized — modal cadence for boutique consulting."
+      - name: STATUS_REPORT_TEMPLATE
+        prompt: "Where is your standard status-report template?"
+        default_baseline: "Shared drive: status/templates/weekly_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+      - name: STATUS_REPORT_OWNER
+        prompt: "Who drafts and sends the status report?"
+        default_baseline: "Engagement lead (project owner)"
+        baseline_source: "Synthesized — single point of accountability."
+    sources: []
+    source_kind: synthesized
     tags: [communication, project-mgmt, retention]
 
   - id: consulting.payment_milestone_gating
@@ -89,9 +122,20 @@ policies:
       uncomfortable but is the only honest signal that timely payment is
       part of the engagement.
     parameters:
-      - PAYMENT_NET_TERMS_DAYS
-      - GRACE_PERIOD_DAYS
-      - PAUSE_NOTIFICATION_TEMPLATE
+      - name: PAYMENT_NET_TERMS_DAYS
+        prompt: "What are your standard net payment terms?"
+        default_baseline: "Net 15"
+        baseline_source: "Synthesized — small-firm bias toward shorter terms; Net 30 common at larger firms."
+      - name: GRACE_PERIOD_DAYS
+        prompt: "After the due date, how many days of grace before you pause work?"
+        default_baseline: "5 days"
+        baseline_source: "Synthesized — covers typical AP processing slippage."
+      - name: PAUSE_NOTIFICATION_TEMPLATE
+        prompt: "Where is your work-pause notification template?"
+        default_baseline: "Shared drive: contracts/templates/pause_notice_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+    sources: []
+    source_kind: synthesized
     tags: [finance, communication, scope]
 
   - id: consulting.internal_confidentiality
@@ -110,9 +154,20 @@ policies:
       Confidentiality leaks usually happen through casual sharing, not
       malicious intent. Channel hygiene is the cheapest control.
     parameters:
-      - CHANNEL_SEGREGATION_RULES
-      - APPROVED_AI_TOOLS
-      - REDACTION_GUIDELINES
+      - name: CHANNEL_SEGREGATION_RULES
+        prompt: "What's your rule for client-specific channels? (e.g. 'one Slack channel per client, no client info in DMs')"
+        default_baseline: "One private channel per client; no client info in personal DMs or general channels"
+        baseline_source: "Synthesized — minimum viable channel hygiene for small consulting teams."
+      - name: APPROVED_AI_TOOLS
+        prompt: "Which AI tools are approved for confidential client context? (list, or 'none until vetted')"
+        default_baseline: "None until each tool is vetted for data-handling and client consent is on file"
+        baseline_source: "Synthesized — most consulting confidentiality clauses prohibit unvetted third-party processing."
+      - name: REDACTION_GUIDELINES
+        prompt: "What's your standard for redacting client material before external reuse (case studies, recruiting)?"
+        default_baseline: "Replace client name, identifying numbers, and proprietary details before any external use; client signoff required for direct attribution"
+        baseline_source: "Synthesized — covers the common leak vectors."
+    sources: []
+    source_kind: synthesized
     tags: [legal, security, communication]
 
   - id: consulting.subcontractor_disclosure
@@ -133,9 +188,20 @@ policies:
       after the fact. Upfront disclosure is professionally expected and
       legally required in some jurisdictions.
     parameters:
-      - SUBCONTRACTOR_AGREEMENT_TEMPLATE
-      - DISCLOSURE_TEMPLATE
-      - REFERRAL_DISCLOSURE_THRESHOLD
+      - name: SUBCONTRACTOR_AGREEMENT_TEMPLATE
+        prompt: "Where is your subcontractor confidentiality agreement template?"
+        default_baseline: "Shared drive: contracts/templates/subcontractor_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+      - name: DISCLOSURE_TEMPLATE
+        prompt: "Where is your client-disclosure template (subcontractor or referral)?"
+        default_baseline: "Shared drive: contracts/templates/disclosure_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+      - name: REFERRAL_DISCLOSURE_THRESHOLD
+        prompt: "Below what referral consideration value (if any) do you skip explicit disclosure?"
+        default_baseline: "Always disclose existence of consideration; amount disclosure optional below $500"
+        baseline_source: "Synthesized — most professional codes require existence-disclosure regardless of amount."
+    sources: []
+    source_kind: synthesized
     tags: [legal, communication, finance]
 
   - id: consulting.project_closeout
@@ -153,7 +219,18 @@ policies:
       exposure, and lost learning. The retrospective compounds — most
       consulting improvement comes from systematic post-engagement review.
     parameters:
-      - CLOSEOUT_CHECKLIST
-      - DATA_DESTRUCTION_POLICY
-      - TESTIMONIAL_REQUEST_TEMPLATE
+      - name: CLOSEOUT_CHECKLIST
+        prompt: "Where is your closeout checklist? (final deliverable, final invoice, data return, retro)"
+        default_baseline: "Shared drive: ops/closeout_checklist.md"
+        baseline_source: "Synthesized — placeholder; minimum viable: 4-item list above."
+      - name: DATA_DESTRUCTION_POLICY
+        prompt: "What's your policy for client confidential material at closeout? (return / destroy / retain)"
+        default_baseline: "Return upon request, destroy after 90 days otherwise; retain only the executed agreements"
+        baseline_source: "Synthesized — covers the common contract clause."
+      - name: TESTIMONIAL_REQUEST_TEMPLATE
+        prompt: "Where is your testimonial / case-study request template?"
+        default_baseline: "Shared drive: marketing/templates/testimonial_request_v1.docx"
+        baseline_source: "Synthesized — placeholder."
+    sources: []
+    source_kind: synthesized
     tags: [project-mgmt, legal, learning]

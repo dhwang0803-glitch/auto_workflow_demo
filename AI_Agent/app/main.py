@@ -30,6 +30,7 @@ from app.dependencies import get_backend, get_settings
 from app.models.domain import DomainClassification, DomainClassifyRequest
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
 from app.models.skills import (
+    AnswersToSkillRequest,
     AnswerToSkillRequest,
     GapAnalysis,
     GapAnalyzeRequest,
@@ -43,6 +44,7 @@ from app.services.skill_bootstrap import (
     SkillBootstrapParseError,
     analyze_gaps,
     answer_to_skill,
+    answers_to_skill,
 )
 
 # Paths exempt from bearer auth even when AGENT_BEARER_TOKEN is set. /v1/health
@@ -143,11 +145,40 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
         except SkillBootstrapParseError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @app.post("/v1/skills/answers_to_skill", response_model=SkillDraft)
+    async def skills_answers_to_skill(
+        payload: AnswersToSkillRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> SkillDraft:
+        """Batch — N (parameter, answer) pairs for ONE policy → 1 SkillDraft.
+
+        Replaces the old answer_to_skill (1 Q+A → 1 skill) which fragmented
+        a single policy across multiple skills. The legacy endpoint stays
+        live until API_Server PR #143 cuts over.
+        """
+        try:
+            return await answers_to_skill(
+                backend,
+                payload.domain,
+                payload.policy_id,
+                payload.answers,
+            )
+        except SkillBootstrapParseError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            # Unknown policy_id OR unknown parameter name — caller bug.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/v1/skills/answer_to_skill", response_model=SkillDraft)
     async def skills_answer_to_skill(
         payload: AnswerToSkillRequest,
         backend: LLMBackend = Depends(get_backend),
     ) -> SkillDraft:
+        """Legacy single-shot shape (1 Q+A → 1 SkillDraft).
+
+        Routes through the batch path with a one-element list. Kept for
+        the W2-7 API_Server contract until PR #143 ships.
+        """
         try:
             return await answer_to_skill(
                 backend,
@@ -157,12 +188,8 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
                 payload.answer,
             )
         except SkillBootstrapParseError as exc:
-            # LLM gave us a shape we cannot interpret. Must come BEFORE
-            # the ValueError handler since SkillBootstrapParseError
-            # inherits from ValueError.
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:
-            # Unknown policy_id for the given domain — caller bug.
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/v1/health", response_model=HealthResponse)

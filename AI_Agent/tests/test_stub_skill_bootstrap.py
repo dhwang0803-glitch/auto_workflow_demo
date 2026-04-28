@@ -1,10 +1,15 @@
-"""StubLLMBackend coverage for the skill-bootstrap call types (PLAN_12 W2-8a).
+"""StubLLMBackend coverage for the skill-bootstrap call types (PLAN_12 W2-8a + W2-4a/b/c).
 
 The live LLM is mocked end-to-end on `LLM_BACKEND=stub`, so these tests
 make sure the stub returns shapes the live parsers (services/skill_bootstrap
 + services/domain_classifier) accept without fallback. Without this
 coverage the integration walkthrough only catches missing fields at the
 wizard UI, where the failure mode is opaque.
+
+2026-04-28 polish: gap_analyze service now has a deterministic
+short-circuit (extracted_skills empty), so the stub's gap_analyze branch
+only fires when extracted_skills is non-empty (Persona B-style). The
+short-circuit case is exercised here through the service entry point.
 """
 from __future__ import annotations
 
@@ -13,16 +18,17 @@ import json
 import pytest
 
 from app.backends.stub import StubLLMBackend
+from app.models.skills import ExtractedSkill, ParameterAnswer
 from app.services.domain_classifier import (
     _classifier_system_prompt,
     classify_domain,
 )
 from app.services.skill_bootstrap import (
-    _answer_to_skill_system_prompt,
     _gap_analyze_system_prompt,
     _seed_policies,
     analyze_gaps,
     answer_to_skill,
+    answers_to_skill,
 )
 
 
@@ -69,30 +75,52 @@ async def test_classify_domain_returns_parseable_json(
     assert set(body.keys()) >= {"domain", "confidence", "rationale"}
 
 
-# --- gap_analyze ----------------------------------------------------------
+# --- gap_analyze (service entry — service short-circuits when empty) ------
 
 
 @pytest.mark.asyncio
-async def test_gap_analyze_returns_seed_backed_missing_list(
+async def test_gap_analyze_short_circuit_returns_all_seeds_with_baselines(
     stub: StubLLMBackend,
 ) -> None:
+    """Persona A path through the service: no LLM call, every seed comes
+    through with new wizard fields populated from the YAML."""
     result = await analyze_gaps(stub, "ecommerce", extracted_skills=[])
-    assert len(result.missing) > 0
+    seeds = _seed_policies("ecommerce")
+    assert len(result.missing) == len(seeds)
+    first = result.missing[0]
+    first_seed = seeds[0]
+    assert first.policy_id == first_seed["id"]
+    assert first.source_kind == first_seed["source_kind"]
+    assert len(first.parameters) == len(first_seed["parameters"])
+    assert first.parameters[0].default_baseline == first_seed["parameters"][0]["default_baseline"]
+
+
+@pytest.mark.asyncio
+async def test_gap_analyze_stub_branch_returns_coverage_only_shape(
+    stub: StubLLMBackend,
+) -> None:
+    """When extracted_skills is non-empty the service hits the stub. The
+    stub returns the new coverage-only schema (`missing_policy_ids`)."""
+    raw = await stub.complete(
+        system=_gap_analyze_system_prompt("ecommerce"),
+        user_message=json.dumps([{"name": "X", "condition": "C", "action": "A"}]),
+        max_tokens=1024,
+    )
+    body = json.loads(raw)
+    assert "missing_policy_ids" in body
     seed_ids = {p["id"] for p in _seed_policies("ecommerce")}
-    for gap in result.missing:
-        assert gap.policy_id in seed_ids
-        assert len(gap.questions) >= 1
-        assert gap.questions[0].text  # non-empty
+    for pid in body["missing_policy_ids"]:
+        assert pid in seed_ids
 
 
 @pytest.mark.asyncio
-async def test_gap_analyze_caps_at_five_for_demo_predictability(
+async def test_gap_analyze_stub_caps_at_five_for_demo_predictability(
     stub: StubLLMBackend,
 ) -> None:
-    """Persona A walkthrough length is bounded — pick the cap that the
-    stub commits to so dem scripts stay deterministic. Live LLM is free
-    to return more or fewer; this is a stub-specific contract."""
-    result = await analyze_gaps(stub, "ecommerce", extracted_skills=[])
+    """Stub-specific cap so a Persona B walkthrough on the stub stays
+    deterministic in scripted demos. Live LLM is free to return any size."""
+    extracted = [ExtractedSkill(name="X", condition="C", action="A")]
+    result = await analyze_gaps(stub, "ecommerce", extracted_skills=extracted)
     assert len(result.missing) <= 5
 
 
@@ -100,29 +128,29 @@ async def test_gap_analyze_caps_at_five_for_demo_predictability(
 async def test_gap_analyze_other_domain_short_circuits(
     stub: StubLLMBackend,
 ) -> None:
-    """`other` has no seed YAML — services short-circuits before the LLM
-    so the stub is never even called. We assert the return path here so
-    a future regression that drops the short-circuit surfaces."""
     result = await analyze_gaps(stub, "other", extracted_skills=[])
     assert result.missing == []
 
 
-# --- answer_to_skill ------------------------------------------------------
+# --- answers_to_skill (batch) ---------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_answer_to_skill_clean_answer(stub: StubLLMBackend) -> None:
+async def test_answers_to_skill_clean_answer_batch(stub: StubLLMBackend) -> None:
     seed = _seed_policies("ecommerce")[0]
-    draft = await answer_to_skill(
+    params = seed["parameters"]
+    draft = await answers_to_skill(
         stub,
         domain="ecommerce",
         policy_id=seed["id"],
-        question="What is your refund auto-approve limit?",
-        answer="$200",
+        answers=[
+            ParameterAnswer(parameter=params[0]["name"], answer="$200"),
+            ParameterAnswer(parameter=params[1]["name"], answer="Sarah (co-founder)"),
+        ],
     )
     assert draft.needs_clarification is False
-    assert "$200" in draft.action
-    assert seed["id"] in draft.condition or seed["id"] in draft.name
+    assert "$200" in draft.condition  # value substituted
+    assert "Sarah" in draft.condition or "Sarah" in draft.action
 
 
 @pytest.mark.parametrize(
@@ -136,37 +164,53 @@ async def test_answer_to_skill_clean_answer(stub: StubLLMBackend) -> None:
     ],
 )
 @pytest.mark.asyncio
-async def test_answer_to_skill_flags_vague_answers(
+async def test_answers_to_skill_flags_vague_answers(
     stub: StubLLMBackend, vague_answer: str
 ) -> None:
+    seed = _seed_policies("ecommerce")[0]
+    params = seed["parameters"]
+    draft = await answers_to_skill(
+        stub,
+        domain="ecommerce",
+        policy_id=seed["id"],
+        answers=[
+            ParameterAnswer(parameter=params[0]["name"], answer=vague_answer)
+        ],
+    )
+    assert draft.needs_clarification is True
+    assert draft.clarification_hint  # live parser rejects empty hint
+
+
+@pytest.mark.asyncio
+async def test_answers_to_skill_unknown_policy_id_surfaces(
+    stub: StubLLMBackend,
+) -> None:
+    """Service guards before calling the backend."""
+    with pytest.raises(ValueError):
+        await answers_to_skill(
+            stub,
+            domain="ecommerce",
+            policy_id="not.a.real.policy",
+            answers=[ParameterAnswer(parameter="X", answer="Y")],
+        )
+
+
+# --- legacy answer_to_skill wrapper ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_answer_to_skill_clean_answer(stub: StubLLMBackend) -> None:
+    """Single-shot wrapper still works on the stub via the batch path."""
     seed = _seed_policies("ecommerce")[0]
     draft = await answer_to_skill(
         stub,
         domain="ecommerce",
         policy_id=seed["id"],
         question="What is your refund auto-approve limit?",
-        answer=vague_answer,
+        answer="$200",
     )
-    assert draft.needs_clarification is True
-    # Live parser rejects empty hint when needs_clarification=true.
-    assert draft.clarification_hint
-
-
-@pytest.mark.asyncio
-async def test_answer_to_skill_unknown_policy_id_surfaces(
-    stub: StubLLMBackend,
-) -> None:
-    """answer_to_skill (the service, not the stub) raises ValueError when
-    policy_id is not in the seed. The stub itself never sees that path —
-    the service guards before calling the backend."""
-    with pytest.raises(ValueError):
-        await answer_to_skill(
-            stub,
-            domain="ecommerce",
-            policy_id="not.a.real.policy",
-            question="Q",
-            answer="A",
-        )
+    assert draft.needs_clarification is False
+    assert "$200" in draft.condition or "$200" in draft.action
 
 
 # --- compose path unchanged -----------------------------------------------
@@ -182,8 +226,7 @@ async def test_compose_path_still_returns_draft(stub: StubLLMBackend) -> None:
         user_message="Send a daily report by email",
         max_tokens=4096,
     )
-    assert "```json" in raw  # legacy fenced wrapper preserved
-    # Find the JSON body and confirm shape.
+    assert "```json" in raw
     payload_str = raw.split("```json", 1)[1].split("```", 1)[0]
     payload = json.loads(payload_str)
     assert payload["intent"] == "draft"

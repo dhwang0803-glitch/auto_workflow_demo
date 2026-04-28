@@ -1,8 +1,14 @@
 # Domain: e-commerce / online retail
 # Format: each policy is a generic, parameterized condition+action pair that a
-# typical team in this domain should declare. The gap_analyze LLM (W2-4) reads
-# this list, compares against a team's extracted/declared skills, and turns
-# remaining `parameters` into wizard questions for the team.
+# typical team in this domain should declare. The gap_analyze service (W2-4b)
+# reads this list, deterministically (extracted_skills empty) or via LLM
+# coverage check (extracted_skills non-empty), and surfaces uncovered policies
+# to the wizard. Each parameter carries a `prompt` that the wizard renders
+# verbatim, plus a `default_baseline` the user can adopt with one click and a
+# `baseline_source` the user sees as attribution. Policy-level `sources` link
+# to industry references when they exist; `source_kind` honestly labels
+# whether the policy is regulatory, industry-baseline (real external doc), or
+# synthesized best-practice (LLM-derived patchwork).
 domain: ecommerce
 display_name: E-commerce / Online Retail
 description: >
@@ -26,11 +32,32 @@ policies:
       Large refunds materially affect monthly margin and require human
       judgement on goodwill vs precedent.
     parameters:
-      - REFUND_AUTO_APPROVE_LIMIT
-      - REFUND_APPROVER
-      - ESCALATION_CHANNEL
-      - RETURN_WINDOW_DAYS
-      - APPROVER_RESPONSE_SLA
+      - name: REFUND_AUTO_APPROVE_LIMIT
+        prompt: "What dollar amount can you refund without manager approval?"
+        default_baseline: "$50"
+        baseline_source: "Synthesized — solo / small merchants typically auto-approve up to $50; mid-size stores raise to $100-$200 once they have margin headroom."
+      - name: REFUND_APPROVER
+        prompt: "Who approves refunds above that limit?"
+        default_baseline: "Operations lead"
+        baseline_source: "Synthesized — team-specific role."
+      - name: ESCALATION_CHANNEL
+        prompt: "Where does the approver get notified (Slack channel, email, ticket queue)?"
+        default_baseline: "#refunds Slack channel"
+        baseline_source: "Synthesized — most small teams route refund escalations through a single Slack channel."
+      - name: RETURN_WINDOW_DAYS
+        prompt: "How many days after delivery do you accept return requests?"
+        default_baseline: "30 days"
+        baseline_source: "NRF 2024 Returns Outlook — 30 days is the modal industry window for physical goods."
+      - name: APPROVER_RESPONSE_SLA
+        prompt: "How long should the approver have to respond before you escalate further?"
+        default_baseline: "1 business day"
+        baseline_source: "Synthesized — common operations SLA."
+    sources:
+      - title: "Stripe — Refunds"
+        url: "https://stripe.com/docs/refunds"
+      - title: "NRF Returns Outlook (2024)"
+        url: "https://nrf.com/research"
+    source_kind: industry-baseline
     tags: [refund, escalation, finance]
 
   - id: ecommerce.out_of_stock_handling
@@ -49,9 +76,20 @@ policies:
       Silent delays drive chargebacks and negative reviews. Early disclosure
       converts a problem into a controlled customer choice.
     parameters:
-      - OOS_NOTIFY_SLA_HOURS
-      - BACKORDER_LEAD_THRESHOLD_DAYS
-      - EQUIVALENT_SKU_POLICY
+      - name: OOS_NOTIFY_SLA_HOURS
+        prompt: "How quickly do you contact a customer after an out-of-stock order is detected?"
+        default_baseline: "4 hours (business hours)"
+        baseline_source: "Synthesized — industry support SLAs cluster around 4-8 hours for OOS notifications."
+      - name: BACKORDER_LEAD_THRESHOLD_DAYS
+        prompt: "Above how many days of expected delay do you treat a backorder as out-of-stock for the customer?"
+        default_baseline: "7 days"
+        baseline_source: "Synthesized — beyond a week most customers expect proactive contact rather than silent wait."
+      - name: EQUIVALENT_SKU_POLICY
+        prompt: "What's your rule for offering a swap SKU? (e.g. same brand only, same price band, never)"
+        default_baseline: "Same product family, equal-or-lower price; flag if higher-priced swap"
+        baseline_source: "Synthesized — protects margin while keeping the customer choice clean."
+    sources: []
+    source_kind: synthesized
     tags: [inventory, communication, fulfillment]
 
   - id: ecommerce.shipping_delay_proactive
@@ -69,9 +107,20 @@ policies:
       Customers forgive carrier delays they hear about first; they punish
       carrier delays they discover by checking tracking themselves.
     parameters:
-      - DELAY_TOLERANCE_DAYS
-      - SIGNIFICANT_DELAY_THRESHOLD_DAYS
-      - GOODWILL_CREDIT_AMOUNT
+      - name: DELAY_TOLERANCE_DAYS
+        prompt: "How many days late is 'late enough' to trigger a proactive notice?"
+        default_baseline: "2 business days"
+        baseline_source: "Synthesized — most carriers consider 2 business days slip the meaningful threshold."
+      - name: SIGNIFICANT_DELAY_THRESHOLD_DAYS
+        prompt: "How many days late counts as a 'significant' delay that earns a goodwill offer?"
+        default_baseline: "5 business days"
+        baseline_source: "Synthesized — beyond ~1 week customer goodwill needs active recovery."
+      - name: GOODWILL_CREDIT_AMOUNT
+        prompt: "How much store credit (or what perk) do you offer on a significant delay?"
+        default_baseline: "$10 store credit OR free expedited next order"
+        baseline_source: "Synthesized — small but acknowledged."
+    sources: []
+    source_kind: synthesized
     tags: [shipping, communication, retention]
 
   - id: ecommerce.damaged_lost_compensation
@@ -91,9 +140,20 @@ policies:
       cost of a single replacement is far less than the lifetime value lost
       to a frustrated customer.
     parameters:
-      - DAMAGE_NO_RETURN_THRESHOLD
-      - LOST_REPLACEMENT_SLA_HOURS
-      - CARRIER_INVESTIGATION_WINDOW_DAYS
+      - name: DAMAGE_NO_RETURN_THRESHOLD
+        prompt: "Below what item value will you replace damaged items without requiring the customer to return them?"
+        default_baseline: "$75"
+        baseline_source: "Synthesized — return shipping + handling typically exceeds replacement cost below this band."
+      - name: LOST_REPLACEMENT_SLA_HOURS
+        prompt: "Once a lost shipment is confirmed, how fast do you replace or refund?"
+        default_baseline: "24 hours"
+        baseline_source: "Synthesized — same-day or next-business-day is the retention-positive bar."
+      - name: CARRIER_INVESTIGATION_WINDOW_DAYS
+        prompt: "How long after 'delivered' tracking do you treat a non-receipt claim as actionable (vs porch-pirate window)?"
+        default_baseline: "3 days"
+        baseline_source: "Synthesized — aligns with most major carrier investigation start windows."
+    sources: []
+    source_kind: synthesized
     tags: [fulfillment, customer-care, finance]
 
   - id: ecommerce.discount_abuse_detection
@@ -113,9 +173,20 @@ policies:
       on first-time buyers cost more than the abuse itself, so review beats
       block.
     parameters:
-      - PER_CUSTOMER_USE_LIMIT
-      - REVIEW_HOLD_WINDOW_HOURS
-      - DEVICE_MATCH_THRESHOLD
+      - name: PER_CUSTOMER_USE_LIMIT
+        prompt: "How many times can the same customer (payment method or address) use a single-use code before it's flagged?"
+        default_baseline: "1 use"
+        baseline_source: "Synthesized — first-time-buyer codes are single-use by intent."
+      - name: REVIEW_HOLD_WINDOW_HOURS
+        prompt: "After flagging an order for review, how long do you hold it before auto-cancelling?"
+        default_baseline: "48 hours"
+        baseline_source: "Synthesized — covers a full business day for legitimate customer reply."
+      - name: DEVICE_MATCH_THRESHOLD
+        prompt: "How aggressive is your device-fingerprint matching for abuse detection? (none / loose / strict)"
+        default_baseline: "loose (IP + payment-method match only)"
+        baseline_source: "Synthesized — strict device fingerprinting hits false positives on shared networks."
+    sources: []
+    source_kind: synthesized
     tags: [fraud, finance, marketing]
 
   - id: ecommerce.vip_customer_routing
@@ -132,9 +203,20 @@ policies:
       VIP customers represent disproportionate revenue and attrition risk.
       Standard queue treatment for them is a strategic loss.
     parameters:
-      - VIP_LIFETIME_SPEND_THRESHOLD
-      - VIP_FIRST_RESPONSE_SLA
-      - VIP_QUEUE_OWNER
+      - name: VIP_LIFETIME_SPEND_THRESHOLD
+        prompt: "What lifetime customer spend qualifies as VIP for your store?"
+        default_baseline: "$1,000 lifetime"
+        baseline_source: "Synthesized — typical small-store cutoff; adjust by AOV and category."
+      - name: VIP_FIRST_RESPONSE_SLA
+        prompt: "How fast do you respond to a VIP support ticket?"
+        default_baseline: "2 hours (business hours)"
+        baseline_source: "Synthesized — distinct from standard tier (often 24h)."
+      - name: VIP_QUEUE_OWNER
+        prompt: "Who owns the VIP queue / who is the named contact?"
+        default_baseline: "Lead support agent"
+        baseline_source: "Synthesized — team-specific role."
+    sources: []
+    source_kind: synthesized
     tags: [support, retention, segmentation]
 
   - id: ecommerce.chargeback_response
@@ -154,9 +236,22 @@ policies:
       direct customer call resolves a meaningful share of friendly-fraud
       cases at zero processing cost.
     parameters:
-      - CHARGEBACK_RESPONSE_OWNER
-      - CUSTOMER_CALL_THRESHOLD
-      - EVIDENCE_PACKET_TEMPLATE
+      - name: CHARGEBACK_RESPONSE_OWNER
+        prompt: "Who is responsible for filing chargeback evidence packets?"
+        default_baseline: "Operations lead"
+        baseline_source: "Synthesized — team-specific role."
+      - name: CUSTOMER_CALL_THRESHOLD
+        prompt: "Above what dispute amount do you call the customer directly before submitting evidence?"
+        default_baseline: "$50"
+        baseline_source: "Stripe disputes guidance — direct contact is highest-leverage on small-to-mid disputes (most are withdrawn)."
+      - name: EVIDENCE_PACKET_TEMPLATE
+        prompt: "Where is your evidence-packet checklist or template stored?"
+        default_baseline: "Shared drive: ops/chargeback_evidence.md"
+        baseline_source: "Synthesized — template should live in the team's standard ops doc location."
+    sources:
+      - title: "Stripe — Disputes and chargebacks"
+        url: "https://stripe.com/docs/disputes"
+    source_kind: industry-baseline
     tags: [finance, fraud, communication]
 
   - id: ecommerce.negative_review_response
@@ -177,7 +272,18 @@ policies:
       converts the reviewer into a follow-up positive review or organic
       revision without being asked.
     parameters:
-      - NEGATIVE_REVIEW_THRESHOLD_STARS
-      - REVIEW_RESPONSE_SLA_HOURS
-      - REVIEW_RESPONSE_OWNER
+      - name: NEGATIVE_REVIEW_THRESHOLD_STARS
+        prompt: "At or below what star rating do you treat a public review as 'negative' for escalation?"
+        default_baseline: "3 stars (out of 5)"
+        baseline_source: "Synthesized — 3★ is the conventional 'mediocre = at-risk' boundary."
+      - name: REVIEW_RESPONSE_SLA_HOURS
+        prompt: "How fast do you publicly respond to a flagged negative review?"
+        default_baseline: "24 hours"
+        baseline_source: "Synthesized — speed signals attentiveness to other readers."
+      - name: REVIEW_RESPONSE_OWNER
+        prompt: "Who drafts and posts the public response?"
+        default_baseline: "Founder or operations lead"
+        baseline_source: "Synthesized — public-facing tone usually owned by senior staff for small teams."
+    sources: []
+    source_kind: synthesized
     tags: [reputation, communication, retention]
