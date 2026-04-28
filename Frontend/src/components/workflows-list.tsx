@@ -27,7 +27,7 @@ export function WorkflowsList() {
             className="text-sm border rounded px-3 py-1.5 hover:bg-gray-50"
             data-testid="link-skill-wizard"
           >
-            정책 인터뷰
+            Skill wizard
           </Link>
           <Link
             href="/workflows/new"

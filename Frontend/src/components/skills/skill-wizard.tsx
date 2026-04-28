@@ -112,9 +112,9 @@ export function SkillWizard() {
     >
       <header className="flex items-center justify-between border-b px-4 py-3">
         <div>
-          <h1 className="text-base font-semibold">정책 인터뷰</h1>
+          <h1 className="text-base font-semibold">Skill wizard</h1>
           <p className="text-xs text-gray-500">
-            팀의 표준 정책을 몇 가지 질문으로 함께 정리합니다.
+            A few questions to capture your team&apos;s standard policies.
           </p>
         </div>
         {phase !== "domain" && (
@@ -124,7 +124,7 @@ export function SkillWizard() {
             className="text-xs text-gray-500 hover:text-gray-800"
             data-testid="wizard-reset"
           >
-            처음부터
+            Start over
           </button>
         )}
       </header>
@@ -147,7 +147,7 @@ export function SkillWizard() {
 
         {phase !== "domain" && domain && (
           <div className="mb-3 inline-block rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-700">
-            도메인: {DOMAIN_LABELS[domain]}
+            Domain: {DOMAIN_LABELS[domain]}
           </div>
         )}
 
@@ -175,7 +175,7 @@ export function SkillWizard() {
             className="text-xs text-gray-500"
             data-testid="wizard-loading"
           >
-            처리 중…
+            Working…
           </p>
         )}
 
@@ -208,7 +208,7 @@ export function SkillWizard() {
               }
             }}
             rows={2}
-            placeholder="답변을 입력하세요…"
+            placeholder="Type your answer…"
             className="flex-1 resize-none rounded border px-2 py-1 text-sm"
             data-testid="wizard-input"
           />
@@ -217,7 +217,7 @@ export function SkillWizard() {
             disabled={!input.trim()}
             className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:bg-gray-300"
           >
-            보내기
+            Send
           </button>
         </form>
       )}
@@ -237,7 +237,7 @@ function ProgressGauge({
     <div className="border-b px-4 py-2" data-testid="wizard-progress">
       <div className="mb-1 flex justify-between text-xs text-gray-600">
         <span>
-          {answered} / {total} 답변
+          {answered} / {total} answered
         </span>
         <span>{pct}%</span>
       </div>
@@ -261,8 +261,9 @@ function DomainPicker({
   return (
     <div data-testid="domain-picker">
       <p className="mb-3 text-sm text-gray-700">
-        먼저 어떤 분야의 일을 하시는지 알려주세요. 분야에 맞춘 표준 정책을
-        기준으로 빠진 부분만 질문드립니다.
+        Pick the domain that best describes your work. We compare your
+        existing skills against the standard policies for that domain and
+        only ask about what&apos;s missing.
       </p>
       <div className="flex flex-wrap gap-2">
         {options.map((opt) => (
@@ -329,7 +330,7 @@ function AnsweredTurn({
             className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-800"
             data-testid="needs-clarification-badge"
           >
-            추가 질문 필요
+            Needs clarification
           </span>
         )}
       </div>
@@ -343,8 +344,8 @@ function DoneBanner({ count }: { count: number }) {
       className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
       data-testid="wizard-done"
     >
-      {count}개 skill 초안이 만들어졌습니다. 다음 단계에서 검토 후 활성화할
-      수 있어요. (검토 UI 는 W2-6 PR 에서 추가됩니다.)
+      {count} skill draft{count === 1 ? "" : "s"} created. The next step is
+      review and activation. (Review UI lands in the W2-6 PR.)
     </div>
   );
 }
@@ -355,7 +356,7 @@ function NoGapsBanner() {
       className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700"
       data-testid="wizard-no-gaps"
     >
-      이 분야의 표준 정책 갭이 없어 추가 질문이 필요하지 않습니다.
+      No standard-policy gaps to fill for this domain. Nothing to ask.
     </div>
   );
 }
@@ -378,7 +379,7 @@ function ErrorBanner({
         onClick={onRetry}
         className="rounded bg-red-600 px-2 py-1 text-xs text-white"
       >
-        다시 시작
+        Start over
       </button>
     </div>
   );

@@ -15,12 +15,12 @@ export type DomainCategory =
   | "other";
 
 export const DOMAIN_LABELS: Record<DomainCategory, string> = {
-  ecommerce: "이커머스",
-  services: "서비스업",
-  consulting: "컨설팅",
-  content: "콘텐츠 제작",
-  nonprofit: "비영리",
-  other: "기타",
+  ecommerce: "E-commerce",
+  services: "Services",
+  consulting: "Consulting",
+  content: "Content",
+  nonprofit: "Nonprofit",
+  other: "Other",
 };
 
 export interface ExtractedSkill {

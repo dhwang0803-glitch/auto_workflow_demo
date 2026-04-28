@@ -21,19 +21,22 @@ test("Skill wizard: pick domain → answer 2 questions → done summary", async 
         domain: "ecommerce",
         missing: [
           {
-            policy_id: "refund_window",
-            policy_name: "환불 정책",
+            policy_id: "ecommerce.refund_window",
+            policy_name: "Refund window",
             questions: [
-              { text: "환불 가능 기간은 며칠인가요?", parameter: "days" },
+              {
+                text: "How many days is your refund window?",
+                parameter: "RETURN_WINDOW_DAYS",
+              },
             ],
           },
           {
-            policy_id: "shipping_threshold",
-            policy_name: "배송 정책",
+            policy_id: "ecommerce.shipping_threshold",
+            policy_name: "Free shipping threshold",
             questions: [
               {
-                text: "무료 배송 임계 금액은?",
-                parameter: "amount",
+                text: "What's the free shipping threshold?",
+                parameter: "FREE_SHIPPING_AMOUNT",
               },
             ],
           },
@@ -73,26 +76,26 @@ test("Skill wizard: pick domain → answer 2 questions → done summary", async 
   // First question — progress 0/2
   await expect(page.getByTestId("wizard-progress")).toContainText("0 / 2");
   await expect(page.getByTestId("wizard-current-question")).toContainText(
-    "환불 가능 기간",
+    "refund window",
   );
 
-  await page.getByTestId("wizard-input").fill("14일");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByTestId("wizard-input").fill("14 days");
+  await page.getByRole("button", { name: "Send" }).click();
 
   // Second question — progress 1/2
   await expect(page.getByTestId("wizard-progress")).toContainText("1 / 2");
-  await expect(page.getByTestId("wizard-turn-1")).toContainText("14일");
+  await expect(page.getByTestId("wizard-turn-1")).toContainText("14 days");
   await expect(page.getByTestId("wizard-current-question")).toContainText(
-    "무료 배송",
+    "free shipping",
   );
 
-  await page.getByTestId("wizard-input").fill("3만원");
-  await page.getByRole("button", { name: "보내기" }).click();
+  await page.getByTestId("wizard-input").fill("$30");
+  await page.getByRole("button", { name: "Send" }).click();
 
   // Done
   await expect(page.getByTestId("wizard-done")).toBeVisible();
   await expect(page.getByTestId("wizard-progress")).toContainText("2 / 2");
-  await expect(page.getByTestId("wizard-turn-2")).toContainText("3만원");
+  await expect(page.getByTestId("wizard-turn-2")).toContainText("$30");
   expect(answerCalls).toBe(2);
 
   // The input form is gone once the wizard is done.
@@ -141,6 +144,6 @@ test("Skill wizard: bootstrap error surfaces banner with retry", async ({
   await expect(banner).toContainText("502");
 
   // Retry returns the user to the domain picker.
-  await banner.getByRole("button", { name: "다시 시작" }).click();
+  await banner.getByRole("button", { name: "Start over" }).click();
   await expect(page.getByTestId("domain-picker")).toBeVisible();
 });
