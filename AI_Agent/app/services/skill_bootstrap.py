@@ -119,6 +119,8 @@ def _build_policy_gap(seed_policy: dict) -> PolicyGap:
             parameter=p["name"],
             default_baseline=p.get("default_baseline", "") or "",
             baseline_source=p.get("baseline_source", "") or "",
+            help_text=p.get("help_text", "") or "",
+            example_answer=p.get("example_answer", "") or "",
         )
         for p in seed_policy.get("parameters", [])
     ]

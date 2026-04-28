@@ -29,14 +29,20 @@ policies:
         prompt: "Where does your standard NDA template live? (link or path)"
         default_baseline: "Shared drive: contracts/templates/nda_v1.docx"
         baseline_source: "Synthesized — placeholder; substitute your real NDA storage."
+        help_text: "An NDA (Non-Disclosure Agreement) is the mutual confidentiality contract signed before sharing sensitive material. The agent needs the exact template path so it can attach the right version on auto-pilot. If you don't yet have a standard NDA, get one drafted before the next intake — improvising is a legal liability."
+        example_answer: "Shared drive: contracts/templates/nda_v2.docx"
       - name: SOW_TEMPLATE
         prompt: "Where does your Statement of Work template live?"
         default_baseline: "Shared drive: contracts/templates/sow_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "An SOW (Statement of Work) is the contract that scopes the engagement — deliverables, timeline, fees, IP terms. Distinct from the NDA, which only covers confidentiality. Both must be signed before substantive work begins; the SOW is the billing-dispute backstop."
+        example_answer: "Shared drive: contracts/templates/sow_v2.docx"
       - name: CONTRACT_REPOSITORY
         prompt: "Where do you record executed contracts (so you can find them later)?"
         default_baseline: "Shared drive: contracts/executed/<client>"
         baseline_source: "Synthesized — minimum: searchable single location with effective dates."
+        help_text: "A single canonical location where signed agreements live, indexed by client and effective date. Email attachments don't count — they're not retrievable under audit pressure. Minimum viable is a shared drive folder with a consistent naming convention."
+        example_answer: "Shared drive: contracts/executed/<client_name>/"
     sources: []
     source_kind: synthesized
     tags: [intake, legal, finance]
@@ -62,14 +68,20 @@ policies:
         prompt: "Above what % effort variance vs original estimate do you require a written change order?"
         default_baseline: "15%"
         baseline_source: "Synthesized — under 15% is usually within scoping precision; above demands renegotiation."
+        help_text: "Effort variance = actual hours spent vs the original estimate, expressed as a percentage. Below this threshold the variance is usually within normal scoping precision and absorbed; above it demands a formal change order. 15% is the modal cutoff for boutique consulting."
+        example_answer: "15% variance vs original estimate"
       - name: COURTESY_HOURS_THRESHOLD
         prompt: "How many hours of out-of-scope work will you absorb as 'courtesy' before triggering a change order?"
         default_baseline: "2 hours per request, 4 hours per engagement"
         baseline_source: "Synthesized — protects relationship without compounding."
+        help_text: "Tiny scope additions ('can you also...') are relationship-positive to absorb up to a point. Set both a per-request cap and a cumulative cap per engagement so courtesy hours don't quietly add up to a full unbilled deliverable. Always log courtesy work in status reports for visibility."
+        example_answer: "2 hours per request, 4 hours per engagement"
       - name: CHANGE_ORDER_TEMPLATE
         prompt: "Where is your change-order template stored?"
         default_baseline: "Shared drive: contracts/templates/change_order_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "A change order is a written amendment to the SOW that documents the new scope, effort estimate, and revised fee. It needs the client's signature before work starts on the change. Reusable template prevents you from drafting under deadline pressure mid-engagement."
+        example_answer: "Shared drive: contracts/templates/change_order_v1.docx"
     sources: []
     source_kind: synthesized
     tags: [scope, finance, communication]
@@ -93,14 +105,20 @@ policies:
         prompt: "How often do you send status reports during an active engagement?"
         default_baseline: "Weekly (every Friday)"
         baseline_source: "Synthesized — modal cadence for boutique consulting."
+        help_text: "How often the agent should remind you to send a status report. Weekly is the modal cadence in boutique consulting because it matches most clients' weekly review rhythm. Pick a fixed day so the client builds an expectation; missed reports are loud signals even when nothing is wrong."
+        example_answer: "Weekly, every Friday afternoon"
       - name: STATUS_REPORT_TEMPLATE
         prompt: "Where is your standard status-report template?"
         default_baseline: "Shared drive: status/templates/weekly_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "A standard template usually covers: progress against milestones, risks/blockers, decisions needed from the client, hours used vs budget. Reusing one structure makes reports comparable week-to-week and signals professional discipline to the client."
+        example_answer: "Shared drive: status/templates/weekly_v2.docx"
       - name: STATUS_REPORT_OWNER
         prompt: "Who drafts and sends the status report?"
         default_baseline: "Engagement lead (project owner)"
         baseline_source: "Synthesized — single point of accountability."
+        help_text: "The named role responsible for drafting and sending the report — usually the engagement lead who has full project context. Single point of accountability beats rotation here; the report's value depends on the author having a coherent picture across the week's work."
+        example_answer: "Engagement lead (project owner)"
     sources: []
     source_kind: synthesized
     tags: [communication, project-mgmt, retention]
@@ -126,14 +144,20 @@ policies:
         prompt: "What are your standard net payment terms?"
         default_baseline: "Net 15"
         baseline_source: "Synthesized — small-firm bias toward shorter terms; Net 30 common at larger firms."
+        help_text: "'Net N' = the client must pay within N days of invoice date. Smaller firms typically use Net 15 or Net 7 because cashflow gaps are sharper; larger firms accept Net 30 or Net 45. Whatever you set, state it in the SOW so the gate is contractual, not improvised."
+        example_answer: "Net 15"
       - name: GRACE_PERIOD_DAYS
         prompt: "After the due date, how many days of grace before you pause work?"
         default_baseline: "5 days"
         baseline_source: "Synthesized — covers typical AP processing slippage."
+        help_text: "Buffer days past the invoice due date before the work-pause kicks in. Covers typical AP (Accounts Payable) processing slippage at the client — most enterprise AP departments are routinely 3-7 days late despite paying within net terms in spirit. Don't make grace longer than your cashflow can absorb."
+        example_answer: "5 days past due date"
       - name: PAUSE_NOTIFICATION_TEMPLATE
         prompt: "Where is your work-pause notification template?"
         default_baseline: "Shared drive: contracts/templates/pause_notice_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "The formal email/letter sent at the pause point with a concrete restart condition (usually 'work resumes upon receipt of payment'). The tone matters — pre-drafted template prevents you from sounding panicked or aggressive when actually delivering the pause notice under stress."
+        example_answer: "Shared drive: contracts/templates/pause_notice_v1.docx"
     sources: []
     source_kind: synthesized
     tags: [finance, communication, scope]
@@ -158,14 +182,20 @@ policies:
         prompt: "What's your rule for client-specific channels? (e.g. 'one Slack channel per client, no client info in DMs')"
         default_baseline: "One private channel per client; no client info in personal DMs or general channels"
         baseline_source: "Synthesized — minimum viable channel hygiene for small consulting teams."
+        help_text: "Channel segregation = which client material can go where, on Slack/Teams/email. The minimum viable rule is 'one private channel per client, never in DMs or #general' because casual sharing is the most common leak vector. Document the rule explicitly so new team members can't claim ignorance."
+        example_answer: "One private Slack channel per client; no client info in DMs or general channels"
       - name: APPROVED_AI_TOOLS
         prompt: "Which AI tools are approved for confidential client context? (list, or 'none until vetted')"
         default_baseline: "None until each tool is vetted for data-handling and client consent is on file"
         baseline_source: "Synthesized — most consulting confidentiality clauses prohibit unvetted third-party processing."
+        help_text: "Most NDAs prohibit sharing confidential material with unvetted third parties — and AI tools are third parties. List which AI tools have passed your data-handling review (data residency, retention, sub-processor disclosure) AND have explicit client consent on file. Default to 'none until vetted' if uncertain."
+        example_answer: "Claude Enterprise (zero-retention tier) only; client consent required per engagement"
       - name: REDACTION_GUIDELINES
         prompt: "What's your standard for redacting client material before external reuse (case studies, recruiting)?"
         default_baseline: "Replace client name, identifying numbers, and proprietary details before any external use; client signoff required for direct attribution"
         baseline_source: "Synthesized — covers the common leak vectors."
+        help_text: "What must be removed or anonymized before client material can be reused in case studies, recruiting decks, or marketing. Common leak vectors are client name, internal headcount or revenue figures, screenshots with identifiers, and named individuals. Direct attribution always requires a client signoff."
+        example_answer: "Replace name, financials, screenshots; client signoff for direct attribution"
     sources: []
     source_kind: synthesized
     tags: [legal, security, communication]
@@ -192,14 +222,20 @@ policies:
         prompt: "Where is your subcontractor confidentiality agreement template?"
         default_baseline: "Shared drive: contracts/templates/subcontractor_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "The contract that binds a subcontractor to the same confidentiality terms the team owes the client. Without it, your NDA with the client is functionally broken the moment the subcontractor sees client material. Reusable template means you can onboard a sub in hours, not days."
+        example_answer: "Shared drive: contracts/templates/subcontractor_v1.docx"
       - name: DISCLOSURE_TEMPLATE
         prompt: "Where is your client-disclosure template (subcontractor or referral)?"
         default_baseline: "Shared drive: contracts/templates/disclosure_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "The written notification to the client that names the subcontractor (or referral partner) and any consideration involved. Sent BEFORE the relationship begins, not after. Many professional codes (legal, accounting, financial advisory) make written disclosure mandatory regardless of consideration size."
+        example_answer: "Shared drive: contracts/templates/disclosure_v1.docx"
       - name: REFERRAL_DISCLOSURE_THRESHOLD
         prompt: "Below what referral consideration value (if any) do you skip explicit disclosure?"
         default_baseline: "Always disclose existence of consideration; amount disclosure optional below $500"
         baseline_source: "Synthesized — most professional codes require existence-disclosure regardless of amount."
+        help_text: "Most professional codes require disclosing the EXISTENCE of any consideration regardless of size; the AMOUNT can sometimes be omitted below a threshold. The safest stance is 'always disclose existence' — discovered hidden referral fees are a top professional-conduct complaint trigger."
+        example_answer: "Always disclose existence; amount only above $500"
     sources: []
     source_kind: synthesized
     tags: [legal, communication, finance]
@@ -223,14 +259,20 @@ policies:
         prompt: "Where is your closeout checklist? (final deliverable, final invoice, data return, retro)"
         default_baseline: "Shared drive: ops/closeout_checklist.md"
         baseline_source: "Synthesized — placeholder; minimum viable: 4-item list above."
+        help_text: "A standard closeout checklist usually covers: final deliverable handoff with written acknowledgement, final invoice, return/destruction of client material, internal retrospective. Skipping any item creates lingering exposure. The checklist itself is the audit trail when something goes wrong post-engagement."
+        example_answer: "Shared drive: ops/closeout_checklist.md"
       - name: DATA_DESTRUCTION_POLICY
         prompt: "What's your policy for client confidential material at closeout? (return / destroy / retain)"
         default_baseline: "Return upon request, destroy after 90 days otherwise; retain only the executed agreements"
         baseline_source: "Synthesized — covers the common contract clause."
+        help_text: "What happens to client confidential material at engagement end. The standard NDA clause is 'return on request, destroy after N days otherwise; retain only the signed agreements for legal record.' Whatever you commit to in the contract, the closeout checklist must enforce on the actual file system."
+        example_answer: "Return on request; destroy after 90 days otherwise; retain executed agreements only"
       - name: TESTIMONIAL_REQUEST_TEMPLATE
         prompt: "Where is your testimonial / case-study request template?"
         default_baseline: "Shared drive: marketing/templates/testimonial_request_v1.docx"
         baseline_source: "Synthesized — placeholder."
+        help_text: "Pre-drafted ask for a testimonial or case-study release, sent only when the engagement ended positively. Sent too early it feels grasping; sent never and you lose your strongest sales asset. Template ensures the ask is calibrated and includes a clear out for the client."
+        example_answer: "Shared drive: marketing/templates/testimonial_request_v1.docx"
     sources: []
     source_kind: synthesized
     tags: [project-mgmt, legal, learning]
