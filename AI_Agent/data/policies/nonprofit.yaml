@@ -45,6 +45,8 @@ policies:
     sources:
       - title: "IRS Publication 1771 — Charitable Contributions Substantiation and Disclosure"
         url: "https://www.irs.gov/pub/irs-pdf/p1771.pdf"
+      - title: "AFP — Donor Bill of Rights"
+        url: "https://afpglobal.org/donor-bill-rights"
     source_kind: regulatory
     tags: [finance, retention, legal]
 
@@ -77,8 +79,12 @@ policies:
         prompt: "Who is your major-gifts officer (named role or person)?"
         default_baseline: "Executive Director (for small NPOs with no dedicated officer)"
         baseline_source: "Synthesized — separation only at staffing scale; below that the ED owns major-donor relationships."
-    sources: []
-    source_kind: synthesized
+    sources:
+      - title: "AFP — Code of Ethical Standards"
+        url: "https://afpglobal.org/ethics/code-ethical-standards"
+      - title: "AFP — Donor Bill of Rights"
+        url: "https://afpglobal.org/donor-bill-rights"
+    source_kind: industry-baseline
     tags: [retention, finance, communication]
 
   - id: nonprofit.donor_data_privacy
@@ -117,6 +123,8 @@ policies:
         url: "https://gdpr.eu/"
       - title: "California CCPA — Consumer Privacy Act"
         url: "https://oag.ca.gov/privacy/ccpa"
+      - title: "AFP — Donor Bill of Rights (privacy & confidentiality clauses)"
+        url: "https://afpglobal.org/donor-bill-rights"
     source_kind: regulatory
     tags: [legal, security, retention]
 
@@ -147,13 +155,17 @@ policies:
       - name: BACKGROUND_CHECK_VENDOR
         prompt: "Which background-check vendor do you use, and at what depth per tier?"
         default_baseline: "Vendor TBD; Tier 2 = standard criminal; Tier 3 = enhanced (sex-offender registry, multi-state)"
-        baseline_source: "Synthesized — Tier 3 must include vulnerable-populations registry checks where the law applies."
+        baseline_source: "NRMC — Tier 3 should include vulnerable-populations registry checks. Note: per FTC 2011 guidance the Fair Credit Reporting Act (FCRA) applies to volunteer screening, so the vendor must be FCRA-compliant."
       - name: VOLUNTEER_RECORD_SYSTEM
         prompt: "Where do you record volunteer screening completion?"
         default_baseline: "Volunteer management platform (or shared drive: volunteers/<name>/file)"
         baseline_source: "Synthesized — must be retrievable for audit and insurance."
-    sources: []
-    source_kind: synthesized
+    sources:
+      - title: "Nonprofit Risk Management Center — Background Checks, Screening and Your Nonprofit"
+        url: "https://nonprofitrisk.org/resources/background-checks-screening-and-your-nonprofit/"
+      - title: "NRMC — Background Screening for Nonprofits: What to Consider"
+        url: "https://nonprofitrisk.org/resources/background-screening-for-nonprofits-what-to-consider/"
+    source_kind: industry-baseline
     tags: [safety, legal, onboarding]
 
   - id: nonprofit.restricted_fund_validation
@@ -185,9 +197,11 @@ policies:
       - name: CODING_DECISION_LOG
         prompt: "Where do you log coding-decision reasoning for ambiguous spends?"
         default_baseline: "Shared drive: finance/coding_decisions.md (one entry per decision)"
-        baseline_source: "Synthesized — auditors reconstruct from this log; minimum: expense, fund, reasoning, date, signoff."
-    sources: []
-    source_kind: synthesized
+        baseline_source: "FASB ASU 2016-14 — auditors require reconstructible records of donor-restriction adherence; minimum: expense, fund, reasoning, date, signoff."
+    sources:
+      - title: "FASB ASU 2016-14 — Presentation of Financial Statements of Not-for-Profit Entities"
+        url: "https://storage.fasb.org/ASU_2016-14.pdf"
+    source_kind: regulatory
     tags: [finance, legal, compliance]
 
   - id: nonprofit.grant_deadline_tracking
@@ -224,9 +238,13 @@ policies:
       - name: DEADLINE_CHECKLIST
         prompt: "Where is your deadline-deliverable checklist? (per grant or generic)"
         default_baseline: "Shared drive: grants/<grant>/deadline_checklist.md"
-        baseline_source: "Synthesized — placeholder; minimum: required reports + financial docs + signatures."
-    sources: []
-    source_kind: synthesized
+        baseline_source: "Council on Foundations Grantmaking Basics — checklist should cover required reports + financial docs + signatures so the foundation can document stewardship if reviewed."
+    sources:
+      - title: "Council on Foundations — Complete Guide to Grantmaking Basics"
+        url: "https://cof.org/content/complete-guide-grantmaking-basics-field-guide-funders"
+      - title: "Council on Foundations — Grants Management"
+        url: "https://cof.org/content/grants-management"
+    source_kind: industry-baseline
     tags: [finance, project-mgmt, communication]
 
   - id: nonprofit.public_communication_approval
@@ -261,7 +279,11 @@ policies:
         default_baseline: "Shared drive: comms/nonpartisan_guideline.md (US 501(c)(3) — no candidate endorsement)"
         baseline_source: "IRS § 501(c)(3) — absolute prohibition on political campaign intervention; equivalent rules apply in most jurisdictions."
     sources:
-      - title: "IRS — The Restriction of Political Campaign Intervention by Section 501(c)(3) Tax-Exempt Organizations"
+      - title: "IRS — Restriction of Political Campaign Intervention by 501(c)(3) Tax-Exempt Organizations"
         url: "https://www.irs.gov/charities-non-profits/charitable-organizations/the-restriction-of-political-campaign-intervention-by-section-501c3-tax-exempt-organizations"
+      - title: "IRS — Lobbying (501(c)(3) limits + 501(h) election)"
+        url: "https://www.irs.gov/charities-non-profits/lobbying"
+      - title: "National Council of Nonprofits — Federal Law Protects Nonprofit Advocacy & Lobbying"
+        url: "https://www.councilofnonprofits.org/federal-law-protects-nonprofit-advocacy-lobbying"
     source_kind: regulatory
     tags: [legal, communication, governance]
