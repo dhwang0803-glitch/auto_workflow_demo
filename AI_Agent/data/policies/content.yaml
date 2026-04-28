@@ -40,9 +40,7 @@ policies:
         default_baseline: "Start of content + description + caption (all three)"
         baseline_source: "FTC guidance — single placement is generally insufficient; disclosure must be where the audience will encounter it."
     sources:
-      - title: "FTC — Disclosures 101 for Social Media Influencers"
-        url: "https://www.ftc.gov/business-guidance/resources/disclosures-101-social-media-influencers"
-      - title: "UK ASA — Recognition of advertising"
+      - title: "UK ASA — Advertising codes (CAP / BCAP)"
         url: "https://www.asa.org.uk/codes-and-rulings/advertising-codes.html"
     source_kind: regulatory
     tags: [legal, communication, monetization]

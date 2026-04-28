@@ -47,17 +47,17 @@ policies:
       - name: RETURN_WINDOW_DAYS
         prompt: "How many days after delivery do you accept return requests?"
         default_baseline: "30 days"
-        baseline_source: "Synthesized — 30 days is a common industry window for physical goods; the NRF / Happy Returns 2024 study reports a 17.6% online return rate but no single canonical window. Legal minimums vary by jurisdiction (FTC mail-order rule, EU Consumer Rights Directive)."
+        baseline_source: "Synthesized — 30 days is a common industry window for physical goods. Legal minimums vary by jurisdiction (FTC mail-order rule, EU Consumer Rights Directive)."
       - name: APPROVER_RESPONSE_SLA
         prompt: "How long should the approver have to respond before you escalate further?"
         default_baseline: "1 business day"
         baseline_source: "Synthesized — common operations SLA."
     sources:
-      - title: "Stripe — Refunds documentation"
-        url: "https://stripe.com/docs/refunds"
+      - title: "Stripe — Refund and cancel payments"
+        url: "https://docs.stripe.com/refunds"
       - title: "NRF / Happy Returns — 2024 Consumer Returns in the Retail Industry"
         url: "https://nrf.com/research/2024-consumer-returns-retail-industry"
-      - title: "Shopify — Ecommerce Returns: Average Return Rate and How to Reduce It"
+      - title: "Shopify — Ecommerce Returns: Average Return Rate and How to Reduce It (2025)"
         url: "https://www.shopify.com/enterprise/blog/ecommerce-returns"
     source_kind: industry-baseline
     tags: [refund, escalation, finance]
@@ -178,7 +178,7 @@ policies:
       - name: PER_CUSTOMER_USE_LIMIT
         prompt: "How many times can the same customer (payment method or address) use a single-use code before it's flagged?"
         default_baseline: "1 use"
-        baseline_source: "Synthesized — first-time-buyer codes are single-use by intent. Stripe Radar's bundled rules treat repeat use of single-use codes as a fraud signal."
+        baseline_source: "Synthesized — first-time-buyer codes are single-use by intent."
       - name: REVIEW_HOLD_WINDOW_HOURS
         prompt: "After flagging an order for review, how long do you hold it before auto-cancelling?"
         default_baseline: "48 hours"
@@ -186,9 +186,9 @@ policies:
       - name: DEVICE_MATCH_THRESHOLD
         prompt: "How aggressive is your device-fingerprint matching for abuse detection? (none / loose / strict)"
         default_baseline: "loose (IP + payment-method match only)"
-        baseline_source: "Stripe Radar Rules 101 — IP + payment-method matching is the recommended starting layer; strict device fingerprinting hits false positives on shared networks."
+        baseline_source: "Synthesized — strict device fingerprinting hits false positives on shared networks. See Stripe Radar Rules 101 for actual rule patterns."
     sources:
-      - title: "Stripe Radar — Fraud prevention rules"
+      - title: "Stripe — Fraud prevention rules (Radar documentation)"
         url: "https://docs.stripe.com/radar/rules"
       - title: "Stripe — Radar for Fraud Teams: Rules 101"
         url: "https://stripe.com/guides/radar-rules-101"
@@ -249,16 +249,14 @@ policies:
       - name: CUSTOMER_CALL_THRESHOLD
         prompt: "Above what dispute amount do you call the customer directly before submitting evidence?"
         default_baseline: "$50"
-        baseline_source: "Stripe disputes guidance — direct contact is highest-leverage on small-to-mid disputes (most are withdrawn)."
+        baseline_source: "Synthesized — direct contact is widely reported as high-leverage on small-to-mid disputes; specific threshold is team risk-tolerance."
       - name: EVIDENCE_PACKET_TEMPLATE
         prompt: "Where is your evidence-packet checklist or template stored?"
         default_baseline: "Shared drive: ops/chargeback_evidence.md"
         baseline_source: "Synthesized — template should live in the team's standard ops doc location."
     sources:
-      - title: "Stripe — Disputes and chargebacks"
-        url: "https://stripe.com/docs/disputes"
-      - title: "Visa — Dispute Management Guidelines for Visa Merchants (June 2024)"
-        url: "https://usa.visa.com/content/dam/VCOM/global/support-legal/documents/merchants-dispute-management-guidelines.pdf"
+      - title: "Stripe — Disputes documentation"
+        url: "https://docs.stripe.com/disputes"
     source_kind: industry-baseline
     tags: [finance, fraud, communication]
 
@@ -287,15 +285,11 @@ policies:
       - name: REVIEW_RESPONSE_SLA_HOURS
         prompt: "How fast do you publicly respond to a flagged negative review?"
         default_baseline: "24 hours"
-        baseline_source: "BBB business tip — promptness signals attentiveness to other readers; 97% of consumers read company responses to reviews (BrightLocal survey, cited by BBB)."
+        baseline_source: "Synthesized — speed signals attentiveness to other readers."
       - name: REVIEW_RESPONSE_OWNER
         prompt: "Who drafts and posts the public response?"
         default_baseline: "Founder or operations lead"
         baseline_source: "Synthesized — public-facing tone usually owned by senior staff for small teams."
-    sources:
-      - title: "BBB — How to Respond to Negative Reviews (Business Tip)"
-        url: "https://www.bbb.org/article/business/23256-bbb-business-tip-how-to-respond-to-negative-reviews"
-      - title: "BBB — The Power of Customer Reviews on Small Businesses"
-        url: "https://www.bbb.org/article/business/23063-better-business-briefing-the-power-of-customer-reviews-on-small-businesses"
-    source_kind: industry-baseline
+    sources: []
+    source_kind: synthesized
     tags: [reputation, communication, retention]
