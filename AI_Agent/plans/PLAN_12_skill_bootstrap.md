@@ -28,13 +28,15 @@ PLAN_11 종결 후 차별화 재검토 결과 (ADR-022) 채택된 방향을 W2-W
 
 ### In Scope (W2-W3, ~10일)
 
-- 통합 파이프라인 backend (정책 추출 / 갭 분석 / 답변→skill / 도메인 분류)
+- 통합 파이프라인 backend (정책 추출 / 갭 분석 / 답변→skill 배치 / 도메인 분류)
+- 시드 정책 라이브러리 (5 도메인, parameter 단위 micro-questions + default_baseline + 산업표준 sources 인용 — 합성된 부분은 `source_kind: synthesized` 로 정직 표기)
 - DB 스키마 5개 (`skills`, `skill_sources`, `skill_applications`, `policy_documents`, `policy_extractions`)
 - 문서 업로드 + 파싱 (PDF / MD / plain text)
 - 임베딩 인덱싱 (BGE-M3, 청크 단위)
 - Skill retrieval (compose 시 top-K query→skill)
-- 검토/편집 UI (skill 카드)
-- 인터뷰 UI (ChatPanel 재사용)
+- 검토/편집 UI (skill 카드, source attribution 배지)
+- 인터뷰 UI (ChatPanel 재사용, parameter 카드 + "Use baseline" 버튼)
+- 활성 skill 라이브러리 뷰 (`/skills`, markdown render + sources references)
 - Compose 시 skill 컨텍스트 주입 + 인용 표시
 
 ### Out of Scope (보류 / future)
@@ -71,9 +73,11 @@ PLAN_11 종결 후 차별화 재검토 결과 (ADR-022) 채택된 방향을 W2-W
 ```
 
 각 단계 분기:
-- **docs 풍부한 팀**: (1)-(4) 가 핵심, (5)-(7) 은 갭 적어 1-2 질문
-- **docs 없는 1인**: (1)-(4) skip, (5) 는 도메인 표준 정책 풀세트 → 5-10 질문
+- **docs 풍부한 팀**: (1)-(4) 가 핵심, (5)-(7) 은 갭 적어 1-2 정책분 질문
+- **docs 없는 1인**: (1)-(4) skip, (5) 는 도메인 표준 정책 풀세트 → 5-10 정책 × parameter 단위 micro-questions
 - 같은 storage (`skills`, `skill_sources`), 같은 검토 UI, 같은 적용 메커니즘
+
+**(2026-04-28) (5)-(7) 폴리시 변경**: 정책당 1 큰 Q → parameter 단위 micro-questions (시드 YAML `parameters[].prompt`) + default_baseline + baseline_source. (5) 의 질문 텍스트는 LLM 이 만들지 않고 시드 그대로 첨부 — LLM 호출은 (4) coverage 판정 (docs path) 과 (7) answers→skill 배치 컴파일 두 곳뿐.
 
 ## 5. DB 스키마 (Database 브랜드)
 
@@ -144,10 +148,12 @@ CREATE INDEX idx_policy_extractions_embedding ON policy_extractions USING ivffla
 |---|---|---|---|
 | **policy_extract** | 청크 텍스트 | skill 후보 JSON list (조건+액션 페어 단위) | 청크당 1회 |
 | **domain_classify** | 자유 텍스트 ("어떤 일을 하시나요?") | 카테고리 (e-commerce / 서비스업 / 컨설팅 / 컨텐츠 / NPO / 기타) | 인터뷰 시작 1회 |
-| **gap_analyze** | (도메인, 추출된 skill 리스트) | 부족 정책 list + 질문 후보 | 인터뷰 직전 1회 |
-| **answer_to_skill** | (질문, 답변, 도메인) | 구조화 skill JSON | 답변당 1회 |
+| **gap_analyze** | (도메인, 추출된 skill 리스트) | 부족 seed `policy_id` 리스트 — 질문/베이스라인은 시드 YAML 그대로 첨부 (LLM 생성 X) | 인터뷰 직전 1회. `extracted_skills` 비면 deterministic 분기 (LLM 미호출) |
+| **answers_to_skill** | (정책 id, [(parameter_name, answer)] N개) | 한 정책당 1 SkillDraft (사용자 값 substituted) | 정책당 1회 (인터뷰 종료 시 batch) |
 
 추가로 기존 `compose` 호출은 multi-turn + skill retrieval 컨텍스트 추가됨.
+
+> **2026-04-28 폴리시 재설계** — `gap_analyze` 가 질문 텍스트를 생성하던 모델 (정책당 1 큰 Q) 폐기. 시드 YAML 의 `parameters[].prompt` (W2-4a) 를 그대로 사용 → LLM 은 coverage 판정만 담당. `answer_to_skill` (1 Q-A → 1 skill) 은 `answers_to_skill` (정책당 N Q-A → 1 skill batch) 로 교체. 이유: parameter 단위 micro-questions + baseline + 산업표준 sources 풀세트 (메모리 `project_wizard_polish_abc.md`).
 
 ### Multi-turn 인터랙션 모델 (single-shot 폐기)
 
@@ -228,17 +234,24 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 
 ### W2 후반 (04/26-05/04, 9일 가용)
 
+> **2026-04-28 폴리시 재설계 반영** — W2-4 가 한 정책당 1 큰 Q 모델에서 parameter 단위 micro-questions + baseline + 산업표준 sources 풀세트로 확장 (메모리 `project_wizard_polish_abc.md`). W2-3 (시드 YAML) / W2-5 (인터뷰 UI) / W2-6 (skill 카드) 는 이미 머지된 상태에서 부분 재작업이 필요 — `b` 접미사로 분리. W2-9 (라이브러리 뷰) 는 신규 산출물 (영상/심사위원에 보여줄 tangible artifact). W2-4a/b/c 가 W2-5b/W2-6b/W2-9 의 선행.
+
 | # | 작업 | 브랜드 | 일수 |
 |---|---|---|---|
 | W2-1 | DB 스키마 마이그레이션 (5 테이블 + pgvector 활성화) | Database | 0.5d |
 | W2-2 | 도메인 분류 LLM (자유텍스트→카테고리, 또는 칩 UI 선택) | AI_Agent | 0.5d |
-| W2-3 | 도메인별 표준 정책 정의 (e-commerce / 서비스업 / 컨설팅 / 컨텐츠 / NPO 5개 도메인 × 5-10 정책 시드) | AI_Agent (정적 데이터) | 1d |
-| W2-4 | gap_analyze LLM 프롬프트 + 답변→skill LLM 프롬프트 | AI_Agent | 1d |
-| W2-5 | 인터뷰 UI (ChatPanel 재사용 + 도메인 칩 + 진행도) | Frontend | 1d |
-| W2-6 | skill 카드 컴포넌트 + 검토 UI (편집/거절/승인) | Frontend | 1d |
-| W2-7 | API 엔드포인트: `POST /api/v1/skills/bootstrap` (인터뷰 시작) + `POST /api/v1/skills/answer` (턴) + `POST /api/v1/skills/{id}/approve` | API_Server | 1d |
-| W2-8 | E2E 검증 (Persona A 풀세트, 문서 없이 5질문 → 5 skill 생성 → 활성) | 통합 | 1d |
-| **W2 합계** | | | **7d** (~9d 가용 안에 fit, 2d 버퍼) |
+| W2-3 | 도메인별 표준 정책 정의 (5 도메인 × 5-10 정책 시드, 합성 best-practice 패치워크) | AI_Agent (정적 데이터) | 1d |
+| W2-4a | **시드 YAML 스키마 마이그레이션** — `parameters` 가 string list → object list `{name, prompt, default_baseline, baseline_source}`, policy 레벨에 `sources: [{title, url}]` + `source_kind: synthesized\|industry-baseline\|regulatory` 추가. 5 도메인 × 정책 × 평균 4 parameter ≈ 160 베이스라인 + 정책당 sources 1차는 LLM 합성 후 사용자 sanity check. 합성된 부분은 `source_kind: synthesized` 로 정직하게 표시 | AI_Agent (정적 데이터) | 0.5d |
+| W2-4b | **gap_analyze 재구성** — `extracted_skills` 비면 deterministic 분기 (전 시드를 gap 으로 emit, LLM 미호출). 비어있지 않으면 LLM 은 coverage 판정만. **질문 텍스트는 시드 `parameters[].prompt` 그대로 첨부** (LLM 생성 X). 응답 schema: `{missing: [{policy_id, parameters: [{name, prompt, default_baseline, baseline_source}], sources, source_kind}]}` | AI_Agent | 0.5d |
+| W2-4c | **answers_to_skill (batch)** — 입력 (정책 id, [(parameter_name, answer)] N개) → 1 SkillDraft. 기존 `answer_to_skill` (1 Q-A → 1 skill) 폐기. baseline 채택 답변과 사용자 작성 답변을 동등하게 다룸. needs_clarification 은 답변 N개 중 하나라도 모호하면 true | AI_Agent | 0.5d |
+| W2-5 | 인터뷰 UI (ChatPanel 재사용 + 도메인 칩 + 진행도) — **머지 완료 (PR #137)** | Frontend | 1d |
+| W2-5b | **인터뷰 UI 폴리시** — 정책당 1 textarea → parameter 카드 N개. 카드마다 prompt + baseline preview + "Use baseline" 버튼 (B). 사용자가 클릭하면 텍스트필드에 baseline 자동 채움 (편집 가능). 진행도는 정책 단위 유지 (parameter 카드는 그 안에서 펼침/접힘) | Frontend | 0.75d |
+| W2-6 | skill 카드 컴포넌트 + 검토 UI (편집/거절/승인) — **머지 완료 (PR #138)** | Frontend | 1d |
+| W2-6b | **skill 카드 source attribution** — 카드 푸터에 `source_kind` 배지 + sources 링크 (있는 경우). "Synthesized baseline" vs "Industry baseline (Stripe / NRF)" 구분 표시 (C 의 사실대로 인용) | Frontend | 0.25d |
+| W2-7 | API 엔드포인트: `POST /api/v1/skills/bootstrap` (인터뷰 시작) + `POST /api/v1/skills/answer` (턴) + `POST /api/v1/skills/{id}/approve`. **W2-4c 의 batch 시그니처 반영해 `/answer` → `/answers` (정책당 N 답변)** | API_Server | 1d |
+| W2-8 | E2E 검증 (Persona A 풀세트, 문서 없이 5 정책 × 평균 4 parameter ≈ 20 micro-questions → 5 skill 생성 → 활성) | 통합 | 1d |
+| W2-9 | **라이브러리 뷰** — Frontend `/skills` 라우트 + 글로벌 nav 진입점. 활성 skill markdown render + sources references 섹션 (C). 평소 사용자가 정책 라이브러리를 들여다볼 수 있는 tangible 산출물. compose 시 자동 retrieval (W3-6) 과는 별도 surface | Frontend | 1d |
+| **W2 합계** | | | **9d** (~9d 가용 안에 fit, 0d 버퍼. W2-3/W2-5/W2-6 머지분 제외 시 잔여 ~5.5d) |
 
 ### W3 (05/05-05/12, 7일 가용)
 
@@ -274,8 +287,12 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 | **#134** | Frontend | 문서 업로드 UI (W3-1) | #133 |
 | **#135** | AI_Agent | gap analysis 통합 (W3-5) | #133 |
 | **#136** | API_Server | compose retrieval+inject (W3-6) | #127, #133 |
+| **#141** | AI_Agent | 시드 YAML 스키마 마이그레이션 + gap_analyze 재구성 + answers_to_skill batch (W2-4a/b/c). stub 백엔드도 새 schema 출력하도록 패치 | — (선행 없음, 시드 YAML / 서비스 / stub 만 건드림) |
+| **#142** | API_Server | `/skills/answer` → `/skills/answers` 시그니처 변경 (정책당 batch). W2-7 의 후속 (이미 머지됐다고 가정) | #141 |
+| **#143** | Frontend | 인터뷰 UI parameter 카드화 + "Use baseline" 버튼 (W2-5b). batch submit 으로 wire 변경 | #141, #142 |
+| **#144** | Frontend | skill 카드 source attribution + `/skills` 라이브러리 뷰 + 글로벌 nav (W2-6b + W2-9) | #141 |
 
-총 10 PR. PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리 — 다른 PR 에 묶이면 회귀 어려움).
+총 14 PR. **2026-04-28 폴리시 후 추가**: #141-#144 (4 PR). PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리). PR #141 의 stub 패치는 PR #140 (W2-8a) stub 확장의 직속 확장 — 같은 stub 파일을 다시 건드리므로 #141 가 main 진입한 뒤 라이브 backend 작업이 잇따라야 함.
 
 ## 11. 리스크 + 완화
 
@@ -288,6 +305,8 @@ ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
 | Persona A 인터뷰 가속 영상이 자연스럽지 않음 | 영상 narrative 약화 | W4 실측 후 라이브 vs 시드 재생 결정 (ADR-022 미해결 항목) |
 | W3 일수 부족 (0d 버퍼) | 일정 미스 | W2-8 의 E2E 검증을 W3-1 과 병행 가능 → 1d 추가 확보 |
 | AI Composer 기존 코드 multi-turn 미고려 (single-shot 가정) | 리팩터 부담 | PR #132 + PR #136 가 인터페이스 변경. 기존 PLAN_02 stub backend 인터페이스 유지로 backward compat 유지 |
+| baseline 160개 / sources 풀의 정확성·일관성 | 신뢰 훼손 (가짜 출처 = 데모 자살골) | LLM 1차 합성 후 사람 검토 필수. 검증 불가능한 source 는 절대 포함 X — `source_kind: synthesized` 로 정직하게 표기. industry-baseline 표기는 실제로 추적 가능한 URL 만 (Stripe docs, NRF report, FTC guideline 같이 안정 URL) |
+| W2-5/W2-6 머지분 재작업 (5b/6b) 회귀 | 이미 작동하던 wizard 가 깨짐 | 폴리시 PR (#143/#144) 머지 전 영어 텍스트 + 진행도 + 통합 시연 (PR #140 의 Persona A 검증 시퀀스) 회귀 검증 의무화 |
 
 ## 12. 후속 영향 (PLAN_13 / future)
 
