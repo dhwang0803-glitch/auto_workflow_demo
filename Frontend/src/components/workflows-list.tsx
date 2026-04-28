@@ -23,6 +23,13 @@ export function WorkflowsList() {
         </div>
         <div className="flex gap-2">
           <Link
+            href="/skills"
+            className="text-sm border rounded px-3 py-1.5 hover:bg-gray-50"
+            data-testid="link-skill-library"
+          >
+            Skill library
+          </Link>
+          <Link
             href="/skills/new"
             className="text-sm border rounded px-3 py-1.5 hover:bg-gray-50"
             data-testid="link-skill-wizard"

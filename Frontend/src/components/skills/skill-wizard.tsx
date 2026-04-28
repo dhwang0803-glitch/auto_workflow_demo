@@ -16,6 +16,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { ParameterCard } from "./parameter-card";
 import { SkillCard, makeReviewHandlers } from "./skill-card";
+import { SourceKindPill } from "./source-kind-pill";
 
 // Persona A interview wizard (PLAN_12 W2-5 + W2-5b).
 //
@@ -320,7 +321,12 @@ function AskingPolicyTurn({
         {turn.policyName}
       </div>
       {turn.sourceKind && turn.sourceKind !== "synthesized" && (
-        <SourceKindPill kind={turn.sourceKind} sources={turn.sources} />
+        <div className="mb-3">
+          <SourceKindPill
+            kind={turn.sourceKind}
+            sources={turn.sources}
+          />
+        </div>
       )}
       {turn.parameters.map((p) => {
         const key = p.parameter ?? p.text;
@@ -333,40 +339,6 @@ function AskingPolicyTurn({
           />
         );
       })}
-    </div>
-  );
-}
-
-function SourceKindPill({
-  kind,
-  sources,
-}: {
-  kind: PolicyTurn["sourceKind"];
-  sources: PolicyTurn["sources"];
-}) {
-  const label =
-    kind === "regulatory" ? "Regulatory" : "Industry baseline";
-  const className =
-    kind === "regulatory"
-      ? "bg-purple-50 text-purple-800 border-purple-200"
-      : "bg-emerald-50 text-emerald-800 border-emerald-200";
-  return (
-    <div
-      className={`mb-3 inline-flex max-w-full flex-wrap items-center gap-2 rounded border px-2 py-1 text-[11px] ${className}`}
-      data-testid={`source-kind-${kind}`}
-    >
-      <span className="font-semibold uppercase tracking-wide">{label}</span>
-      {sources.slice(0, 2).map((s) => (
-        <a
-          key={s.url}
-          href={s.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline hover:no-underline"
-        >
-          {s.title}
-        </a>
-      ))}
     </div>
   );
 }

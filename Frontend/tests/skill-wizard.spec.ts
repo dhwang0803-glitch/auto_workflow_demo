@@ -210,6 +210,14 @@ test("Skill wizard: pick domain → batch-answer 2 policies → approve + reject
   const card1 = page.getByTestId(`skill-card-${skillIds[0]}`);
   await expect(card1).toContainText("REFUND_AUTO_APPROVE_LIMIT=$50");
   await expect(card1).toHaveAttribute("data-action-status", "pending");
+  // W2-6b: SkillCard carries the same source-kind pill the wizard
+  // surfaced mid-flow, scoped per card so multiple drafts don't collide.
+  await expect(
+    page.getByTestId(`source-kind-industry-baseline-card-${skillIds[0]}`),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId(`source-kind-synthesized-card-${skillIds[1]}`),
+  ).toBeVisible();
 
   // Approve → active.
   await page.getByTestId(`approve-${skillIds[0]}`).click();

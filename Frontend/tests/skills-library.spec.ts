@@ -1,0 +1,149 @@
+import { test, expect } from "@playwright/test";
+
+// Skill library mock smoke (PLAN_12 W2-9).
+//
+// /skills lists active skills by default with status tabs for
+// pending_review / rejected / archived. SkillRecord shape mirrors
+// API_Server's SkillResponse; condition / action are JSONB dicts wrapped
+// as { text: "..." } by the wizard.
+
+const ACTIVE_SKILLS = [
+  {
+    id: "11111111-1111-1111-1111-111111111111",
+    name: "ecommerce.refund_threshold_skill",
+    description: "Refunds above $500 require manager approval.",
+    condition: { text: "Customer requests refund AND amount > $500" },
+    action: { text: "Forward to manager via #refunds Slack channel" },
+    scope: "workspace",
+    status: "active",
+    created_at: "2026-04-28T08:00:00Z",
+    updated_at: "2026-04-28T08:00:00Z",
+  },
+  {
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "ecommerce.shipping_threshold_skill",
+    description: null,
+    condition: { text: "Order qualifies for free shipping" },
+    action: { text: "Apply free shipping at checkout" },
+    scope: "workspace",
+    status: "active",
+    created_at: "2026-04-28T08:01:00Z",
+    updated_at: "2026-04-28T08:01:00Z",
+  },
+];
+
+const PENDING_SKILLS = [
+  {
+    id: "33333333-3333-3333-3333-333333333333",
+    name: "consulting.scope_change_skill",
+    description: null,
+    condition: { text: "Scope creep detected" },
+    action: { text: "Send change order template" },
+    scope: "workspace",
+    status: "pending_review",
+    created_at: "2026-04-28T08:02:00Z",
+    updated_at: "2026-04-28T08:02:00Z",
+  },
+];
+
+test("Skill library: lists active skills by default with markdown rendering", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/skills*", async (route) => {
+    const url = new URL(route.request().url());
+    const status = url.searchParams.get("status");
+    const skills = status === "pending_review" ? PENDING_SKILLS : ACTIVE_SKILLS;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ skills }),
+    });
+  });
+
+  await page.goto("/skills");
+
+  await expect(page.getByTestId("skills-library")).toBeVisible();
+  // Default tab is Active — surfaces both fixtures.
+  const list = page.getByTestId("library-list");
+  await expect(list).toBeVisible();
+  const rows = page.locator('[data-testid^="library-row-"]');
+  await expect(rows).toHaveCount(2);
+
+  // First row exposes condition + action prose extracted from the JSONB
+  // dict, plus the active status pill.
+  const row1 = page.getByTestId(`library-row-${ACTIVE_SKILLS[0].id}`);
+  await expect(row1).toContainText(
+    "Customer requests refund AND amount > $500",
+  );
+  await expect(row1).toContainText("Forward to manager via #refunds");
+  await expect(
+    page.getByTestId(`library-status-${ACTIVE_SKILLS[0].id}`),
+  ).toContainText("active");
+});
+
+test("Skill library: status tab switches the query", async ({ page }) => {
+  await page.route("**/api/v1/skills*", async (route) => {
+    const url = new URL(route.request().url());
+    const status = url.searchParams.get("status");
+    const skills = status === "pending_review" ? PENDING_SKILLS : ACTIVE_SKILLS;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ skills }),
+    });
+  });
+
+  await page.goto("/skills");
+  // Switch to pending_review — list re-fetches and the consulting fixture
+  // appears.
+  await page.getByTestId("library-tab-pending_review").click();
+  await expect(
+    page.getByTestId(`library-row-${PENDING_SKILLS[0].id}`),
+  ).toBeVisible();
+  await expect(
+    page.locator('[data-testid^="library-row-"]'),
+  ).toHaveCount(1);
+});
+
+test("Skill library: empty state offers wizard link", async ({ page }) => {
+  await page.route("**/api/v1/skills*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ skills: [] }),
+    }),
+  );
+
+  await page.goto("/skills");
+  await expect(page.getByTestId("library-empty")).toBeVisible();
+  await expect(
+    page.getByTestId("library-empty").getByRole("link", { name: "Run the wizard" }),
+  ).toHaveAttribute("href", "/skills/new");
+});
+
+test("Skill library: home → library nav link works", async ({ page }) => {
+  await page.route("**/api/v1/workflows*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [],
+        total: 0,
+        limit: 3,
+        plan_tier: "light",
+      }),
+    }),
+  );
+  await page.route("**/api/v1/skills*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ skills: ACTIVE_SKILLS }),
+    }),
+  );
+
+  await page.goto("/");
+  await page.getByTestId("link-skill-library").click();
+  await expect(page).toHaveURL(/\/skills$/);
+  await expect(page.getByTestId("skills-library")).toBeVisible();
+});
