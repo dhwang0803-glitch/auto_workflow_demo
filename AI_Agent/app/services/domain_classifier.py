@@ -22,7 +22,7 @@ from app.backends.protocols import LLMBackend
 from app.models.domain import DomainCategory, DomainClassification
 from app.services._llm_json import JsonExtractError, extract_json_object
 
-POLICIES_DIR = Path(__file__).parent.parent.parent / "data" / "policies"
+POLICIES_DIR = Path(__file__).parent.parent / "data" / "policies"
 DOMAIN_MAX_TOKENS = 256
 
 # Single source of truth for "other" — present in DomainCategory but absent
