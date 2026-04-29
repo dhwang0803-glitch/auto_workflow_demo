@@ -38,7 +38,9 @@ from app.models.skills import (
     DomainClassificationResponse,
     ExtractedSkillBody,
     ParameterAnswerBody,
+    PolicySourceBody,
     SkillResponse,
+    SourceKindLiteral,
 )
 from app.services.ai_agent_client import AIAgentHTTPBackend
 
@@ -103,12 +105,26 @@ class SkillBootstrapService:
         domain: str,
         policy_id: str,
         answers: list[ParameterAnswerBody],
+        source_kind: SourceKindLiteral | None = None,
+        sources: list[PolicySourceBody] | None = None,
     ) -> AnswersResponse:
         draft = await self._ai.answers_to_skill(
             domain=domain,
             policy_id=policy_id,
             answers=answers,
         )
+        # Bury wizard provenance inside source_ref alongside the audit
+        # fields. PR γ exposed source_ref on Skill DTO read paths so
+        # _to_response can pull source_kind / sources back out.
+        source_ref: dict = {
+            "session_id": str(session_id),
+            "policy_id": policy_id,
+            "answers": [a.model_dump() for a in answers],
+        }
+        if source_kind is not None:
+            source_ref["source_kind"] = source_kind
+        if sources:
+            source_ref["sources"] = [s.model_dump() for s in sources]
         # Persist as pending_review immediately. Approve/reject mutates in
         # place (no separate drafts table) — keeps the audit row in
         # skill_sources stable across the transition.
@@ -120,11 +136,7 @@ class SkillBootstrapService:
             action={"text": draft.action},
             status="pending_review",
             source_type="conversation",
-            source_ref={
-                "session_id": str(session_id),
-                "policy_id": policy_id,
-                "answers": [a.model_dump() for a in answers],
-            },
+            source_ref=source_ref,
         )
         return AnswersResponse(
             session_id=session_id,
@@ -209,6 +221,8 @@ def _to_response(skill: Skill) -> SkillResponse:
     # at this point that's a repository bug, not a user-facing 404.
     assert skill.created_at is not None
     assert skill.updated_at is not None
+    src = skill.source_ref or {}
+    raw_sources = src.get("sources") or []
     return SkillResponse(
         id=skill.id,
         name=skill.name,
@@ -219,4 +233,6 @@ def _to_response(skill: Skill) -> SkillResponse:
         status=skill.status,
         created_at=skill.created_at,
         updated_at=skill.updated_at,
+        source_kind=src.get("source_kind"),
+        sources=[PolicySourceBody(**s) for s in raw_sources],
     )

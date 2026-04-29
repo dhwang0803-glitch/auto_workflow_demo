@@ -291,6 +291,10 @@ async def test_answers_persists_pending_review_skill(skills_client_factory):
                     {"parameter": "REFUND_APPROVER", "answer": "Sarah (co-founder)"},
                     {"parameter": "ESCALATION_CHANNEL", "answer": "#refunds Slack channel"},
                 ],
+                "source_kind": "industry-baseline",
+                "sources": [
+                    {"title": "Stripe — Refund best practices", "url": "https://stripe.com/docs/refunds"},
+                ],
             },
         )
         assert r.status_code == 200, r.text
@@ -311,11 +315,57 @@ async def test_answers_persists_pending_review_skill(skills_client_factory):
         # Prose answers wrapped as {"text": ...} per W2-7 design.
         assert skills[0]["condition"] == {"text": "Customer requests refund AND amount > $500"}
         assert skills[0]["action"] == {"text": "Forward to manager via #refunds Slack channel"}
+        # Source provenance round-tripped from source_ref via PR γ hydration.
+        assert skills[0]["source_kind"] == "industry-baseline"
+        assert skills[0]["sources"] == [
+            {"title": "Stripe — Refund best practices", "url": "https://stripe.com/docs/refunds"},
+        ]
 
         # Fake recorded the right inputs.
         assert fake.last_answers_args["policy_id"] == "ecommerce.refund_threshold"
         assert len(fake.last_answers_args["answers"]) == 3
         assert fake.last_answers_args["answers"][0]["parameter"] == "REFUND_AUTO_APPROVE_LIMIT"
+
+        await _truncate(app)
+
+
+async def test_answers_omits_source_kind_when_not_provided(skills_client_factory):
+    """Backward-compat: pre-PR-β frontends omit source_kind/sources.
+
+    The persisted skill has source_kind=None and sources=[] in the
+    response so the library view can fall back to "synthesized" or hide
+    the pill — never 500.
+    """
+    fake = FakeAIAgent(
+        draft=SkillDraftBody(
+            name="X", condition="C", action="A", needs_clarification=False
+        ),
+    )
+    app, client = await skills_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        sid = "44444444-4444-4444-4444-444444444444"
+        r = await client.post(
+            "/api/v1/skills/answers",
+            json={
+                "session_id": sid,
+                "domain": "ecommerce",
+                "policy_id": "ecommerce.refund_threshold",
+                "answers": [
+                    {"parameter": "REFUND_AUTO_APPROVE_LIMIT", "answer": "$500"},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        skill_id = r.json()["skill_id"]
+
+        single = await client.get(f"/api/v1/skills/{skill_id}")
+        assert single.status_code == 200
+        body = single.json()
+        assert body["source_kind"] is None
+        assert body["sources"] == []
 
         await _truncate(app)
 
