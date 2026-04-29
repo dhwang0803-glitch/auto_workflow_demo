@@ -18,6 +18,10 @@ const ACTIVE_SKILLS = [
     status: "active",
     created_at: "2026-04-28T08:00:00Z",
     updated_at: "2026-04-28T08:00:00Z",
+    source_kind: "industry-baseline",
+    sources: [
+      { title: "Stripe — Refund best practices", url: "https://stripe.com/docs/refunds" },
+    ],
   },
   {
     id: "22222222-2222-2222-2222-222222222222",
@@ -29,6 +33,10 @@ const ACTIVE_SKILLS = [
     status: "active",
     created_at: "2026-04-28T08:01:00Z",
     updated_at: "2026-04-28T08:01:00Z",
+    // Pre-round-trip skill — null source_kind hides the pill instead
+    // of mis-labelling as synthesized.
+    source_kind: null,
+    sources: [],
   },
 ];
 
@@ -43,6 +51,8 @@ const PENDING_SKILLS = [
     status: "pending_review",
     created_at: "2026-04-28T08:02:00Z",
     updated_at: "2026-04-28T08:02:00Z",
+    source_kind: "synthesized",
+    sources: [],
   },
 ];
 
@@ -79,6 +89,23 @@ test("Skill library: lists active skills by default with markdown rendering", as
   await expect(
     page.getByTestId(`library-status-${ACTIVE_SKILLS[0].id}`),
   ).toContainText("active");
+
+  // Source-kind pill renders for the industry-baseline skill with the
+  // attribution link visible.
+  const pill = page.getByTestId(
+    `source-kind-industry-baseline-${ACTIVE_SKILLS[0].id}`,
+  );
+  await expect(pill).toBeVisible();
+  await expect(pill).toContainText("Industry baseline");
+  await expect(
+    pill.getByRole("link", { name: "Stripe — Refund best practices" }),
+  ).toHaveAttribute("href", "https://stripe.com/docs/refunds");
+
+  // The second skill has source_kind=null → no pill rendered.
+  const row2 = page.getByTestId(`library-row-${ACTIVE_SKILLS[1].id}`);
+  await expect(
+    row2.locator('[data-testid^="source-kind-"]'),
+  ).toHaveCount(0);
 });
 
 test("Skill library: status tab switches the query", async ({ page }) => {

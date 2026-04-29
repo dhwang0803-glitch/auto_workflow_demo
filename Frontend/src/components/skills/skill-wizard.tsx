@@ -121,6 +121,10 @@ export function SkillWizard() {
         domain,
         policy_id: currentTurn.policyId,
         answers,
+        // Forward the policy's source attribution so the persisted
+        // skill carries it into the library view (PR β round-trip).
+        source_kind: currentTurn.sourceKind,
+        sources: currentTurn.sources,
       });
       acceptAnswers(resp, currentTurn, answers);
     } catch (e) {
