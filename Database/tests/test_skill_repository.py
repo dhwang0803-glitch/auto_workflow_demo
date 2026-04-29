@@ -113,16 +113,74 @@ async def test_create_returns_dto_with_defaults(repo_factory) -> None:
 @pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
 async def test_create_with_source_persists_audit_row(repo_factory) -> None:
     repo, owner = repo_factory
+    sid = str(uuid4())
     skill = await repo.create(
         owner_user_id=owner,
         name="X",
         condition={"text": "C"},
         action={"text": "A"},
         source_type="conversation",
-        source_ref={"session_id": str(uuid4()), "turn_index": 3},
+        source_ref={"session_id": sid, "turn_index": 3},
     )
     assert skill.id is not None
-    # Implementation-specific source check follows the parametrize fork.
+    # source_ref should round-trip on the returned DTO so callers can
+    # surface provenance without a second read.
+    assert skill.source_ref == {"session_id": sid, "turn_index": 3}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_get_and_list_hydrate_source_ref(repo_factory) -> None:
+    repo, owner = repo_factory
+    audited = await repo.create(
+        owner_user_id=owner,
+        name="audited",
+        condition={"text": "C"},
+        action={"text": "A"},
+        source_type="conversation",
+        source_ref={"source_kind": "regulatory", "policy_id": "x"},
+    )
+    bare = await repo.create(
+        owner_user_id=owner,
+        name="bare",
+        condition={"text": "C"},
+        action={"text": "A"},
+    )
+
+    fetched_audited = await repo.get_owned(owner, audited.id)
+    assert fetched_audited is not None
+    assert fetched_audited.source_ref == {
+        "source_kind": "regulatory",
+        "policy_id": "x",
+    }
+
+    fetched_bare = await repo.get_owned(owner, bare.id)
+    assert fetched_bare is not None
+    assert fetched_bare.source_ref is None
+
+    by_id = {s.id: s for s in await repo.list_owned(owner)}
+    assert by_id[audited.id].source_ref == {
+        "source_kind": "regulatory",
+        "policy_id": "x",
+    }
+    assert by_id[bare.id].source_ref is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_update_status_preserves_source_ref(repo_factory) -> None:
+    repo, owner = repo_factory
+    skill = await repo.create(
+        owner_user_id=owner,
+        name="X",
+        condition={"text": "C"},
+        action={"text": "A"},
+        source_type="conversation",
+        source_ref={"source_kind": "synthesized"},
+    )
+    updated = await repo.update_status(owner, skill.id, "active")
+    assert updated is not None
+    assert updated.source_ref == {"source_kind": "synthesized"}
 
 
 @pytest.mark.asyncio

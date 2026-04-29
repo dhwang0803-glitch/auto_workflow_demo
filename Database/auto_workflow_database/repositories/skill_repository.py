@@ -4,7 +4,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from auto_workflow_database.models.skills import Skill as SkillORM
 from auto_workflow_database.models.skills import SkillSource as SkillSourceORM
@@ -17,7 +17,7 @@ from auto_workflow_database.repositories.base import (
 )
 
 
-def _to_dto(row: SkillORM) -> Skill:
+def _to_dto(row: SkillORM, source_ref: dict | None = None) -> Skill:
     return Skill(
         id=row.id,
         owner_user_id=row.owner_user_id,
@@ -29,7 +29,27 @@ def _to_dto(row: SkillORM) -> Skill:
         status=row.status,  # type: ignore[arg-type]
         created_at=row.created_at,
         updated_at=row.updated_at,
+        source_ref=source_ref,
     )
+
+
+async def _fetch_latest_source_ref(
+    session: AsyncSession, skill_id: UUID
+) -> dict | None:
+    """Return the most-recent skill_sources.source_ref for a skill, or None.
+
+    Used by read paths (get_owned, list_owned, update_status) to pull
+    provenance alongside the skill row. skill_sources is append-only, so
+    "latest by extracted_at" is the canonical record.
+    """
+    stmt = (
+        select(SkillSourceORM.source_ref)
+        .where(SkillSourceORM.skill_id == skill_id)
+        .order_by(SkillSourceORM.extracted_at.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 class PostgresSkillRepository(SkillRepository):
@@ -81,7 +101,7 @@ class PostgresSkillRepository(SkillRepository):
             # Refresh so server defaults (created_at/updated_at) populate
             # before the session commits and the row falls out of scope.
             await s.refresh(row)
-            return _to_dto(row)
+            return _to_dto(row, source_ref)
 
     async def get_owned(
         self, owner_user_id: UUID, skill_id: UUID
@@ -90,7 +110,8 @@ class PostgresSkillRepository(SkillRepository):
             row = await s.get(SkillORM, skill_id)
             if row is None or row.owner_user_id != owner_user_id:
                 return None
-            return _to_dto(row)
+            source_ref = await _fetch_latest_source_ref(s, skill_id)
+            return _to_dto(row, source_ref)
 
     async def list_owned(
         self,
@@ -98,8 +119,18 @@ class PostgresSkillRepository(SkillRepository):
         *,
         status: SkillStatus | None = None,
     ) -> list[Skill]:
+        # Correlated subquery pulls the most-recent skill_sources.source_ref
+        # per skill in the same round-trip — avoids N+1 across the list.
+        src_subq = (
+            select(SkillSourceORM.source_ref)
+            .where(SkillSourceORM.skill_id == SkillORM.id)
+            .order_by(SkillSourceORM.extracted_at.desc())
+            .limit(1)
+            .correlate(SkillORM)
+            .scalar_subquery()
+        )
         stmt = (
-            select(SkillORM)
+            select(SkillORM, src_subq.label("source_ref"))
             .where(SkillORM.owner_user_id == owner_user_id)
             .order_by(SkillORM.created_at.desc())
         )
@@ -107,7 +138,7 @@ class PostgresSkillRepository(SkillRepository):
             stmt = stmt.where(SkillORM.status == status)
         async with self._sm() as s:
             result = await s.execute(stmt)
-            return [_to_dto(r) for r in result.scalars().all()]
+            return [_to_dto(row, src) for row, src in result.all()]
 
     async def update_status(
         self,
@@ -127,4 +158,5 @@ class PostgresSkillRepository(SkillRepository):
             row.updated_at = func.now()
             await s.flush()
             await s.refresh(row)
-            return _to_dto(row)
+            source_ref = await _fetch_latest_source_ref(s, skill_id)
+            return _to_dto(row, source_ref)

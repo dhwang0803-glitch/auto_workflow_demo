@@ -590,6 +590,11 @@ class Skill:
     status: SkillStatus = "pending_review"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Latest skill_sources.source_ref for this skill (most recent
+    # `extracted_at`), or None if no audit row exists. Reads pull this
+    # alongside the skill row so callers don't need a second round-trip
+    # to surface provenance (e.g. wizard `source_kind` / `sources`).
+    source_ref: dict | None = None
 
 
 class SkillRepository(ABC):
