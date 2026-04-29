@@ -8,19 +8,16 @@ import {
   type SkillRecord,
   type SkillStatus,
 } from "@/lib/skills";
+import { SourceKindPill } from "./source-kind-pill";
 
-// Skill library view (PLAN_12 W2-9).
+// Skill library view (PLAN_12 W2-9 + source round-trip).
 //
 // Surfaces the team's persisted policy library so a user (and a hackathon
 // judge) can see the active rules at a glance without going through the
 // wizard. Active by default, with a status filter for pending_review /
-// rejected / archived for completeness.
-//
-// Source attribution caveat: the server-side SkillRecord doesn't carry
-// `source_kind` / `sources` yet — those live on the in-memory wizard
-// drafts (W2-6b) and are dropped at /skills/answers persistence time.
-// A follow-up backend PR is needed to round-trip them through SkillResponse;
-// until then this view shows condition / action / status only.
+// rejected / archived. Each row shows the source-kind pill if the
+// skill carries provenance — hydrated from skill_sources.source_ref via
+// PR γ + α.
 
 const STATUS_TABS: { value: SkillStatus; label: string }[] = [
   { value: "active", label: "Active" },
@@ -147,6 +144,15 @@ function SkillRow({ skill }: { skill: SkillRecord }) {
           {skill.status}
         </span>
       </header>
+      {skill.source_kind && (
+        <div className="mb-2">
+          <SourceKindPill
+            kind={skill.source_kind}
+            sources={skill.sources}
+            testIdSuffix={skill.id}
+          />
+        </div>
+      )}
       {skill.description && (
         <p className="mb-2 text-xs text-gray-600">{skill.description}</p>
       )}

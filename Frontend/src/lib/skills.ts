@@ -85,6 +85,12 @@ export interface AnswersRequest {
   domain: DomainCategory;
   policy_id: string;
   answers: ParameterAnswer[];
+  // Provenance forwarded from the wizard's PolicyTurn so the persisted
+  // skill carries source_kind / sources into /skills list + library
+  // view (PR β of the source round-trip). Optional on the wire — the
+  // backend stores `null` / `[]` if omitted (PR α).
+  source_kind?: SourceKind | null;
+  sources?: PolicySource[];
 }
 
 export interface SkillDraft {
@@ -123,6 +129,12 @@ export interface SkillRecord {
   status: SkillStatus;
   created_at: string;
   updated_at: string;
+  // Provenance hydrated from skill_sources.source_ref by API_Server's
+  // _to_response (PR α). `source_kind=null` + `sources=[]` for skills
+  // created before the round-trip landed; the library view falls back
+  // to hiding the pill rather than mis-labelling them as synthesized.
+  source_kind: SourceKind | null;
+  sources: PolicySource[];
 }
 
 export interface SkillListResponse {
