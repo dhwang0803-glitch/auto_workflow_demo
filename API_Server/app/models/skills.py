@@ -84,11 +84,20 @@ class ParameterAnswerBody(BaseModel):
 
 
 class AnswersRequest(BaseModel):
-    """Batch input: one policy + per-parameter answers → one SkillDraft."""
+    """Batch input: one policy + per-parameter answers → one SkillDraft.
+
+    `source_kind` / `sources` are forwarded from the wizard's
+    `PolicyGapBody` so the persisted skill carries provenance into the
+    library view without a second AI_Agent round-trip. Both are
+    optional — Persona A (no doc upload) still works if the frontend
+    omits them, but the library view will fall back to "synthesized".
+    """
     session_id: UUID
     domain: DomainCategory
     policy_id: str = Field(min_length=1)
     answers: list[ParameterAnswerBody] = Field(min_length=1)
+    source_kind: SourceKindLiteral | None = None
+    sources: list[PolicySourceBody] = Field(default_factory=list)
 
 
 # --- response bodies ------------------------------------------------------
@@ -169,6 +178,11 @@ class SkillResponse(BaseModel):
     `condition` and `action` stay as dicts because the W2-7 wizard wraps
     prose as `{"text": "..."}` but ADR-022 §1 leaves room for structured
     policies (compose-time matchers) that extend the JSONB shape.
+
+    `source_kind` / `sources` carry provenance from the wizard turn
+    (PolicyGapBody) — extracted from the skill's latest `source_ref`
+    JSONB by the service layer. Optional: skills created before this
+    field landed have `source_kind=None` and `sources=[]`.
     """
     model_config = ConfigDict(from_attributes=True)
 
@@ -181,6 +195,8 @@ class SkillResponse(BaseModel):
     status: SkillStatusLiteral
     created_at: datetime
     updated_at: datetime
+    source_kind: SourceKindLiteral | None = None
+    sources: list[PolicySourceBody] = Field(default_factory=list)
 
 
 class SkillListResponse(BaseModel):

@@ -111,6 +111,8 @@ async def answers(
             domain=payload.domain,
             policy_id=payload.policy_id,
             answers=payload.answers,
+            source_kind=payload.source_kind,
+            sources=payload.sources,
         )
     except httpx.HTTPStatusError as exc:
         raise _wrap_upstream(exc) from exc
