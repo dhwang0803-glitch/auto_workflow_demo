@@ -1581,12 +1581,41 @@ PLAN_11 (AI_Agent Modal 호스팅 + Gemma 4 26B-A4B) 5 PR 머지 + staging end-t
 4. 버전 관리 — 재업로드 시 diff 표시 + 항목별 적용/유지/삭제. 자동 머지 X
 5. 팀 경계 모델 — 워크스페이스 = 팀, skill 은 워크스페이스 scope. 다중 멤버십 future
 
+**Update (2026-04-29) — Source round-trip wire shape**
+
+W2-9 라이브러리 뷰 (PR #146) 머지 직후 발견된 갭: wizard mid-flow `PolicyTurn` 은 source attribution (`source_kind` + `sources`) 을 들고 있는데 `/skills/answers` persist 시점에 drop 됨. 결과 SkillsLibrary 가 attribution pill 을 못 그림 (in-memory wizard drafts 에서만 표시). PLAN_12 의 W3-6 retrieval 시점에서 정책 출처 인용이 필요하므로 round-trip 을 W2 안에서 닫음.
+
+**옵션 비교** (해커톤 마감 우선):
+- **옵션 A (채택)** — `skill_sources.source_ref` JSONB 안에 두 필드 묻고 read 경로에서 추출. 마이그레이션 0개. 단점: source_ref 가 다목적 dict (이미 session_id/policy_id/answers 보유) — schema 충돌 거의 없음.
+- 옵션 B (기각) — `skills` 테이블에 `source_kind enum` + `sources jsonb` 별도 컬럼. 검색/필터 (`/skills?source_kind=regulatory`) 가능. 마이그레이션 + 3 PR. **쓰임이 W3-6 까지 미정** 이라 옵션 A 로 충분.
+
+**계약 형상** (3 PR 묶음으로 머지 — `bc52cf0` → `28a4994` → `266b9d6`):
+
+| 레이어 | 변경 |
+|---|---|
+| Database (PR #147 γ) | `Skill` DTO 에 `source_ref: dict \| None` 추가. `PostgresSkillRepository` 의 read 경로 (`get_owned`/`list_owned`/`update_status`) 가 latest `skill_sources.source_ref` (by `extracted_at`) 를 hydrate. `list_owned` 은 correlated scalar subquery 로 N+1 회피. `InMemorySkillRepository` 도 동일 시맨틱. |
+| API_Server (PR #148 α) | `AnswersRequest` 에 `source_kind: SourceKindLiteral \| None` + `sources: list[PolicySourceBody]` optional. `SkillBootstrapService.answer_questions` 는 두 필드를 `source_ref` JSONB 에 묻음. `SkillResponse` 가 두 필드 노출 — `_to_response` 가 hydrated `skill.source_ref` 에서 추출. |
+| Frontend (PR #149 β) | `AnswersRequest` payload 에 `currentTurn.sourceKind` + `currentTurn.sources` 동봉. `SkillRecord` 가 두 필드 required (서버는 항상 채움 — null/[] for legacy). `SkillsLibrary` 에서 `SourceKindPill` 조건부 렌더 (`source_kind != null` 일 때만 — pre-round-trip skill 은 synthesized 로 오인 방지). |
+
+**Source kind literal** (Database/API_Server/Frontend 동기):
+- `regulatory` — 실제 법/규제 출처 그라운딩
+- `industry-baseline` — 외부 산업 표준 (Stripe / NRF / FTC 등) 링크
+- `synthesized` — 학습 데이터 패치워크. authoritative URL 없음. 라이브러리 뷰가 정직 표기.
+- `null` — pre-round-trip skill (legacy). 라이브러리 뷰가 pill 숨김.
+
+**검증**:
+- Database: parametrized contract 테스트 (memory + Postgres) — round-trip on `create`/`get`/`list_owned`/`update_status`
+- API_Server: `test_skills.py` 14 passed (라이브 PG via docker compose, port 5435) — source 동봉 + omit 두 시나리오
+- Frontend: Playwright 10 passed — industry-baseline pill 렌더링 + null 케이스 부재 + 외부 링크 `target=_blank rel=noopener noreferrer`
+
 **관련 결정**
 
 - ADR-008 (LLM 호스팅 선택) — 본 ADR 이 사용자 가치 결정으로 보완. 호스팅 결정은 유지.
 - 메모리 `project_skill_bootstrap_design.md` — 본 ADR 의 작업 분해 / 데모 시퀀스 / 숫자 budget / 컨텍스트 budget
+- 메모리 `project_wizard_polish_abc.md` — source attribution 의 honest labelling 정책 결정 (synthesized 표기 의무)
 - PLAN_12 (착수 예정) — 본 ADR 의 구현 로드맵 + DB 스키마
 - PR #125 (머지됨) — single-shot 가정 timeout 패치 (multi-turn 전환 시 재조정)
+- PR #147 / #148 / #149 (머지됨) — source round-trip 묶음 (Database / API_Server / Frontend)
 
 ---
 
