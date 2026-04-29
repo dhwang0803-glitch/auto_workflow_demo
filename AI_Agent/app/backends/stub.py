@@ -38,7 +38,7 @@ from typing import AsyncIterator
 
 import yaml
 
-POLICIES_DIR = Path(__file__).parent.parent.parent / "data" / "policies"
+POLICIES_DIR = Path(__file__).parent.parent / "data" / "policies"
 
 # Coarse keyword → domain map for the stub classifier. Hand-tuned against
 # the seed YAML descriptions; matches are checked in order so the first

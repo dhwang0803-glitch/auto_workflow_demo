@@ -50,7 +50,7 @@ from app.models.skills import (
 )
 from app.services._llm_json import JsonExtractError, extract_json_object
 
-POLICIES_DIR = Path(__file__).parent.parent.parent / "data" / "policies"
+POLICIES_DIR = Path(__file__).parent.parent / "data" / "policies"
 
 # Per ADR-022 §6 multi-turn budget. answers_to_skill compiles a whole
 # policy's worth of parameters into one draft, so it gets a wider window

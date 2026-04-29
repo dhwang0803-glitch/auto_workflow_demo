@@ -27,4 +27,11 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
-exclude = ["tests*", "plans*", "scripts*", "config*", "data*"]
+exclude = ["tests*", "plans*", "scripts*", "config*"]
+
+[tool.setuptools.package-data]
+# Policy seed YAMLs ship inside the `app` package so install paths
+# (Modal/Cloud-Run containers) resolve them via __file__-relative lookup.
+# setuptools defaults to .py-only — without this the wheel drops the
+# yaml seeds and `_seeds_by_domain()` returns an empty dict at runtime.
+"app" = ["data/policies/*.yaml"]

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-POLICIES_DIR = Path(__file__).parent.parent / "data" / "policies"
+POLICIES_DIR = Path(__file__).parent.parent / "app" / "data" / "policies"
 
 EXPECTED_DOMAINS = {"ecommerce", "services", "consulting", "content", "nonprofit"}
 REQUIRED_POLICY_FIELDS = {
