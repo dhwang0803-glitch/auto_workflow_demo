@@ -541,6 +541,18 @@ class InMemorySkillRepository(SkillRepository):
         # trails were written without standing up a separate fake repo.
         self._sources: list[dict] = []
 
+    def _latest_source_ref(self, skill_id: UUID) -> dict | None:
+        rows = [r for r in self._sources if r["skill_id"] == skill_id]
+        if not rows:
+            return None
+        rows.sort(key=lambda r: r["extracted_at"], reverse=True)
+        return deepcopy(rows[0]["source_ref"])
+
+    def _hydrate(self, skill: Skill) -> Skill:
+        out = deepcopy(skill)
+        out.source_ref = self._latest_source_ref(skill.id)
+        return out
+
     async def create(
         self,
         *,
@@ -581,7 +593,7 @@ class InMemorySkillRepository(SkillRepository):
                     "extracted_at": now,
                 }
             )
-        return deepcopy(skill)
+        return self._hydrate(skill)
 
     async def get_owned(
         self, owner_user_id: UUID, skill_id: UUID
@@ -589,7 +601,7 @@ class InMemorySkillRepository(SkillRepository):
         s = self._store.get(skill_id)
         if s is None or s.owner_user_id != owner_user_id:
             return None
-        return deepcopy(s)
+        return self._hydrate(s)
 
     async def list_owned(
         self,
@@ -604,7 +616,7 @@ class InMemorySkillRepository(SkillRepository):
             and (status is None or s.status == status)
         ]
         rows.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
-        return [deepcopy(s) for s in rows]
+        return [self._hydrate(s) for s in rows]
 
     async def update_status(
         self,
@@ -617,4 +629,4 @@ class InMemorySkillRepository(SkillRepository):
             return None
         s.status = new_status
         s.updated_at = datetime.now(timezone.utc)
-        return deepcopy(s)
+        return self._hydrate(s)
