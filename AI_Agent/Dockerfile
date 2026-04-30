@@ -46,27 +46,25 @@ RUN pip install --no-cache-dir --upgrade pip \
 # 2026) is past the Gemma 4 day-0 PRs (#21326 parser + #21343 tokenizer);
 # earlier builds fail on `unknown model architecture: 'gemma4'`.
 #
-# Two distinct loaders need to find the .so files and they look in different
-# places:
+# Two distinct loaders need to find the .so files:
 #   - transitive linking (libllama-common.so.0 etc) — ld.so reads
-#     /etc/ld.so.cache, populated by ldconfig from /usr/local/lib.
+#     /etc/ld.so.cache, populated by ldconfig.
 #   - ggml plugin loader (libggml-cuda.so) — `ggml_backend_load_all()`
-#     dlopens by name and consults GGML_BACKEND_PATH (set below) before
-#     falling back to the binary's directory.
-# Putting the libs in /usr/local/lib + ldconfig satisfies both as long as
-# GGML_BACKEND_PATH points there. Skipping ldconfig (or relying on
-# LD_LIBRARY_PATH alone) caused boot failures on Modal where the env didn't
-# propagate cleanly.
+#     scans the binary's directory and cwd for libggml-*.so. GGML_BACKEND_PATH
+#     env is *not* a directory hint — ggml passes it straight to dlopen, so
+#     it must point at a single .so file. Setting it to a directory boots to
+#     CPU silently (b8967: `load_backend: failed to load <dir>: Is a directory`).
+# Co-locating binary + .so in /usr/local/bin and registering that path with
+# ldconfig satisfies both loaders without env-var trickery.
 COPY --from=ghcr.io/ggml-org/llama.cpp:server-cuda12-b8967 /app/llama-server /usr/local/bin/llama-server
-COPY --from=ghcr.io/ggml-org/llama.cpp:server-cuda12-b8967 /app/*.so /usr/local/lib/
-RUN ldconfig
+COPY --from=ghcr.io/ggml-org/llama.cpp:server-cuda12-b8967 /app/*.so /usr/local/bin/
+RUN echo "/usr/local/bin" > /etc/ld.so.conf.d/llama.conf && ldconfig
 
 COPY AI_Agent/scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENV PORT=8100 \
-    LLM_BACKEND=llamacpp \
-    GGML_BACKEND_PATH=/usr/local/lib
+    LLM_BACKEND=llamacpp
 
 WORKDIR /app
 USER appuser
