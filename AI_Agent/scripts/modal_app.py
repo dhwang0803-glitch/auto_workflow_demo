@@ -6,8 +6,10 @@ on-demand blocked by GPUS_ALL_REGIONS=0. Modal provides per-second L4 billing
 without quota negotiation.
 
 Layout:
-- `image`: built from AI_Agent/Dockerfile so llama-server + venv + app match
-  the Cloud-Run/GCE path bit-for-bit. First build ~20 min, cached thereafter.
+- `image`: built from AI_Agent/Dockerfile. The llama-server binary is COPYed
+  from upstream `ghcr.io/ggml-org/llama.cpp:server-cuda12-b8967` (Ubuntu 24.04
+  + CUDA 12.8 runtime base — must match the upstream image to keep
+  glibc/libstdc++ ABIs aligned). Build is ~5-10 min (no llama.cpp compile).
 - `model_volume`: persistent Modal Volume holding the 15.7 GiB GGUF. Populated
   once via `modal run modal_app.py::download_model`.
 - `AgentService`: @cls with @enter() boots llama-server subprocess and waits
@@ -38,22 +40,15 @@ MODEL_PATH = f"{MODEL_DIR}/{MODEL_FILE}"
 LLAMA_SERVER_PORT = 8080
 FASTAPI_PORT = 8100
 
-# Image rebuilt via Dockerfile so llama-server (CUDA 12.4 build) + Python venv
-# + AI_Agent app live exactly where the existing tests assume. Modal overrides
-# the Dockerfile ENTRYPOINT — we run llama-server from @enter() instead.
+# Image rebuilt via Dockerfile — single runtime stage now (the from-source
+# llama.cpp build was replaced with a COPY --from upstream pre-built image).
+# Modal overrides the Dockerfile ENTRYPOINT; llama-server is launched from
+# @enter() instead.
 image = (
     modal.Image.from_dockerfile(
         path="AI_Agent/Dockerfile",
         context_dir=".",
-        # Dockerfile 변경 후 Modal multi-stage 캐시가 stale binary 를 stage 2
-        # 로 COPY 하는 사례 발생 시 force_build=True 한 번 켜고 deploy 후 다시
-        # 끄세요. 평소엔 False 가 정상 — 매 deploy 80min 빌드 회피.
     )
-    # llama-server is built with -fopenmp and dlopens libgomp.so.1 at runtime.
-    # The Dockerfile's runtime stage installs only libcurl4 + ca-certificates,
-    # so libgomp is missing. Adding here as a Modal layer instead of editing
-    # the Dockerfile to preserve the cached llama.cpp build (~80 min).
-    .apt_install("libgomp1")
     .pip_install("huggingface_hub>=0.24")
     .env({
         "LLM_BACKEND": "llamacpp",
