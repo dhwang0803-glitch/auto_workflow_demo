@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.27",
     "anthropic>=0.40",  # AnthropicBackend (migrated from API_Server)
     "pyyaml>=6",  # data/policies/*.yaml seed loading (PLAN_12 W2-3)
+    "pypdf>=5",  # document_parser PDF extraction (PLAN_12 W3-2)
 ]
 
 [project.optional-dependencies]

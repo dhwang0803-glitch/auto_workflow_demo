@@ -142,3 +142,25 @@ class SkillDraft(BaseModel):
     rationale: str = ""
     needs_clarification: bool = False
     clarification_hint: str = ""
+
+
+class PolicyExtractRequest(BaseModel):
+    """Wire shape for POST /v1/policy/extract (PLAN_12 W3-4).
+
+    The chunk is one slice of a parsed document (see services.document_parser).
+    Domain is optional context — when known, gives the extractor a hint about
+    typical policy shapes for that domain. Pass DomainCategory's "other" or
+    omit when the team's domain is unclassified.
+    """
+    chunk: str = Field(min_length=1, max_length=8000)
+    domain: DomainCategory = "other"
+
+
+class PolicyExtractResponse(BaseModel):
+    """List of zero+ skill candidates the extractor found in the chunk.
+
+    Empty list is a normal outcome — chunks describing org structure,
+    history, or contact directories should produce no skills (ADR-022
+    §8.1: skills are condition+action pairs, not topic mentions).
+    """
+    candidates: list[SkillDraft] = Field(default_factory=list)

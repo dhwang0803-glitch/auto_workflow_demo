@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     # `anthropic` requires ANTHROPIC_API_KEY. `llamacpp` talks to llama-server.
     llm_backend: Literal["stub", "anthropic", "llamacpp"] = "stub"
 
+    # Which EmbeddingBackend impl to mount. `stub` = hash-derived 1024-dim
+    # (no torch/sentence-transformers needed — used by local dev + tests).
+    # `bge_m3` = BAAI/bge-m3 via sentence-transformers (Modal production).
+    embedding_backend: Literal["stub", "bge_m3"] = "stub"
+
+    # Optional override for sentence-transformers' device autodetect. Empty
+    # string lets the library choose (cuda if torch sees a GPU, else cpu).
+    embedding_device: str = ""
+
     # Anthropic (active when llm_backend=anthropic)
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"

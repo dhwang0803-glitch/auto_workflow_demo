@@ -49,9 +49,24 @@ image = (
         path="AI_Agent/Dockerfile",
         context_dir=".",
     )
-    .pip_install("huggingface_hub>=0.24")
+    .pip_install(
+        "huggingface_hub>=0.24",
+        # PLAN_12 W3-3 — BGE-M3 embedding backend (1024-dim). Validated as
+        # colocated with Gemma 4 on a single L4 by modal_validate_bge_gemma.py
+        # (ADR-022 §8.5). Heavy deps (~2 GB torch); bake into the Modal image
+        # only — local dev / pytest stays on EMBEDDING_BACKEND=stub.
+        "sentence-transformers>=3.0",
+        "torch>=2.6",
+    )
     .env({
         "LLM_BACKEND": "llamacpp",
+        # First /v1/embed call downloads the ~2GB BGE-M3 weights via HF
+        # cache. On Modal the container disk persists between warm
+        # requests, so the download is paid once per container lifetime.
+        # Cold-start optimization (Volume-backed HF cache or eager
+        # @enter() preload) is a follow-on if the cold-start pause hurts
+        # the demo.
+        "EMBEDDING_BACKEND": "bge_m3",
         "MODEL_PATH": MODEL_PATH,
         "LLAMA_SERVER_URL": f"http://127.0.0.1:{LLAMA_SERVER_PORT}",
         "PORT": str(FASTAPI_PORT),

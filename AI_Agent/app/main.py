@@ -23,7 +23,7 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.backends.protocols import LLMBackend
+from app.backends.protocols import EmbeddingBackend, LLMBackend
 from app.config import Settings
 from app.container import AIAgentContainer
 from app.dependencies import get_backend, get_settings
@@ -34,11 +34,17 @@ from app.models.skills import (
     AnswerToSkillRequest,
     GapAnalysis,
     GapAnalyzeRequest,
+    PolicyExtractRequest,
+    PolicyExtractResponse,
     SkillDraft,
 )
 from app.services.domain_classifier import (
     ClassifierParseError,
     classify_domain,
+)
+from app.services.policy_extract import (
+    PolicyExtractParseError,
+    extract_policies,
 )
 from app.services.skill_bootstrap import (
     SkillBootstrapParseError,
@@ -52,12 +58,20 @@ from app.services.skill_bootstrap import (
 _PUBLIC_PATHS = frozenset({"/v1/health"})
 
 
-def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
+def create_app(
+    *,
+    backend_override: LLMBackend | None = None,
+    embedding_override: EmbeddingBackend | None = None,
+) -> FastAPI:
     # Eager init so ASGITransport-based tests (which skip lifespan) still see
     # app.state. Backends that hold resources (llamacpp httpx pool) implement
     # aclose(), invoked from the lifespan block below.
     settings = Settings()
-    container = AIAgentContainer(settings, backend_override=backend_override)
+    container = AIAgentContainer(
+        settings,
+        backend_override=backend_override,
+        embedding_override=embedding_override,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -65,10 +79,12 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
             yield
         finally:
             await container.backend.aclose()
+            await container.embedding.aclose()
 
     app = FastAPI(title="AI_Agent", lifespan=lifespan)
     app.state.settings = settings
     app.state.backend = container.backend
+    app.state.embedding = container.embedding
 
     if settings.agent_bearer_token:
         expected = settings.agent_bearer_token
@@ -191,6 +207,39 @@ def create_app(*, backend_override: LLMBackend | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/policy/extract", response_model=PolicyExtractResponse)
+    async def policy_extract(
+        payload: PolicyExtractRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> PolicyExtractResponse:
+        """Extract zero+ skill candidates from one parsed document chunk
+        (PLAN_12 W3-4 — docs path of skill bootstrap).
+
+        Empty `candidates` is normal — chunks describing org structure /
+        history / contact info should produce no policies. Vague chunks
+        produce candidates with needs_clarification=true; the review UI
+        decides whether to drop, ask, or accept.
+        """
+        try:
+            drafts = await extract_policies(
+                backend, payload.chunk, payload.domain
+            )
+        except PolicyExtractParseError as exc:
+            # 502 — same convention as the other LLM-backed endpoints:
+            # an upstream parse failure is the model's fault, not the
+            # caller's, and API_Server can decide to retry or surface
+            # the error to the user. Raw payload (truncated) is attached
+            # so callers can see what the model emitted before the parse
+            # broke — useful for incident response without hopping into
+            # Modal logs.
+            detail = {
+                "error": str(exc),
+                "raw_len": len(exc.raw),
+                "raw": exc.raw[:1500],
+            }
+            raise HTTPException(status_code=502, detail=detail) from exc
+        return PolicyExtractResponse(candidates=drafts)
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(
