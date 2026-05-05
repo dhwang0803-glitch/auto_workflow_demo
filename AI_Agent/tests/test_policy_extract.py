@@ -128,7 +128,8 @@ async def test_parser_accepts_well_formed_response() -> None:
 
 async def test_parser_accepts_empty_candidates_list() -> None:
     backend = _StaticBackend('{"candidates": []}')
-    assert await extract_policies(backend, "any chunk") == []
+    drafts = await extract_policies(backend, "any chunk")
+    assert drafts == []
 
 
 async def test_parser_rejects_missing_candidates_key() -> None:

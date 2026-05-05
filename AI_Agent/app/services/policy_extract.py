@@ -22,14 +22,27 @@ from app.models.domain import DomainCategory
 from app.models.skills import SkillDraft
 from app.services._llm_json import JsonExtractError, extract_json_object
 
-# A chunk is at most ~800 chars (document_parser DEFAULT_CHUNK_SIZE) and
-# can yield several skills, each with description + condition + action +
-# rationale + clarification fields. 1024 leaves comfortable headroom.
-POLICY_EXTRACT_MAX_TOKENS = 1024
+# Gemma 4 26B-A4B emits 1000-1700 tokens of internal reasoning before the
+# visible JSON for dense reference chunks (live smoke 2026-05-05: 13/20
+# chunks hit `''` empty output at 1024 because the budget ran out before
+# the model committed to JSON). 4096 covers the worst observed case
+# (~1700 reasoning + ~700 multi-candidate JSON) with margin. Latency
+# trade-off: 20-35s/chunk vs 19s/chunk previously, but reliability
+# matters more for a doc-parsing pipeline.
+POLICY_EXTRACT_MAX_TOKENS = 4096
 
 
 class PolicyExtractParseError(ValueError):
-    """The LLM response could not be parsed into a candidate list."""
+    """The LLM response could not be parsed into a candidate list.
+
+    Carries the raw LLM output so callers (and the FastAPI 502 detail) can
+    see what was actually emitted — diagnosing reasoning-token waste means
+    looking at the bytes the model produced before the budget ran out.
+    """
+
+    def __init__(self, message: str, raw: str = "") -> None:
+        super().__init__(message)
+        self.raw = raw
 
 
 def _system_prompt(domain: DomainCategory) -> str:
@@ -81,32 +94,36 @@ def _parse_response(raw: str) -> list[SkillDraft]:
     try:
         body = extract_json_object(raw)
     except JsonExtractError as exc:
-        raise PolicyExtractParseError(str(exc)) from exc
+        raise PolicyExtractParseError(str(exc), raw=raw) from exc
 
     candidates_raw = body.get("candidates")
     if candidates_raw is None:
         raise PolicyExtractParseError(
-            "response missing top-level `candidates` key"
+            "response missing top-level `candidates` key", raw=raw
         )
     if not isinstance(candidates_raw, list):
-        raise PolicyExtractParseError("`candidates` must be a list")
+        raise PolicyExtractParseError(
+            "`candidates` must be a list", raw=raw
+        )
 
     drafts: list[SkillDraft] = []
     for i, entry in enumerate(candidates_raw):
         if not isinstance(entry, dict):
             raise PolicyExtractParseError(
-                f"candidate #{i} is not an object: {entry!r}"
+                f"candidate #{i} is not an object: {entry!r}", raw=raw
             )
         for required in ("name", "condition", "action"):
             if not entry.get(required):
                 raise PolicyExtractParseError(
-                    f"candidate #{i} missing required field {required!r}"
+                    f"candidate #{i} missing required field {required!r}",
+                    raw=raw,
                 )
         needs = bool(entry.get("needs_clarification", False))
         hint = str(entry.get("clarification_hint", "") or "").strip()
         if needs and not hint:
             raise PolicyExtractParseError(
-                f"candidate #{i} has needs_clarification=true but empty hint"
+                f"candidate #{i} has needs_clarification=true but empty hint",
+                raw=raw,
             )
         drafts.append(
             SkillDraft(

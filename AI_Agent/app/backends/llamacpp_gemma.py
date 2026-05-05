@@ -107,6 +107,27 @@ class LlamaCppGemmaBackend:
             "model": self._model_label,
             "max_tokens": max_tokens,
             "stream": stream,
+            # Every service that uses this backend (compose, classify,
+            # gap_analyze, answers_to_skill, policy_extract) emits JSON.
+            # Greedy decoding + GBNF grammar constraint together make
+            # non-JSON output physically impossible. Default sampling
+            # (temp=0.8, no grammar) hit 65-75% empty-response rate on
+            # the live handbook smoke (2026-05-05) — model wandered into
+            # control/whitespace token loops on dense reference chunks.
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+            # Disable Gemma 4's <think>...</think> reasoning trace.
+            # Without this, the chat-template parser strips the trace from
+            # `content` but the model still spends 1500-3700 tokens
+            # generating it (live smoke 2026-05-05 chunk #18: 76s wall,
+            # 3832 tokens generated, 165 tokens visible). For structured-
+            # JSON tasks reasoning produces no value, so we set both
+            # llama.cpp's chat_template_kwargs.enable_thinking and the
+            # server-side reasoning_format=none — whichever the running
+            # build of llama-server understands wins, the other is
+            # silently ignored.
+            "chat_template_kwargs": {"enable_thinking": False},
+            "reasoning_format": "none",
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_message},

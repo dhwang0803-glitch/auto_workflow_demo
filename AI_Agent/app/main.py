@@ -229,8 +229,16 @@ def create_app(
             # 502 — same convention as the other LLM-backed endpoints:
             # an upstream parse failure is the model's fault, not the
             # caller's, and API_Server can decide to retry or surface
-            # the error to the user.
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            # the error to the user. Raw payload (truncated) is attached
+            # so callers can see what the model emitted before the parse
+            # broke — useful for incident response without hopping into
+            # Modal logs.
+            detail = {
+                "error": str(exc),
+                "raw_len": len(exc.raw),
+                "raw": exc.raw[:1500],
+            }
+            raise HTTPException(status_code=502, detail=detail) from exc
         return PolicyExtractResponse(candidates=drafts)
 
     @app.get("/v1/health", response_model=HealthResponse)
