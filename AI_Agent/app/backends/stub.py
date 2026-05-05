@@ -12,6 +12,7 @@ distinguishing marker across the call types we serve:
 | "domain classifier" | classify_domain (W2-2) |
 | "gap analyzer" | gap_analyze (W2-4b, coverage-only) |
 | "answer-to-skill compiler" | answers_to_skill (W2-4c, batch) and the legacy single-shot wrapper |
+| "policy extractor" | policy_extract (W3-4, docs path) |
 | (anything else) | AI Composer compose (PLAN_02) |
 
 Each path returns a JSON shape that the matching parser in
@@ -91,6 +92,8 @@ class StubLLMBackend:
             return self._gap_analyze_response(system)
         if "answer-to-skill compiler" in first_line:
             return self._answer_to_skill_response(system, user_message)
+        if "policy extractor" in first_line:
+            return self._policy_extract_response(user_message)
 
         # AI Composer path (PLAN_02) — preserved verbatim.
         _, payload = self._decide(user_message)
@@ -203,6 +206,92 @@ class StubLLMBackend:
             "clarification_hint": hint,
         }
         return json.dumps(draft, ensure_ascii=False)
+
+    def _policy_extract_response(self, user_message: str) -> str:
+        """Heuristic: surface 0-2 candidate skills based on cheap text signals.
+
+        We're stubbing what a real LLM would do — not faking domain
+        understanding — so the rules are intentionally crude:
+
+        - chunk mentions a dollar threshold (`$NNN`) → emit a "threshold
+          escalation" candidate using the matched figure.
+        - chunk mentions an action verb against a target (escalate / page /
+          notify / route / approve) → emit a "workflow trigger" candidate
+          quoting the surrounding clause.
+        - vague signals like "be careful with PII" / "handle securely" →
+          emit ONE candidate with needs_clarification=true so the W3-7
+          review UI can exercise that path.
+        - otherwise return an empty list (the chunk has no policy).
+        """
+        text = (user_message or "").strip()
+        if not text:
+            return json.dumps({"candidates": []}, ensure_ascii=False)
+
+        candidates: list[dict] = []
+
+        # Threshold pattern — first dollar amount in the chunk.
+        money = re.search(r"\$\s?(\d[\d,]*)", text)
+        if money:
+            amount = money.group(0).replace(" ", "")
+            candidates.append(
+                {
+                    "name": f"Escalate amounts over {amount}",
+                    "description": (
+                        f"Stubbed extractor candidate: requests above "
+                        f"{amount} need a manager."
+                    ),
+                    "condition": (
+                        f"A request mentions an amount greater than {amount}"
+                    ),
+                    "action": "Route to a manager for explicit approval before responding",
+                    "rationale": "Stubbed — lifted from chunk's threshold mention.",
+                    "needs_clarification": False,
+                    "clarification_hint": "",
+                }
+            )
+
+        # Workflow trigger pattern — verb + object phrase.
+        action_match = re.search(
+            r"\b(escalate|page|notify|route|approve|reject|forward)\b[^.]*",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if action_match:
+            phrase = action_match.group(0).strip().rstrip(",;")
+            verb = action_match.group(1).lower()
+            candidates.append(
+                {
+                    "name": f"{verb.capitalize()} per chunk policy",
+                    "description": f"Stubbed extractor candidate around '{verb}' verb.",
+                    "condition": f"The situation described in: \"{phrase[:120]}\"",
+                    "action": f"Apply the chunk-specified action: {phrase[:120]}",
+                    "rationale": "Stubbed — chunk verb pattern matched.",
+                    "needs_clarification": False,
+                    "clarification_hint": "",
+                }
+            )
+
+        # Vague-signal pattern — emit ONE clarification-needed candidate so
+        # tests can assert the needs_clarification path even on stub.
+        vague_terms = ("pii", "be careful", "handle securely", "as needed")
+        text_lower = text.lower()
+        if not candidates and any(t in text_lower for t in vague_terms):
+            candidates.append(
+                {
+                    "name": "Vague handling policy (needs clarification)",
+                    "description": "Stubbed extractor: chunk uses vague guidance.",
+                    "condition": "Chunk mentions a sensitive topic without naming it",
+                    "action": "Apply team's handling rule once defined",
+                    "rationale": "Stubbed — vague chunk surface hit.",
+                    "needs_clarification": True,
+                    "clarification_hint": (
+                        "What specifically counts as the sensitive item, and "
+                        "what action is required?"
+                    ),
+                }
+            )
+
+        return json.dumps({"candidates": candidates}, ensure_ascii=False)
 
     # ---- AI Composer (PLAN_02) — unchanged ---------------------------------
 
