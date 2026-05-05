@@ -11,25 +11,25 @@
 # The from-source build took ~80 min and got the Modal builder preempted three
 # times in a row on 2026-04-30 — see reference_modal_pitfalls.md (#7).
 
-# ---------- Runtime: CUDA + Python 3.11 + app ----------
+# ---------- Runtime: CUDA + Python 3.12 + app ----------
 # Base must match the upstream llama.cpp image (Ubuntu 24.04 + CUDA 12.8) so
 # glibc/libstdc++ ABIs line up with the binary copied below — copying a
 # 24.04-built llama-server onto a 22.04 runtime breaks at GLIBCXX symbol
-# resolution. Python 3.11 is installed via deadsnakes PPA because 24.04 ships
-# 3.12 by default; see project_python_311_decision.md.
+# resolution. Python 3.12 is the noble default — we used to pin 3.11 via
+# deadsnakes PPA, but a launchpad outage on 2026-05-05 blocked the build and
+# we have no 3.11-only code (pyproject requires ">=3.11"); revisit if W3
+# adds a dependency that demands exactly 3.11.
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common ca-certificates gnupg \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 python3.11-venv \
+        ca-certificates \
+        python3 python3-venv \
         libcurl4 libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash --uid 10001 appuser \
-    && python3.11 -m venv /opt/venv
+    && python3 -m venv /opt/venv
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
