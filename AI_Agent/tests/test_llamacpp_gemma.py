@@ -141,6 +141,114 @@ async def test_ready_false_on_connection_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_complete_strips_vision_channel_tag_prefix() -> None:
+    # Phase A 2026-05-06 captured `<|channel>thought\n<channel|>VISION OK`
+    # leaking from the chat-template's vision branch despite
+    # enable_thinking=False. The backend strips the leading channel-tag
+    # construct so callers see clean text.
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "<|channel>thought\n<channel|>VISION OK",
+                        }
+                    }
+                ]
+            },
+        )
+
+    backend = _backend_with(handler)
+    try:
+        result = await backend.complete(system="s", user_message="u", max_tokens=8)
+    finally:
+        await backend.aclose()
+
+    assert result == "VISION OK"
+
+
+@pytest.mark.asyncio
+async def test_complete_preserves_content_with_inline_angle_brackets() -> None:
+    # Real content can legitimately contain angle brackets (XML, JSX). The
+    # strip MUST anchor at start and only consume a true channel-tag pair.
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "<div>ok</div>"}}
+                ]
+            },
+        )
+
+    backend = _backend_with(handler)
+    try:
+        result = await backend.complete(system="s", user_message="u", max_tokens=8)
+    finally:
+        await backend.aclose()
+
+    assert result == "<div>ok</div>"
+
+
+@pytest.mark.asyncio
+async def test_complete_builds_vision_content_list_when_images_supplied() -> None:
+    # Vision call: user message becomes an OpenAI content-list with text +
+    # image_url block(s). Each image_url.url is the base64 data URL the
+    # caller passed unchanged (Phase A 2026-05-06 confirmed external URL
+    # fetching is unreliable in llama-server; inline base64 is the contract).
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    img = "data:image/png;base64,iVBORw0KGgo="
+    backend = _backend_with(handler)
+    try:
+        await backend.complete(
+            system="s", user_message="describe", max_tokens=8, images=[img]
+        )
+    finally:
+        await backend.aclose()
+
+    body = captured["body"]
+    user_msg = body["messages"][1]
+    assert user_msg["role"] == "user"
+    assert user_msg["content"] == [
+        {"type": "text", "text": "describe"},
+        {"type": "image_url", "image_url": {"url": img}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_complete_keeps_string_user_message_when_no_images() -> None:
+    # Text-only path keeps the legacy plain-string content. Lets text-mode
+    # callers (and existing mocks) keep their wire shape.
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    backend = _backend_with(handler)
+    try:
+        await backend.complete(system="s", user_message="text", max_tokens=8)
+    finally:
+        await backend.aclose()
+
+    assert captured["body"]["messages"][1] == {"role": "user", "content": "text"}
+
+
+@pytest.mark.asyncio
 async def test_ready_false_on_503() -> None:
     # llama-server returns 503 while the model is still loading; ready() must
     # propagate that so Cloud Run's startup probe keeps waiting.

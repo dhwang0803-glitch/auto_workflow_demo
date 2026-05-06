@@ -240,6 +240,8 @@ async def analyze_gaps(
     backend: LLMBackend,
     domain: DomainCategory,
     extracted_skills: list[ExtractedSkill],
+    *,
+    images: list[str] | None = None,
 ) -> GapAnalysis:
     seeds = _seed_policies(domain)
     if not seeds:
@@ -263,6 +265,7 @@ async def analyze_gaps(
         system=_gap_analyze_system_prompt(domain),
         user_message=user_payload,
         max_tokens=GAP_ANALYZE_MAX_TOKENS,
+        images=images,
     )
     return _parse_gap_response(raw, domain)
 
@@ -365,6 +368,8 @@ async def answers_to_skill(
     domain: DomainCategory,
     policy_id: str,
     answers: list[ParameterAnswer],
+    *,
+    images: list[str] | None = None,
 ) -> SkillDraft:
     seed_policy = _find_policy(domain, policy_id)
     if seed_policy is None:
@@ -395,6 +400,7 @@ async def answers_to_skill(
         system=_answers_to_skill_system_prompt(domain, seed_policy),
         user_message="Per-parameter answers:\n" + "\n".join(user_lines),
         max_tokens=ANSWERS_TO_SKILL_MAX_TOKENS,
+        images=images,
     )
     return _parse_skill_response(raw)
 

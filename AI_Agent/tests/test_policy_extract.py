@@ -34,10 +34,17 @@ class _StaticBackend:
     def __init__(self, response: str) -> None:
         self._response = response
 
-    async def complete(self, *, system: str, user_message: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> str:
         return self._response
 
-    async def stream(self, *, system, user_message, max_tokens):  # noqa: ANN001
+    async def stream(self, **_):  # noqa: ANN001, ANN003
         if False:
             yield ""
 

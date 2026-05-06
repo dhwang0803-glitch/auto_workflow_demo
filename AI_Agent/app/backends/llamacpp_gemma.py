@@ -12,11 +12,29 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import AsyncIterator
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Gemma 4 vision-mode chat-template leak. `enable_thinking=False` +
+# `reasoning_format=none` strip the <think> trace in text mode (memory
+# `reference_gemma4_reasoning_trace.md`), but the vision branch of the
+# chat template emits a different channel construct that bleeds into
+# `content`. Phase A 2026-05-06 smoke captured `<|channel>thought\n
+# <channel|>VISION OK`. Match a leading sequence of channel/role tag
+# pairs so multi-tag variants (`<|channel|>thought<|message|>`) also
+# clean up. Only fires at the very start of the response — real content
+# containing angle brackets stays intact.
+_CHANNEL_LEAK_PREFIX_RE = re.compile(
+    r"^(?:<\|?[A-Za-z_]+\|?>[A-Za-z_\s]*<\|?[A-Za-z_]+\|?>)+\s*",
+)
+
+
+def _strip_channel_leak(text: str) -> str:
+    return _CHANNEL_LEAK_PREFIX_RE.sub("", text, count=1)
 
 
 class LlamaCppGemmaBackend:
@@ -45,14 +63,17 @@ class LlamaCppGemmaBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        images: list[str] | None = None,
     ) -> str:
         resp = await self._client.post(
             "/v1/chat/completions",
-            json=self._chat_payload(system, user_message, max_tokens, stream=False),
+            json=self._chat_payload(
+                system, user_message, max_tokens, stream=False, images=images
+            ),
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return _strip_channel_leak(data["choices"][0]["message"]["content"])
 
     async def stream(
         self,
@@ -60,13 +81,20 @@ class LlamaCppGemmaBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        images: list[str] | None = None,
     ) -> AsyncIterator[str]:
         # httpx's async stream context releases the connection deterministically
         # on exit — including when the consumer stops iterating (client disconnect).
+        # Channel-leak prefix strip is NOT applied here: the leak only spans the
+        # first 1-3 SSE frames in vision mode, but stream() is currently only
+        # driven by AI Composer (PLAN_02 text path), which doesn't send images.
+        # Phase D will revisit if a streaming vision caller appears.
         async with self._client.stream(
             "POST",
             "/v1/chat/completions",
-            json=self._chat_payload(system, user_message, max_tokens, stream=True),
+            json=self._chat_payload(
+                system, user_message, max_tokens, stream=True, images=images
+            ),
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -102,7 +130,21 @@ class LlamaCppGemmaBackend:
         max_tokens: int,
         *,
         stream: bool,
+        images: list[str] | None = None,
     ) -> dict:
+        # OpenAI vision content-list when images are supplied; plain string
+        # otherwise so the text path keeps its existing wire shape (and the
+        # mocked unit tests stay assertable). Each image is a base64 data URL
+        # — Phase A 2026-05-06 confirmed external `image_url` URLs fail under
+        # llama-server's redirect/UA handling, so callers MUST pre-encode.
+        if images:
+            content: list[dict] | str = [{"type": "text", "text": user_message}]
+            for img in images:
+                content.append({"type": "image_url", "image_url": {"url": img}})
+            user_content: list[dict] | str = content
+        else:
+            user_content = user_message
+
         return {
             "model": self._model_label,
             "max_tokens": max_tokens,
@@ -125,11 +167,13 @@ class LlamaCppGemmaBackend:
             # llama.cpp's chat_template_kwargs.enable_thinking and the
             # server-side reasoning_format=none — whichever the running
             # build of llama-server understands wins, the other is
-            # silently ignored.
+            # silently ignored. Note: vision mode still leaks a channel
+            # tag prefix despite these flags — `_strip_channel_leak`
+            # cleans it up post-hoc.
             "chat_template_kwargs": {"enable_thinking": False},
             "reasoning_format": "none",
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user_message},
+                {"role": "user", "content": user_content},
             ],
         }

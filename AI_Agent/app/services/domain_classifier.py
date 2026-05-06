@@ -118,11 +118,23 @@ def _parse_response(raw: str) -> DomainClassification:
     )
 
 
-async def classify_domain(backend: LLMBackend, text: str) -> DomainClassification:
-    """Run the classifier against the active LLMBackend."""
+async def classify_domain(
+    backend: LLMBackend,
+    text: str,
+    *,
+    images: list[str] | None = None,
+) -> DomainClassification:
+    """Run the classifier against the active LLMBackend.
+
+    `images` is accepted for Protocol parity with the other services. The
+    classifier prompt is text-only by design (a domain is decided from the
+    user's free-text business description); a vision-augmented path would
+    be a separate prompt entirely.
+    """
     raw = await backend.complete(
         system=_classifier_system_prompt(),
         user_message=text.strip(),
         max_tokens=DOMAIN_MAX_TOKENS,
+        images=images,
     )
     return _parse_response(raw)

@@ -35,7 +35,14 @@ class _ScriptedBackend:
         self.last_max_tokens: int | None = None
         self.call_count = 0
 
-    async def complete(self, *, system: str, user_message: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> str:
         self.last_system = system
         self.last_user = user_message
         self.last_max_tokens = max_tokens
@@ -43,7 +50,12 @@ class _ScriptedBackend:
         return self._response
 
     async def stream(
-        self, *, system: str, user_message: str, max_tokens: int
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
     ) -> AsyncIterator[str]:
         yield self._response  # not used here
 

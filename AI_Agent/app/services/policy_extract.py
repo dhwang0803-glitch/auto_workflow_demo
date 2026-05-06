@@ -155,16 +155,27 @@ async def extract_policies(
     backend: LLMBackend,
     chunk: str,
     domain: DomainCategory = "other",
+    *,
+    images: list[str] | None = None,
 ) -> list[SkillDraft]:
+    """Extract zero+ skill candidates from one document chunk.
+
+    `images` is the Phase D entry point: a PDF page rendered to PNG via
+    PyMuPDF travels alongside `chunk` (the page's text) so the model
+    sees both. Until Phase D ships document_parser's image rendering,
+    callers pass None and the path stays text-only.
+    """
     text = chunk.strip()
-    if not text:
+    if not text and not images:
         # Whitespace-only chunks are dropped upstream by document_parser,
-        # but if one slips through we save the LLM round-trip.
+        # but if one slips through we save the LLM round-trip. With an
+        # image the chunk text may be empty by design (image-only page).
         return []
 
     raw = await backend.complete(
         system=_system_prompt(domain),
         user_message=text,
         max_tokens=POLICY_EXTRACT_MAX_TOKENS,
+        images=images,
     )
     return _parse_response(raw)
