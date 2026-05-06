@@ -240,3 +240,66 @@ async def test_endpoint_gated_by_bearer(monkeypatch) -> None:
         )
     # No auth header → 401 (matches the convention from other /v1/* tests).
     assert resp.status_code == 401
+
+
+# --- Phase C: image plumbing from document_parser to extract_policies ----
+
+
+class _ImageRecordingBackend:
+    """LLMBackend stub that records the `images` kwarg from extract_policies.
+
+    Phase C verifies the *plumbing* end-to-end (DocumentChunk.image →
+    extract_policies → backend.complete kwarg). The actual vision call
+    against llama-server is Phase D — here we just want to know the data
+    URL flowed all the way through with no losses.
+    """
+
+    def __init__(self) -> None:
+        self.last_images: list[str] | None = None
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> str:
+        self.last_images = images
+        # Return an empty-candidates JSON so the parser succeeds and we
+        # don't have to hand-craft a vision-flavored response shape.
+        return '{"candidates": []}'
+
+    async def stream(self, **_):  # noqa: ANN001, ANN003
+        if False:
+            yield ""
+
+    async def ready(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_extract_policies_forwards_chunk_image_to_backend() -> None:
+    # End-to-end Phase C smoke against the stub: parse a PDF, take one
+    # chunk, hand it to extract_policies with images=[chunk.image], and
+    # confirm the backend saw the same data URL.
+    import pathlib
+
+    from app.services.document_parser import parse_document
+
+    fixture = (
+        pathlib.Path(__file__).parent / "fixtures" / "gitlab_handbook_excerpt.pdf"
+    )
+    chunks = parse_document(fixture.read_bytes(), "application/pdf")
+    assert chunks, "fixture produced no chunks — regenerate it"
+    chunk = chunks[0]
+    assert chunk.image is not None
+
+    backend = _ImageRecordingBackend()
+    drafts = await extract_policies(
+        backend, chunk.text, domain="other", images=[chunk.image]
+    )
+    assert drafts == []  # parser ran cleanly on the stub's empty response
+    assert backend.last_images == [chunk.image]

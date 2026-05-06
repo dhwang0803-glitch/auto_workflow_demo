@@ -16,7 +16,12 @@ dependencies = [
     "httpx>=0.27",
     "anthropic>=0.40",  # AnthropicBackend (migrated from API_Server)
     "pyyaml>=6",  # data/policies/*.yaml seed loading (PLAN_12 W2-3)
-    "pypdf>=5",  # document_parser PDF extraction (PLAN_12 W3-2)
+    "pypdf>=5",  # document_parser PDF text extraction (PLAN_12 W3-2)
+    # PDF page → PNG rendering for the multimodal pivot (Phase C). Apache-2.0
+    # so no license cascade onto the hackathon submission. Pillow is its
+    # rendering target and is HPND-licensed.
+    "pypdfium2>=4",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]

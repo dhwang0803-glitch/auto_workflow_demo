@@ -1,11 +1,18 @@
-"""Tests for document_parser (PLAN_12 W3-2).
+"""Tests for document_parser (PLAN_12 W3-2 + Phase C multimodal).
 
 The chunking + dispatch logic lives in this module — pypdf's text extraction
 itself is its own concern. To exercise the PDF path without pulling reportlab
 into dev deps, we hand-roll a minimal valid PDF carrying ASCII text via the
 Helvetica builtin font. Validated against pypdf 5.x.
+
+Phase C added per-page image rendering for the PDF path. Tests below
+exercise both the contract (image is a base64 PNG data URL when source is
+PDF, None otherwise) and the per-page mapping (chunks from the same source
+page share an image data URL).
 """
 from __future__ import annotations
+
+import base64
 
 import pytest
 
@@ -292,6 +299,74 @@ def test_real_handbook_adjacent_chunks_carry_overlap() -> None:
         f"only {overlapping_pairs}/{len(chunks) - 1} chunk boundaries "
         f"showed overlap — chunking may have lost its carry-over"
     )
+
+
+def test_text_chunks_have_no_image() -> None:
+    # Markdown / plain text inputs have no native page concept, so the
+    # `image` field stays None across all chunks.
+    md = b"# A\n\n" + (b"para body. " * 200)  # ~2.2 KB → multi-chunk
+    chunks = parse_document(md, "text/markdown", chunk_size=400, chunk_overlap=40)
+    assert len(chunks) >= 2
+    assert all(c.image is None for c in chunks)
+
+
+def test_pdf_chunks_carry_data_url_image() -> None:
+    # Each PDF chunk must carry a base64 PNG data URL whose decoded payload
+    # is a real PNG. We don't assert pixel content — only the shape of the
+    # field, since rendering itself is pypdfium2's concern.
+    pdf = _make_test_pdf(
+        "Refund policy",
+        "All refunds within 30 days require manager approval.",
+    )
+    chunks = parse_document(pdf, "application/pdf")
+    assert chunks
+    for c in chunks:
+        assert c.image is not None
+        assert c.image.startswith("data:image/png;base64,")
+        b64 = c.image.split(",", 1)[1]
+        png_bytes = base64.b64decode(b64)
+        # PNG magic bytes — confirms pypdfium2 → PIL → save("PNG") wired up.
+        assert png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+        # Sanity: a rendered handbook-shaped page is at least ~5 KB.
+        assert len(png_bytes) >= 1024
+
+
+def test_pdf_chunks_share_image_within_a_page() -> None:
+    # All chunks produced from the same PDF page MUST hold the same image
+    # data URL — that's the contract policy_extract relies on (per-chunk
+    # image == its source page's render). Verified on the real handbook
+    # fixture where individual pages routinely produce 2-4 chunks.
+    chunks = _real_handbook_chunks()
+    by_image: dict[str, list[int]] = {}
+    for c in chunks:
+        assert c.image is not None
+        by_image.setdefault(c.image, []).append(c.index)
+    # At least one image must appear for >1 chunk — otherwise per-page
+    # chunking degenerated to one-chunk-per-page and we'd lose the
+    # "shared image across chunks" invariant. The handbook excerpt has
+    # enough text per page that this is guaranteed in practice.
+    assert any(len(idxs) > 1 for idxs in by_image.values()), (
+        "expected at least one page to produce multiple chunks sharing "
+        "an image data URL"
+    )
+    # Distinct pages must produce distinct images. 8-page fixture, each
+    # page should render to its own bytes — collisions would mean the
+    # render path is somehow returning a constant.
+    assert len(by_image) >= 2, (
+        f"only {len(by_image)} distinct page images across {len(chunks)} "
+        "chunks — render likely bound to wrong page"
+    )
+
+
+def test_pdf_image_only_page_produces_no_chunk() -> None:
+    # A page with no extractable text — even with a valid render — produces
+    # no DocumentChunk. Forcing an image-only chunk would push the LLM to
+    # hallucinate text from pixels alone; downstream W3-3 / Phase D will
+    # revisit if image-only pages turn out to carry signal we can't afford
+    # to drop.
+    pdf = _make_test_pdf()  # zero text lines → blank page text
+    chunks = parse_document(pdf, "application/pdf")
+    assert chunks == []
 
 
 def test_real_handbook_browser_print_noise_is_bounded() -> None:
