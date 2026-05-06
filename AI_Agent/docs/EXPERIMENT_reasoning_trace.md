@@ -57,6 +57,12 @@ candidates **14 → 10** (-29%). 사라진 후보:
 
 ## 5. 다음 실험 후보
 
+> **2026-05-06 update — Phase 0 + Phase 1 in flight.**
+>
+> - **Phase 0 (baseline 분산 측정)**: smoke 3회 동일조건 → 10 candidates / 2 needs_clarif / 41s warm. 청크별 분포 + 추출된 텍스트가 byte-identical → 출력은 **결정적 (variance = 0)**. greedy decoding + reasoning OFF 환경에서 누락 4건은 stochastic 이 아니라 systematic conservatism. 즉 단순 재시도/리트라이로는 회수 불가.
+> - **Phase 1 (계측 surface)**: `/v1/policy/extract` 가 4 개의 실험용 request 필드 수용 — `system_prompt_override`, `enable_thinking`, `temperature`, `include_raw`. 모두 default 가 production 동작 보존. 스모크 스크립트도 `--strictness {default,aggressive,lenient}` / `--enable-thinking` / `--temperature` 플래그 지원. **이 surface 는 Phase 3 burn-in PR 에서 제거** (해커톤 제출 main 청결 유지).
+> - **Phase 2 (스윕 매트릭스)**: 아래 옵션들을 Modal 재배포 없이 measurement.
+
 ### 옵션 A: 현 fix 유지 + recall 회수 보류
 
 해커톤 데모 우선. 인터뷰 path 가 자연스럽게 보충. 코드 변경 없음.

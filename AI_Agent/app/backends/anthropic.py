@@ -22,6 +22,8 @@ class AnthropicBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        enable_thinking: bool | None = None,  # noqa: ARG002 — accepted for Protocol parity, no Anthropic equivalent
+        temperature: float | None = None,  # noqa: ARG002 — Phase 1 experiment is Gemma-only; not wired for Anthropic
     ) -> str:
         msg = await self._client.messages.create(
             model=self._model,

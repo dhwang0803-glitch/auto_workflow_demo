@@ -29,12 +29,32 @@ from app.services.policy_extract import (
 class _StaticBackend:
     """Returns a fixed JSON string regardless of input. Used to test the
     parser in isolation from any LLM behavior.
+
+    Captures the per-call kwargs (`enable_thinking`, `temperature`, and
+    the system prompt) so the Phase 1 override tests can assert what the
+    service actually forwarded to the backend.
     """
 
     def __init__(self, response: str) -> None:
         self._response = response
+        self.last_call: dict[str, object] = {}
 
-    async def complete(self, *, system: str, user_message: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        enable_thinking: bool | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        self.last_call = {
+            "system": system,
+            "user_message": user_message,
+            "max_tokens": max_tokens,
+            "enable_thinking": enable_thinking,
+            "temperature": temperature,
+        }
         return self._response
 
     async def stream(self, *, system, user_message, max_tokens):  # noqa: ANN001
@@ -67,13 +87,13 @@ async def test_empty_chunk_short_circuits_without_llm_call() -> None:
         async def aclose(self) -> None:
             return None
 
-    assert await extract_policies(_Boom(), "") == []
-    assert await extract_policies(_Boom(), "   \n  ") == []
+    assert await extract_policies(_Boom(), "") == ([], "")
+    assert await extract_policies(_Boom(), "   \n  ") == ([], "")
 
 
 async def test_stub_policy_extract_emits_threshold_candidate() -> None:
     backend = StubLLMBackend()
-    drafts = await extract_policies(
+    drafts, _raw = await extract_policies(
         backend,
         "Refunds over $500 require manager approval before processing.",
         domain="ecommerce",
@@ -86,7 +106,7 @@ async def test_stub_policy_extract_emits_threshold_candidate() -> None:
 
 async def test_stub_returns_empty_for_irrelevant_chunk() -> None:
     backend = StubLLMBackend()
-    drafts = await extract_policies(
+    drafts, _raw = await extract_policies(
         backend, "The team meets every Tuesday at 10am.", domain="other"
     )
     assert drafts == []
@@ -94,7 +114,7 @@ async def test_stub_returns_empty_for_irrelevant_chunk() -> None:
 
 async def test_stub_marks_vague_chunk_needs_clarification() -> None:
     backend = StubLLMBackend()
-    drafts = await extract_policies(
+    drafts, _raw = await extract_policies(
         backend,
         "Be careful with PII when handling customer requests.",
         domain="services",
@@ -108,11 +128,12 @@ async def test_stub_marks_vague_chunk_needs_clarification() -> None:
 
 
 async def test_parser_accepts_well_formed_response() -> None:
-    backend = _StaticBackend(
+    raw = (
         '{"candidates": [{"name": "n", "condition": "c", "action": "a", '
         '"rationale": "r", "needs_clarification": false, "clarification_hint": ""}]}'
     )
-    drafts = await extract_policies(backend, "any chunk")
+    backend = _StaticBackend(raw)
+    drafts, returned_raw = await extract_policies(backend, "any chunk")
     assert drafts == [
         SkillDraft(
             name="n",
@@ -124,11 +145,13 @@ async def test_parser_accepts_well_formed_response() -> None:
             clarification_hint="",
         )
     ]
+    # raw round-trips verbatim — diagnostic surface for the smoke client.
+    assert returned_raw == raw
 
 
 async def test_parser_accepts_empty_candidates_list() -> None:
     backend = _StaticBackend('{"candidates": []}')
-    drafts = await extract_policies(backend, "any chunk")
+    drafts, _raw = await extract_policies(backend, "any chunk")
     assert drafts == []
 
 
@@ -166,9 +189,44 @@ async def test_parser_tolerates_json_fence() -> None:
         '```json\n{"candidates": [{"name": "n", "condition": "c", '
         '"action": "a"}]}\n```'
     )
-    drafts = await extract_policies(backend, "any")
+    drafts, _raw = await extract_policies(backend, "any")
     assert len(drafts) == 1
     assert drafts[0].name == "n"
+
+
+# --- Phase 1 instrumentation: override pass-through (EXPERIMENT §5) -------
+
+
+async def test_default_call_uses_built_system_prompt_and_no_overrides() -> None:
+    backend = _StaticBackend('{"candidates": []}')
+    await extract_policies(backend, "any chunk", domain="ecommerce")
+    assert "policy extractor" in backend.last_call["system"]
+    assert backend.last_call["enable_thinking"] is None
+    assert backend.last_call["temperature"] is None
+
+
+async def test_system_prompt_override_replaces_default() -> None:
+    backend = _StaticBackend('{"candidates": []}')
+    custom = "You extract aggressively. Output ONLY valid JSON."
+    await extract_policies(
+        backend,
+        "any chunk",
+        domain="ecommerce",
+        system_prompt_override=custom,
+    )
+    assert backend.last_call["system"] == custom
+
+
+async def test_enable_thinking_and_temperature_forwarded_to_backend() -> None:
+    backend = _StaticBackend('{"candidates": []}')
+    await extract_policies(
+        backend,
+        "any chunk",
+        enable_thinking=True,
+        temperature=0.4,
+    )
+    assert backend.last_call["enable_thinking"] is True
+    assert backend.last_call["temperature"] == 0.4
 
 
 # --- HTTP endpoint --------------------------------------------------------

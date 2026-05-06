@@ -45,10 +45,19 @@ class LlamaCppGemmaBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        enable_thinking: bool | None = None,
+        temperature: float | None = None,
     ) -> str:
         resp = await self._client.post(
             "/v1/chat/completions",
-            json=self._chat_payload(system, user_message, max_tokens, stream=False),
+            json=self._chat_payload(
+                system,
+                user_message,
+                max_tokens,
+                stream=False,
+                enable_thinking=enable_thinking,
+                temperature=temperature,
+            ),
         )
         resp.raise_for_status()
         data = resp.json()
@@ -102,32 +111,29 @@ class LlamaCppGemmaBackend:
         max_tokens: int,
         *,
         stream: bool,
+        enable_thinking: bool | None = None,
+        temperature: float | None = None,
     ) -> dict:
+        # Default behavior (both overrides None) matches the production
+        # config tuned in EXPERIMENT_reasoning_trace.md: greedy decoding,
+        # JSON-only output, reasoning trace suppressed at both the chat
+        # template and server-format layers (whichever the running
+        # llama-server build honors wins, the other is silently ignored).
+        # Default sampling (temp=0.8, no grammar) hit 65-75% empty-response
+        # rate on the live handbook smoke (2026-05-05) — model wandered
+        # into control/whitespace token loops on dense reference chunks.
+        # Reasoning trace stripping cost: live smoke chunk #18 generated
+        # 3832 tokens but only 165 were visible (76s wall).
+        thinking_on = bool(enable_thinking)  # None / False → off; True → on
+        effective_temperature = 0.0 if temperature is None else float(temperature)
         return {
             "model": self._model_label,
             "max_tokens": max_tokens,
             "stream": stream,
-            # Every service that uses this backend (compose, classify,
-            # gap_analyze, answers_to_skill, policy_extract) emits JSON.
-            # Greedy decoding + GBNF grammar constraint together make
-            # non-JSON output physically impossible. Default sampling
-            # (temp=0.8, no grammar) hit 65-75% empty-response rate on
-            # the live handbook smoke (2026-05-05) — model wandered into
-            # control/whitespace token loops on dense reference chunks.
-            "temperature": 0.0,
+            "temperature": effective_temperature,
             "response_format": {"type": "json_object"},
-            # Disable Gemma 4's <think>...</think> reasoning trace.
-            # Without this, the chat-template parser strips the trace from
-            # `content` but the model still spends 1500-3700 tokens
-            # generating it (live smoke 2026-05-05 chunk #18: 76s wall,
-            # 3832 tokens generated, 165 tokens visible). For structured-
-            # JSON tasks reasoning produces no value, so we set both
-            # llama.cpp's chat_template_kwargs.enable_thinking and the
-            # server-side reasoning_format=none — whichever the running
-            # build of llama-server understands wins, the other is
-            # silently ignored.
-            "chat_template_kwargs": {"enable_thinking": False},
-            "reasoning_format": "none",
+            "chat_template_kwargs": {"enable_thinking": thinking_on},
+            "reasoning_format": "auto" if thinking_on else "none",
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_message},

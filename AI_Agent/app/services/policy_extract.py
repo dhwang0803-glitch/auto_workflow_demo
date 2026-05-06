@@ -143,16 +143,35 @@ async def extract_policies(
     backend: LLMBackend,
     chunk: str,
     domain: DomainCategory = "other",
-) -> list[SkillDraft]:
+    *,
+    system_prompt_override: str | None = None,
+    enable_thinking: bool | None = None,
+    temperature: float | None = None,
+) -> tuple[list[SkillDraft], str]:
+    """Extract zero+ skill candidates from a chunk; return (drafts, raw).
+
+    `raw` is the LLM's verbatim response — the endpoint forwards it back
+    to the caller only when `include_raw=True` is on the request. The
+    three keyword overrides are the Phase 1 experimental knobs (see
+    EXPERIMENT_reasoning_trace.md §5); leaving them at None preserves
+    production behavior. They are removed in the Phase 3 burn-in PR.
+    """
     text = chunk.strip()
     if not text:
         # Whitespace-only chunks are dropped upstream by document_parser,
         # but if one slips through we save the LLM round-trip.
-        return []
+        return [], ""
 
+    system = (
+        system_prompt_override
+        if system_prompt_override is not None
+        else _system_prompt(domain)
+    )
     raw = await backend.complete(
-        system=_system_prompt(domain),
+        system=system,
         user_message=text,
         max_tokens=POLICY_EXTRACT_MAX_TOKENS,
+        enable_thinking=enable_thinking,
+        temperature=temperature,
     )
-    return _parse_response(raw)
+    return _parse_response(raw), raw

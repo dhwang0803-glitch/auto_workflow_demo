@@ -84,6 +84,8 @@ class StubLLMBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        enable_thinking: bool | None = None,  # noqa: ARG002 — accepted for Protocol parity
+        temperature: float | None = None,  # noqa: ARG002 — accepted for Protocol parity
     ) -> str:
         first_line = (system or "").lstrip().splitlines()[0] if system else ""
         if "domain classifier" in first_line:
