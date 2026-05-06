@@ -29,15 +29,32 @@ class _FakeBackend:
         self._is_ready = is_ready
         self.last_system: str | None = None
         self.last_user: str | None = None
+        self.last_images: list[str] | None = None
 
-    async def complete(self, *, system: str, user_message: str, max_tokens: int) -> str:
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> str:
         self.last_system = system
         self.last_user = user_message
+        self.last_images = images
         return self._response
 
-    async def stream(self, *, system: str, user_message: str, max_tokens: int) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> AsyncIterator[str]:
         self.last_system = system
         self.last_user = user_message
+        self.last_images = images
         for chunk in self._stream_chunks:
             yield chunk
 
@@ -154,6 +171,54 @@ async def test_bearer_auth_health_remains_public(monkeypatch) -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         resp = await c.get("/v1/health")
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_complete_forwards_images_when_supplied() -> None:
+    backend = _FakeBackend(response="seen")
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+    img = "data:image/png;base64,iVBORw0KGgo="
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            json={
+                "system": "sys",
+                "user_message": "describe",
+                "max_tokens": 32,
+                "images": [img],
+            },
+        )
+    assert resp.status_code == 200
+    assert backend.last_images == [img]
+
+
+@pytest.mark.asyncio
+async def test_complete_omits_images_when_absent() -> None:
+    # Backwards compatibility: text-only callers still see images=None on
+    # the backend side, not [].
+    backend = _FakeBackend(response="text-only")
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            json={"system": "sys", "user_message": "hi", "max_tokens": 16},
+        )
+    assert resp.status_code == 200
+    assert backend.last_images is None
+
+
+@pytest.mark.asyncio
+async def test_smoke_vision_endpoint_removed() -> None:
+    # Phase A's temporary `/v1/_smoke/vision` was retired in Phase B once
+    # vision plumbing landed through the LLMBackend Protocol. A 404 here
+    # guards against accidental re-introduction.
+    app = create_app(backend_override=_FakeBackend())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post("/v1/_smoke/vision", json={})
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

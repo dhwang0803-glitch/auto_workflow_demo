@@ -109,6 +109,7 @@ def create_app(
             system=payload.system,
             user_message=payload.user_message,
             max_tokens=payload.max_tokens,
+            images=payload.images,
         )
         return CompleteResponse(text=text)
 
@@ -122,6 +123,7 @@ def create_app(
                 system=payload.system,
                 user_message=payload.user_message,
                 max_tokens=payload.max_tokens,
+                images=payload.images,
             ):
                 yield chunk.encode("utf-8")
 

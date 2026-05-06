@@ -13,6 +13,11 @@ class CompleteRequest(BaseModel):
     system: str = Field(min_length=1)
     user_message: str = Field(min_length=1)
     max_tokens: int = Field(default=4096, ge=16, le=16384)
+    # Optional list of base64 data URLs (`data:image/png;base64,...`).
+    # Backends that don't support vision drop these silently — the field
+    # is on the wire so API_Server can route a PDF-page-derived image
+    # through the same `/v1/complete` endpoint without a parallel route.
+    images: list[str] | None = None
 
 
 class CompleteResponse(BaseModel):

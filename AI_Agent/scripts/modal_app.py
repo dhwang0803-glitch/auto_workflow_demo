@@ -35,8 +35,10 @@ import modal
 APP_NAME = "auto-workflow-agent"
 MODEL_REPO = "unsloth/gemma-4-26B-A4B-it-GGUF"
 MODEL_FILE = "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+MMPROJ_FILE = "mmproj-F16.gguf"
 MODEL_DIR = "/vol"
 MODEL_PATH = f"{MODEL_DIR}/{MODEL_FILE}"
+MMPROJ_PATH = f"{MODEL_DIR}/{MMPROJ_FILE}"
 LLAMA_SERVER_PORT = 8080
 FASTAPI_PORT = 8100
 
@@ -100,24 +102,27 @@ def download_model() -> None:
     """
     from huggingface_hub import hf_hub_download
 
-    if Path(MODEL_PATH).exists():
-        size_gb = Path(MODEL_PATH).stat().st_size / 1e9
-        print(f"[skip] {MODEL_PATH} present ({size_gb:.1f} GB)")
-        return
-
     Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
-    print(f"downloading {MODEL_REPO}/{MODEL_FILE} → {MODEL_PATH}")
-    # Token optional — unsloth GGUF repos are typically public, but HF rate-
-    # limits anonymous downloads. Pass HF_TOKEN secret to avoid throttling.
-    hf_hub_download(
-        repo_id=MODEL_REPO,
-        filename=MODEL_FILE,
-        local_dir=MODEL_DIR,
-        token=os.environ.get("HF_TOKEN") or None,
-    )
+    token = os.environ.get("HF_TOKEN") or None
+
+    for filename, target_path in [(MODEL_FILE, MODEL_PATH), (MMPROJ_FILE, MMPROJ_PATH)]:
+        if Path(target_path).exists():
+            size_gb = Path(target_path).stat().st_size / 1e9
+            print(f"[skip] {target_path} present ({size_gb:.1f} GB)")
+            continue
+
+        print(f"downloading {MODEL_REPO}/{filename} → {target_path}")
+        hf_hub_download(
+            repo_id=MODEL_REPO,
+            filename=filename,
+            local_dir=MODEL_DIR,
+            token=token,
+        )
+        size_gb = Path(target_path).stat().st_size / 1e9
+        print(f"done — {size_gb:.1f} GB downloaded")
+
     model_volume.commit()
-    size_gb = Path(MODEL_PATH).stat().st_size / 1e9
-    print(f"done — {size_gb:.1f} GB committed to volume")
+    print("volume committed")
 
 
 @app.cls(
@@ -134,15 +139,17 @@ class AgentService:
     def boot(self) -> None:
         import httpx
 
-        if not Path(MODEL_PATH).exists():
-            raise FileNotFoundError(
-                f"Model missing at {MODEL_PATH}. Run "
-                "`modal run AI_Agent/scripts/modal_app.py::download_model` first."
-            )
+        for required in (MODEL_PATH, MMPROJ_PATH):
+            if not Path(required).exists():
+                raise FileNotFoundError(
+                    f"Required GGUF missing at {required}. Run "
+                    "`modal run AI_Agent/scripts/modal_app.py::download_model` first."
+                )
 
         cmd = [
             "/usr/local/bin/llama-server",
             "--model", MODEL_PATH,
+            "--mmproj", MMPROJ_PATH,
             "--host", "127.0.0.1",
             "--port", str(LLAMA_SERVER_PORT),
             "--n-gpu-layers", os.environ.get("N_GPU_LAYERS", "999"),

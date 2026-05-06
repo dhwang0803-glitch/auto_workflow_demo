@@ -22,8 +22,18 @@ class LLMBackend(Protocol):
         system: str,
         user_message: str,
         max_tokens: int,
+        images: list[str] | None = None,
     ) -> str:
-        """Return the assistant's reply as raw text."""
+        """Return the assistant's reply as raw text.
+
+        `images`, when provided, are base64 data URLs (e.g.
+        `data:image/png;base64,...`). The Gemma 4 multimodal pivot
+        (memory `project_multimodal_max_pivot.md`) standardized on
+        inline base64 because llama-server's external `image_url`
+        download path failed under redirects/UA checks. Backends that
+        cannot consume images SHOULD ignore the field rather than
+        raising — text-only callers stay backwards compatible.
+        """
         ...
 
     def stream(
@@ -32,11 +42,13 @@ class LLMBackend(Protocol):
         system: str,
         user_message: str,
         max_tokens: int,
+        images: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """Yield text chunks as the model emits them.
 
         Implementations MUST close the underlying stream when the consumer
-        stops iterating (e.g. on client disconnect).
+        stops iterating (e.g. on client disconnect). See `complete` for
+        the `images` contract.
         """
         ...
 

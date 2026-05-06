@@ -84,7 +84,11 @@ class StubLLMBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        images: list[str] | None = None,
     ) -> str:
+        # Stub doesn't reason about images — the deterministic branches
+        # already cover every prompt shape. Accepted for Protocol parity.
+        del images
         first_line = (system or "").lstrip().splitlines()[0] if system else ""
         if "domain classifier" in first_line:
             return self._classify_response(user_message)
@@ -105,9 +109,11 @@ class StubLLMBackend:
         system: str,
         user_message: str,
         max_tokens: int,
+        images: list[str] | None = None,
     ) -> AsyncIterator[str]:
         # Streaming is only used by AI Composer. Skill-bootstrap callers go
         # through complete(). We keep the pre-existing PLAN_02 stream path.
+        del images
         _, payload = self._decide(user_message)
         rationale = payload.get("rationale", "")
         yield "<rationale>"
