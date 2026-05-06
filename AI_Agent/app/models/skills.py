@@ -151,20 +151,9 @@ class PolicyExtractRequest(BaseModel):
     Domain is optional context — when known, gives the extractor a hint about
     typical policy shapes for that domain. Pass DomainCategory's "other" or
     omit when the team's domain is unclassified.
-
-    The four trailing fields are *experimental knobs* added in Phase 1
-    (EXPERIMENT_reasoning_trace.md §5) so the recall-vs-latency curve can
-    be swept from the smoke client without redeploying. All defaults
-    preserve current production behavior; the knobs are removed in the
-    Phase 3 burn-in PR before hackathon submission.
     """
     chunk: str = Field(min_length=1, max_length=8000)
     domain: DomainCategory = "other"
-
-    system_prompt_override: str | None = None
-    enable_thinking: bool | None = None
-    temperature: float | None = None
-    include_raw: bool = False
 
 
 class PolicyExtractResponse(BaseModel):
@@ -173,10 +162,5 @@ class PolicyExtractResponse(BaseModel):
     Empty list is a normal outcome — chunks describing org structure,
     history, or contact directories should produce no skills (ADR-022
     §8.1: skills are condition+action pairs, not topic mentions).
-
-    `raw` is populated only when the request set `include_raw=True` —
-    diagnostic surface for the reasoning-trace experiments. Removed in
-    the Phase 3 burn-in.
     """
     candidates: list[SkillDraft] = Field(default_factory=list)
-    raw: str | None = None

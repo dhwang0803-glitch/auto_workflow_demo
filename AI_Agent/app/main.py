@@ -222,13 +222,8 @@ def create_app(
         decides whether to drop, ask, or accept.
         """
         try:
-            drafts, raw = await extract_policies(
-                backend,
-                payload.chunk,
-                payload.domain,
-                system_prompt_override=payload.system_prompt_override,
-                enable_thinking=payload.enable_thinking,
-                temperature=payload.temperature,
+            drafts = await extract_policies(
+                backend, payload.chunk, payload.domain
             )
         except PolicyExtractParseError as exc:
             # 502 — same convention as the other LLM-backed endpoints:
@@ -244,10 +239,7 @@ def create_app(
                 "raw": exc.raw[:1500],
             }
             raise HTTPException(status_code=502, detail=detail) from exc
-        return PolicyExtractResponse(
-            candidates=drafts,
-            raw=raw if payload.include_raw else None,
-        )
+        return PolicyExtractResponse(candidates=drafts)
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(

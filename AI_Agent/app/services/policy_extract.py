@@ -46,6 +46,13 @@ class PolicyExtractParseError(ValueError):
 
 
 def _system_prompt(domain: DomainCategory) -> str:
+    # The trailing "## Bias" clause was selected by the Phase 2 sweep
+    # (EXPERIMENT_reasoning_trace.md §5): on the GitLab handbook fixture
+    # it lifted recall from 10 → 16 candidates without changing wall time
+    # vs the neutral prompt (56s vs 64s), and without the 10x latency
+    # penalty of re-enabling reasoning (634s for 14 candidates). The
+    # clause is intentionally short — the Rules block above is doing the
+    # schema enforcement; this clause only nudges precision↔recall.
     return (
         "You are the policy extractor for a workflow-automation product's "
         "skill-bootstrap flow. The user uploaded a team document; the next "
@@ -86,7 +93,12 @@ def _system_prompt(domain: DomainCategory) -> str:
         "describes two distinct policies into two candidates.\n"
         "- Vague signals like \"be careful with PII\" should produce a "
         "candidate with needs_clarification=true and a clarification_hint "
-        "naming what is unclear (e.g. \"What counts as PII for your team?\")."
+        "naming what is unclear (e.g. \"What counts as PII for your team?\").\n\n"
+        "## Bias\n"
+        "When in doubt, INCLUDE the candidate with needs_clarification=true "
+        "rather than dropping it. The downstream review UI can prune false "
+        "positives, but cannot recover policies that were never extracted. "
+        "Aim for high recall over precision."
     )
 
 
@@ -143,35 +155,16 @@ async def extract_policies(
     backend: LLMBackend,
     chunk: str,
     domain: DomainCategory = "other",
-    *,
-    system_prompt_override: str | None = None,
-    enable_thinking: bool | None = None,
-    temperature: float | None = None,
-) -> tuple[list[SkillDraft], str]:
-    """Extract zero+ skill candidates from a chunk; return (drafts, raw).
-
-    `raw` is the LLM's verbatim response — the endpoint forwards it back
-    to the caller only when `include_raw=True` is on the request. The
-    three keyword overrides are the Phase 1 experimental knobs (see
-    EXPERIMENT_reasoning_trace.md §5); leaving them at None preserves
-    production behavior. They are removed in the Phase 3 burn-in PR.
-    """
+) -> list[SkillDraft]:
     text = chunk.strip()
     if not text:
         # Whitespace-only chunks are dropped upstream by document_parser,
         # but if one slips through we save the LLM round-trip.
-        return [], ""
+        return []
 
-    system = (
-        system_prompt_override
-        if system_prompt_override is not None
-        else _system_prompt(domain)
-    )
     raw = await backend.complete(
-        system=system,
+        system=_system_prompt(domain),
         user_message=text,
         max_tokens=POLICY_EXTRACT_MAX_TOKENS,
-        enable_thinking=enable_thinking,
-        temperature=temperature,
     )
-    return _parse_response(raw), raw
+    return _parse_response(raw)

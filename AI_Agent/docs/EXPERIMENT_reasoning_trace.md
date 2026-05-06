@@ -55,13 +55,45 @@ candidates **14 → 10** (-29%). 사라진 후보:
 
 모두 명확한 정책 — reasoning 없으면 모델이 보수적으로 해석해서 거름. interview path 가 사용자로부터 보충하지만 docs path 단독 가치는 떨어짐.
 
-## 5. 다음 실험 후보
+## 5. 실험 결과 (2026-05-06 종결)
 
-> **2026-05-06 update — Phase 0 + Phase 1 in flight.**
->
-> - **Phase 0 (baseline 분산 측정)**: smoke 3회 동일조건 → 10 candidates / 2 needs_clarif / 41s warm. 청크별 분포 + 추출된 텍스트가 byte-identical → 출력은 **결정적 (variance = 0)**. greedy decoding + reasoning OFF 환경에서 누락 4건은 stochastic 이 아니라 systematic conservatism. 즉 단순 재시도/리트라이로는 회수 불가.
-> - **Phase 1 (계측 surface)**: `/v1/policy/extract` 가 4 개의 실험용 request 필드 수용 — `system_prompt_override`, `enable_thinking`, `temperature`, `include_raw`. 모두 default 가 production 동작 보존. 스모크 스크립트도 `--strictness {default,aggressive,lenient}` / `--enable-thinking` / `--temperature` 플래그 지원. **이 surface 는 Phase 3 burn-in PR 에서 제거** (해커톤 제출 main 청결 유지).
-> - **Phase 2 (스윕 매트릭스)**: 아래 옵션들을 Modal 재배포 없이 measurement.
+> **결정: 옵션 D 의 변형이 winner — system prompt 에 "high recall over precision" bias 추가**.
+> 본 §5.1 의 데이터로 옵션 D 가 docs path 단독 recall 을 10 → 16 으로 회복하면서 latency 는 default 그대로 유지함을 확인. Phase 3 burn-in PR 에서 default `_system_prompt` 에 흡수 + Phase 1 계측 surface 전부 제거.
+
+### 5.1. Phase 0 / Phase 2 측정 데이터
+
+3 사이클 진행:
+
+- **Phase 0 (baseline 분산)**: smoke 3회 동일조건 → 10 candidates / 2 needs_clarif / 41s warm. 청크별 분포 + 추출 텍스트가 byte-identical → **결정적 (variance = 0)**. 누락 4건은 stochastic 이 아닌 systematic conservatism — 재시도/리트라이로 회수 불가능.
+- **Phase 1 (계측 surface, PR #154)**: `/v1/policy/extract` 가 4 개 실험용 request 필드 수용 (`system_prompt_override`, `enable_thinking`, `temperature`, `include_raw`). 스모크 스크립트도 `--strictness {default,aggressive,lenient}` / `--enable-thinking` / `--temperature` flag. 1회 redeploy 로 이후 모든 sweep 가 client-side iteration.
+- **Phase 2 (스윕)**: 7 셀.
+
+| 셀 | strictness | thinking | temp | candidates | needs_clarif | wall (s) |
+|---|---|---|---|---|---|---|
+| S0 | default | OFF | 0 | 10 | 2 | 64 |
+| **S1** | default | **ON** | 0 | **14** | 3 | **634** |
+| **S2** | **aggressive** | OFF | 0 | **16** | 2 | **56** |
+| S2' | aggressive | OFF | 0 | 16 | 2 | 54 |
+| S3 | lenient | OFF | 0 | 16 | **9** | 77 |
+| S4a/b/c | default | OFF | 0.4 | 15-16 | 2 | 50-54 |
+| S5 | aggressive | OFF | 0.4 | 15 | 3 | 52 |
+
+핵심:
+
+- **Aggressive prompt (S2)** 가 ground truth (S1, 14) 보다 raw count 더 많고 (16) latency 는 default 와 동등. count 결정적 (S2 ↔ S2' 청크별 분포 동일).
+- **Temperature 단독 (S4)** 도 ~16 도달하지만 variance 있음 + #11 같은 boundary 후보 누락. Aggressive 의 결정성이 더 유리.
+- **결합 (S5)** 은 손해 — temp 가 aggressive 의 결정적 #11 finding 을 흩뜨림.
+- **Lenient (S3)** 는 needs_clarification 폭증 (9) 으로 review UI 부하 큼. 비효율.
+- **Reasoning ON 만 회복하는 3건** (#8 Allocate Compute Minutes, #12 CustomersDot Admin, #15 Zuora format) — 모두 dense reference table 파싱이 필요. prompt/sampling 으론 해결 불가. 해커톤 demo 에서는 충분한 다른 후보가 있어 받아들임.
+- **Aggressive 가 추가로 잡는 것** (#11 Join reviewers group, #18 dense exclusion 5-way split) — reasoning ON 도 못 한 것. 정성적으로도 가치 있음.
+
+### 5.2. 채택된 변경 (Phase 3 burn-in)
+
+- `_system_prompt` 끝에 짧은 "## Bias" 절 추가 — "When in doubt, INCLUDE the candidate with needs_clarification=true rather than dropping it."
+- Phase 1 의 4 개 request 필드 / 응답 `raw` / 스모크 flag 모두 제거 (해커톤 main 청결 유지)
+- 기타 인프라 (`enable_thinking=False`, `temperature=0.0`, `reasoning_format=none`) 그대로
+
+### 5.3. 폐기된 옵션 (참고용)
 
 ### 옵션 A: 현 fix 유지 + recall 회수 보류
 
