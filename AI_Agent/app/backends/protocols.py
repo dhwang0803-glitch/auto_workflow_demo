@@ -22,8 +22,16 @@ class LLMBackend(Protocol):
         system: str,
         user_message: str,
         max_tokens: int,
+        enable_thinking: bool | None = None,
+        temperature: float | None = None,
     ) -> str:
-        """Return the assistant's reply as raw text."""
+        """Return the assistant's reply as raw text.
+
+        `enable_thinking` and `temperature` are optional per-call overrides
+        used by the Phase 1 instrumentation surface in policy_extract — for
+        backends without a meaningful interpretation (Anthropic, Stub) they
+        are accepted and ignored.
+        """
         ...
 
     def stream(
