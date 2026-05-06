@@ -225,7 +225,10 @@ def create_app(
         """
         try:
             drafts = await extract_policies(
-                backend, payload.chunk, payload.domain
+                backend,
+                payload.chunk,
+                payload.domain,
+                images=payload.images,
             )
         except PolicyExtractParseError as exc:
             # 502 — same convention as the other LLM-backed endpoints:

@@ -303,3 +303,24 @@ async def test_extract_policies_forwards_chunk_image_to_backend() -> None:
     )
     assert drafts == []  # parser ran cleanly on the stub's empty response
     assert backend.last_images == [chunk.image]
+
+
+# --- Phase D: HTTP route forwards `images` into the service --------------
+
+
+@pytest.mark.asyncio
+async def test_endpoint_forwards_images_field_to_backend() -> None:
+    # The /v1/policy/extract route gained an `images` field in Phase D.
+    # Wire-shape regression: anything posted there reaches the backend's
+    # `images` kwarg unchanged.
+    backend = _ImageRecordingBackend()
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+    img = "data:image/png;base64,iVBORw0KGgo="
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract",
+            json={"chunk": "anything", "domain": "other", "images": [img]},
+        )
+    assert resp.status_code == 200
+    assert backend.last_images == [img]
