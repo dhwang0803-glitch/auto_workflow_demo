@@ -151,9 +151,17 @@ class PolicyExtractRequest(BaseModel):
     Domain is optional context — when known, gives the extractor a hint about
     typical policy shapes for that domain. Pass DomainCategory's "other" or
     omit when the team's domain is unclassified.
+
+    `images` (Phase D) carries optional base64 PNG data URLs from
+    document_parser's per-page render. When supplied, the LLM sees the
+    rendered page alongside the extracted text — useful when the text
+    extractor garbles a tabular layout but the image is legible. Each
+    entry MUST be a `data:image/png;base64,...` URL (the
+    LlamaCppGemmaBackend contract from Phase B).
     """
     chunk: str = Field(min_length=1, max_length=8000)
     domain: DomainCategory = "other"
+    images: list[str] | None = None
 
 
 class PolicyExtractResponse(BaseModel):
