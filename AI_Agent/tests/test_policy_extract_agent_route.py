@@ -144,8 +144,8 @@ async def test_returns_200_with_final_candidates_and_full_trace() -> None:
     assert iter1["eval"]["decision"] == "converge"
     assert iter1["prompt_hint"] == ""
 
-    # PR-C leaves langsmith_url null (PR-D wires it).
-    assert body["langsmith_url"] is None
+    # PR-D leaves langsmith_run_id null when tracing isn't enabled.
+    assert body["langsmith_run_id"] is None
 
 
 # --- multi-iter trace surfaces ------------------------------------------
@@ -319,21 +319,21 @@ async def test_images_field_forwarded_to_backend() -> None:
 # --- max_iter=1 single-pass equivalence ----------------------------------
 
 
-# --- LangSmith URL surfacing (PR-D) --------------------------------------
+# --- LangSmith run_id surfacing (PR-D) -----------------------------------
 
 
 @pytest.mark.asyncio
-async def test_langsmith_url_populated_when_tracing_envs_set(
+async def test_langsmith_run_id_populated_when_tracing_envs_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When BOTH LANGCHAIN_TRACING_V2=true AND LANGCHAIN_API_KEY are
-    set, the response should carry a LangSmith run URL pointing to the
-    pre-generated run id. The actual LangSmith ingestion is skipped
-    (no real API roundtrip on a stub backend), but the URL plumbing is
-    what operators rely on to find the trace.
+    set, the response should carry the UUID langgraph used as the
+    LangSmith run id. The client pastes it into LangSmith's UI search
+    to navigate to the trace — we don't construct a URL server-side
+    because the canonical URL needs org_id + project_id we don't have.
     """
     monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
-    monkeypatch.setenv("LANGCHAIN_API_KEY", "fake-key-for-url-test")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "fake-key-for-test")
 
     backend = _SequencedBackend([_payload(_candidate())])
     app = create_app(backend_override=backend)
@@ -347,21 +347,22 @@ async def test_langsmith_url_populated_when_tracing_envs_set(
 
     assert resp.status_code == 200
     body = resp.json()
-    url = body["langsmith_url"]
-    assert url is not None
-    assert url.startswith("https://smith.langchain.com/")
-    # Each request gets a fresh UUID-formatted run id.
-    assert "/r/" in url
+    run_id = body["langsmith_run_id"]
+    assert run_id is not None
+    # UUID-formatted (8-4-4-4-12 hex with dashes).
+    import uuid as _uuid
+
+    _uuid.UUID(run_id)  # raises if not a valid UUID
 
 
 @pytest.mark.asyncio
-async def test_langsmith_url_null_when_only_master_switch_set(
+async def test_langsmith_run_id_null_when_only_master_switch_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If LANGCHAIN_TRACING_V2 is on but the API key is empty (e.g.,
-    Modal Secret not yet synced), the URL should stay null. We don't
-    want to surface a URL pointing to a run that wasn't actually
-    ingested.
+    Modal Secret not yet synced), run_id should stay null. We don't
+    want to surface an id that points to a run that wasn't actually
+    ingested into LangSmith.
     """
     monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
     monkeypatch.setenv("LANGCHAIN_API_KEY", "")
@@ -377,7 +378,7 @@ async def test_langsmith_url_null_when_only_master_switch_set(
         )
 
     assert resp.status_code == 200
-    assert resp.json()["langsmith_url"] is None
+    assert resp.json()["langsmith_run_id"] is None
 
 
 @pytest.mark.asyncio

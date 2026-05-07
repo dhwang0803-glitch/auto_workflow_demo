@@ -326,14 +326,13 @@ def create_app(
         # (reflect's hint enrichment means later iters subsume earlier).
         final_candidates = iterations[-1].drafts if iterations else []
 
-        # `langsmith_url` is best-effort: the canonical run URL needs
-        # the user's LangSmith org_id which we don't carry server-side.
-        # The generic `/o/-/r/{run_id}` shape redirects to the user's
-        # default org once they're signed in to LangSmith, which is
-        # the expected viewer for hackathon demos.
-        langsmith_url: str | None = None
-        if tracing_on:
-            langsmith_url = f"https://smith.langchain.com/o/-/r/{run_id}"
+        # The canonical LangSmith run URL needs the org_id +
+        # project_id, neither of which the agent server carries — we
+        # surface only the UUID and let the client (smoke script /
+        # Frontend) paste it into the LangSmith UI's search. Setting
+        # this to None when tracing is off makes the absence of a
+        # trace explicit on the wire.
+        langsmith_run_id: str | None = run_id if tracing_on else None
 
         return PolicyExtractReflectiveResponse(
             candidates=final_candidates,
@@ -342,7 +341,7 @@ def create_app(
                 terminated=final_state["terminated"],
                 reason=final_state["reason"],
             ),
-            langsmith_url=langsmith_url,
+            langsmith_run_id=langsmith_run_id,
         )
 
     @app.get("/v1/health", response_model=HealthResponse)

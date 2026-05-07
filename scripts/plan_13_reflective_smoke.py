@@ -9,8 +9,10 @@ familiar side-by-side. Key differences from Phase D:
   - Default mode is text-only; pass --vision to send the chunk's
     image alongside the text (when document_parser produced one).
   - Reflective response carries `agent_trace.iterations` + a
-    LangSmith run URL — both are surfaced in the per-row output so an
-    operator can click through to the trace UI without searching.
+    LangSmith run id (UUID) — both are surfaced in the per-row output
+    so an operator can paste the id into the LangSmith UI search to
+    find the trace. We don't construct URLs server-side (the canonical
+    URL needs org_id + project_id only the LangSmith UI knows).
 
 Usage:
 
@@ -27,9 +29,10 @@ Options:
     --timeout SEC          per-call HTTP timeout (default 600s for
                            reflective which can run extract+judge+extract)
 
-Output: stdout summary table + LangSmith run URLs + recall/latency
-deltas. NDJSON contains the full agent_trace per reflective call so a
-later analysis pass can dig into per-iteration concerns.
+Output: stdout summary table + LangSmith run ids (paste into the UI's
+search) + recall/latency deltas. NDJSON contains the full agent_trace
+per reflective call so a later analysis pass can dig into per-iteration
+concerns.
 """
 from __future__ import annotations
 
@@ -169,7 +172,7 @@ def call_reflective(
         info["candidate_count"] = None
         info["iterations"] = None
         info["reason"] = None
-        info["langsmith_url"] = None
+        info["langsmith_run_id"] = None
         info["agent_trace"] = None
         info["error"] = body_json.get("detail", body_json)
         return info
@@ -178,7 +181,7 @@ def call_reflective(
     info["candidate_count"] = len(candidates)
     info["iterations"] = len(trace.get("iterations") or [])
     info["reason"] = trace.get("reason")
-    info["langsmith_url"] = body_json.get("langsmith_url")
+    info["langsmith_run_id"] = body_json.get("langsmith_run_id")
     # Keep the full trace only for --out NDJSON; stdout stays scannable.
     info["agent_trace"] = trace
     info["error"] = None
@@ -289,7 +292,7 @@ def main() -> int:
                 f"{refl.get('candidate_count') if refl.get('candidate_count') is not None else '-':>5} "
                 f"{refl.get('iterations') if refl.get('iterations') is not None else '-':>5} "
                 f"{(refl.get('reason') or '-'):>18} "
-                f"{(refl.get('error') or refl.get('langsmith_url') or 'ok')[:60]}"
+                f"{(refl.get('error') or refl.get('langsmith_run_id') or 'ok')[:60]}"
             )
 
     if args.out:
@@ -328,17 +331,21 @@ def main() -> int:
                 file=sys.stderr,
             )
 
-    # LangSmith roll-up — handy for the demo + post-mortem
-    urls = [
-        r.get("langsmith_url")
+    # LangSmith roll-up — paste these run ids into the LangSmith UI's
+    # search to navigate to the trace tree per chunk.
+    run_ids = [
+        r.get("langsmith_run_id")
         for r in refl_rows
-        if r.get("langsmith_url")
+        if r.get("langsmith_run_id")
     ]
-    if urls:
+    if run_ids:
         print(file=sys.stderr)
-        print(f"# LangSmith trace URLs ({len(urls)}):", file=sys.stderr)
-        for u in urls:
-            print(f"#   {u}", file=sys.stderr)
+        print(
+            f"# LangSmith run ids ({len(run_ids)}) — paste into the LangSmith UI search:",
+            file=sys.stderr,
+        )
+        for rid in run_ids:
+            print(f"#   {rid}", file=sys.stderr)
 
     return 0
 

@@ -189,7 +189,7 @@ AI_Agent/app/agents/                          ← (신규)
 └── tracing.py                                 ← LangSmith 설정 헬퍼 (env 없으면 no-op)
 
 AI_Agent/app/main.py                           ← (수정) /v1/policy/extract_reflective 라우트 추가
-AI_Agent/app/models/skills.py                  ← (수정) PolicyExtractReflectiveRequest/Response (agent_trace + langsmith_url)
+AI_Agent/app/models/skills.py                  ← (수정) PolicyExtractReflectiveRequest/Response (agent_trace + langsmith_run_id)
 
 AI_Agent/scripts/modal_app.py                  ← (수정) Modal Secret 에 langsmith-api-key 추가
 
@@ -233,7 +233,7 @@ dependencies = [
 | **(본 PR)** | PLAN_13 doc-only | — |
 | **PR-A** | pyproject 의존성 (`langgraph`, `langsmith`) + `app/agents/state.py` + `app/agents/eval.py` (deterministic 룰만, LLM judge 미포함) + `app/agents/tracing.py` (no-op 폴백) + 단위 테스트 | 본 PR |
 | **PR-B** | `policy_extract_agent.py` StateGraph 빌더 + extract/reflect 노드 + 조건 엣지 + 종료조건 + 단위 테스트 (stub backend, 트레이싱 OFF) | PR-A |
-| **PR-C** | `/v1/policy/extract_reflective` 라우트 + request/response 스키마 (`agent_trace` + `langsmith_url`) + 라우트 통합 테스트 | PR-B |
+| **PR-C** | `/v1/policy/extract_reflective` 라우트 + request/response 스키마 (`agent_trace` + `langsmith_run_id`) + 라우트 통합 테스트 | PR-B |
 | **PR-D** | LLM judge 노드 + LangSmith 통합 (`@traceable` LLM wrapper + Modal Secret 동기화) + Modal smoke (`plan_13_reflective_smoke.py`) + recall/latency 측정 + LangSmith run URL 검증 + 본 doc 측정결과 갱신 | PR-C |
 | **(W4)** | 데모 시연 통합 — 영상에 LangSmith trace tree 화면 캡처 / Frontend 카드에 trace URL 링크 (옵션) | PR-D |
 
