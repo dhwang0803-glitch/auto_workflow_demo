@@ -40,17 +40,34 @@ def _payload(*candidates: dict[str, Any]) -> str:
     return json.dumps({"candidates": list(candidates)})
 
 
-class _SequencedBackend:
-    """Returns the next response from `responses` per `complete` call.
+_JUDGE_PROMPT_PREFIX = "You are a critic for a policy-extraction step."
 
-    Same shape as the graph-test backend so behavior is consistent
-    across both test files. Captures last `images` so the route test
-    can assert images forwarded.
+
+class _SequencedBackend:
+    """Returns the next extract response from `responses` per call.
+
+    The route handler in PR-D passes `judge_backend=backend`, so the
+    same stub serves both extract calls and judge calls. We disambiguate
+    by sniffing the system prompt — judge calls land on a separate
+    counter and (by default) silently return `{"missed": []}` so
+    tests that only care about the extraction path don't have to
+    bookkeep judge responses.
+
+    Tests that DO want to exercise the judge path pass `judge_responses`
+    explicitly. The judge counter (`judge_calls`) is also surfaced so
+    a test can assert the judge ran the expected number of times.
     """
 
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(
+        self,
+        responses: list[str],
+        *,
+        judge_responses: list[str] | None = None,
+    ) -> None:
         self._responses = list(responses)
-        self.calls = 0
+        self._judge_responses = list(judge_responses or [])
+        self.calls = 0  # extract calls only
+        self.judge_calls = 0
         self.last_images: list[str] | None = None
 
     async def complete(
@@ -61,6 +78,16 @@ class _SequencedBackend:
         max_tokens: int,
         images: list[str] | None = None,
     ) -> str:
+        if system.startswith(_JUDGE_PROMPT_PREFIX):
+            if self.judge_calls < len(self._judge_responses):
+                out = self._judge_responses[self.judge_calls]
+            else:
+                # Default: judge sees nothing missing → keeps the
+                # deterministic verdict.
+                out = '{"missed": []}'
+            self.judge_calls += 1
+            return out
+
         if self.calls >= len(self._responses):
             raise AssertionError(
                 f"backend ran out of responses at call #{self.calls + 1}"
@@ -290,6 +317,67 @@ async def test_images_field_forwarded_to_backend() -> None:
 
 
 # --- max_iter=1 single-pass equivalence ----------------------------------
+
+
+# --- LangSmith URL surfacing (PR-D) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_langsmith_url_populated_when_tracing_envs_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When BOTH LANGCHAIN_TRACING_V2=true AND LANGCHAIN_API_KEY are
+    set, the response should carry a LangSmith run URL pointing to the
+    pre-generated run id. The actual LangSmith ingestion is skipped
+    (no real API roundtrip on a stub backend), but the URL plumbing is
+    what operators rely on to find the trace.
+    """
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "fake-key-for-url-test")
+
+    backend = _SequencedBackend([_payload(_candidate())])
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={"chunk": "Refunds must be approved.", "max_iter": 1},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    url = body["langsmith_url"]
+    assert url is not None
+    assert url.startswith("https://smith.langchain.com/")
+    # Each request gets a fresh UUID-formatted run id.
+    assert "/r/" in url
+
+
+@pytest.mark.asyncio
+async def test_langsmith_url_null_when_only_master_switch_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If LANGCHAIN_TRACING_V2 is on but the API key is empty (e.g.,
+    Modal Secret not yet synced), the URL should stay null. We don't
+    want to surface a URL pointing to a run that wasn't actually
+    ingested.
+    """
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "")
+
+    backend = _SequencedBackend([_payload(_candidate())])
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={"chunk": "Refunds must be approved.", "max_iter": 1},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["langsmith_url"] is None
 
 
 @pytest.mark.asyncio

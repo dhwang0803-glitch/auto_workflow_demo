@@ -17,6 +17,7 @@ and docs path emit the same SkillDraft).
 """
 from __future__ import annotations
 
+from app.agents.tracing import traceable
 from app.backends.protocols import LLMBackend
 from app.models.domain import DomainCategory
 from app.models.skills import SkillDraft
@@ -168,6 +169,7 @@ def _parse_response(raw: str) -> list[SkillDraft]:
     return drafts
 
 
+@traceable(name="extract_policies", run_type="llm")
 async def extract_policies(
     backend: LLMBackend,
     chunk: str,

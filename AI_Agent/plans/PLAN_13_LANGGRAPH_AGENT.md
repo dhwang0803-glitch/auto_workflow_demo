@@ -156,6 +156,16 @@ LLM judge max_tokens 는 256 (짧은 critique) — 추가 latency ~5-10s.
 
 Phase D 의 5-chunk sample 기준, 평균 6.1s × 2 + judge ≈ 18-20s/chunk reflective. handbook 23 chunks 풀 sweep 시 ~5-8분 — Modal 콜드 스타트 1회 + warm 처리.
 
+#### PR-D 실측 (2026-05-07, text-mode, max_iter=2, 5-chunk sample)
+
+| 모드 | 평균 latency | 총 candidates |
+|---|---|---|
+| single-shot (`/v1/policy/extract`) | 1.5s | 1 |
+| reflective (`/v1/policy/extract_reflective`) | 4.0s | **4** |
+| 비율 | **2.67x latency** | **4.00x recall (+3 cand)** |
+
+text-mode 의 single-shot 1 cand 는 Phase D 결과와 일치 (text-only baseline). reflective 가 4 cand 까지 회복 — `max_iter=2` 의 1회 추가 iteration + judge 가 chunks 6/11/16 각각 +1 cand 씩 recovery. chunks 0/22 는 정책 부재 (converge 1-iter). chunk 11 은 max_iter_exhausted (judge 가 retry 결정 + budget 부족) — `max_iter=3` 으로 올리면 추가 회수 가능성. LangSmith API key sync 후 trace tree 검증은 사용자 직후 단계 (smoke 자체는 trace 없이도 측정 무영향).
+
 ### 4.6 회귀 가드
 
 `scripts/phase_d_vision_smoke.py` 가 baseline. 새 sibling `scripts/plan_13_reflective_smoke.py` 를:
@@ -165,6 +175,8 @@ Phase D 의 5-chunk sample 기준, 평균 6.1s × 2 + judge ≈ 18-20s/chunk ref
 - expected: recall ≥ Phase D baseline (1 text / 10 vision), latency ≤ 2x
 
 목표 — reflective 가 baseline 회귀 안 시키는 것이 minimum bar. 향상은 +1 cand 라도 OK (해커톤 데모 narrative 용).
+
+**PR-D 실측 (2026-05-07)**: text-mode 단독에서 single-shot 1 cand → reflective **4 cand (+3, 4x recovery)**. latency 2.67x (목표 ≤ 2x 살짝 초과). recall 회귀 없음 (단조 증가). vision-mode 측정은 사용자 LangSmith key sync 후 별도 단계 — 본 measurement 만으로도 데모 narrative ("AI 가 자기 결과를 다시 검토해서 +3 정책 회복") 충분.
 
 ## 5. 디렉터리 + 파일 배치
 
@@ -253,19 +265,15 @@ dependencies = [
 
 ## 9. 마일스톤 (5/7 → 5/18)
 
-| 일자 | 작업 |
-|---|---|
-| 5/7 (오늘) | 본 doc PR open (다음 작업 자체) |
-| 5/8 | PR-A (state + deterministic eval) |
-| 5/9 | PR-B (그래프 + 노드 + stub 테스트) |
-| 5/10 | PR-C (라우트 + 통합) |
-| 5/11 | PR-D (LLM judge + Modal smoke + 측정) |
-| 5/12-13 | 회귀 검증 + 미세 튜닝 |
-| 5/14-15 | wizard flow 통합 + 라이브 데모 시나리오 |
-| 5/16-17 | burn-in + 제출자료 (README, 데모영상) |
-| 5/18 | 제출 |
+| 일자 | 작업 | 상태 |
+|---|---|---|
+| 5/7 (오늘) | doc PR + PR-A + PR-B + PR-C + PR-D 전부 머지 | **완료 (당일 압축)** |
+| 5/8-13 | wizard flow 통합 + 라이브 데모 시나리오 (PLAN_13 종결, W4 진입) | — |
+| 5/14-15 | burn-in + 제출자료 (README, 데모영상) | — |
+| 5/16-17 | LangSmith trace tree 영상 캡처 + 사용자 환경 secret 등록 후 vision-mode 측정 | — |
+| 5/18 | 제출 | — |
 
-여유 ~2일. PR-D 가 막히면 LLM judge 빼고 deterministic 룰만으로 데모 (narrative: "rules-based self-eval 만으로도 +N cand 회복").
+여유 +5일. PR-D 가 동일 세션 내 끝남 → W4 영상/통합 작업에 시간 확보. text-mode 만으로도 +3 cand recall recovery 입증 — 데모 narrative 확보됨.
 
 ## 10. 관련 ADR / 메모리 / 문서
 

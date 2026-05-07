@@ -26,13 +26,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging
+
 from langgraph.graph import END, StateGraph
 
 from app.agents.eval import evaluate
-from app.agents.state import AgentIteration, AgentState
+from app.agents.judge import JudgeParseError, judge_extraction
+from app.agents.state import AgentIteration, AgentState, EvalReport
 from app.agents.tracing import traceable
 from app.backends.protocols import LLMBackend
 from app.services.policy_extract import extract_policies
+
+logger = logging.getLogger(__name__)
 
 
 def _format_hint(concerns: list[str]) -> str:
@@ -44,13 +49,24 @@ def _format_hint(concerns: list[str]) -> str:
     return "\n".join(f"- {c}" for c in concerns if c.strip())
 
 
-def build_agent(backend: LLMBackend) -> Any:
+def build_agent(
+    backend: LLMBackend,
+    *,
+    judge_backend: LLMBackend | None = None,
+) -> Any:
     """Compile and return the policy_extract reflective agent graph.
 
-    The closure captures the LLM backend so the compiled graph itself
-    has no per-invocation parameters beyond the `AgentState` it's given.
-    Test code passes a stub backend; production wiring (PR-C) passes
-    the FastAPI dependency-injected backend.
+    The closure captures both the extraction backend and the optional
+    judge backend so the compiled graph itself has no per-invocation
+    parameters beyond the `AgentState` it's given.
+
+    `judge_backend` is the LLM-judge hook from PLAN_13 §4.3 #4. Passing
+    None (the default) keeps self_eval purely deterministic — the same
+    behavior PR-A/PR-B shipped. Passing a backend (PR-D wiring at the
+    route layer) lets self_eval ask the LLM "did the previous pass
+    miss anything?" whenever the deterministic rules cleared with
+    converge. Production passes the same backend for both; stubs and
+    unit tests can pass a separate judge stub or leave it None.
 
     Returns the compiled langgraph; call `.ainvoke(state)` to run.
     """
@@ -83,6 +99,45 @@ def build_agent(backend: LLMBackend) -> Any:
             return {"terminated": True, "reason": "schema_error"}
 
         report = evaluate(state.chunk, in_flight.drafts, state.iterations)
+
+        # PLAN_13 §4.3 #4: judge runs only when deterministic rules
+        # converged AND a judge backend is wired. The rules are cheaper
+        # and more confident on retry decisions, so we save the judge
+        # call for the case where they didn't trip.
+        if (
+            report.decision == "converge"
+            and judge_backend is not None
+            and len(state.iterations) + 1 < state.max_iter
+        ):
+            # Skip judge on the LAST allowed iteration too — flipping
+            # to retry there would only land in max_iter_exhausted, so
+            # the judge call is wasted budget.
+            try:
+                concerns = await judge_extraction(
+                    judge_backend, state.chunk, in_flight.drafts
+                )
+            except JudgeParseError as exc:
+                # Don't blow up the run on a malformed judge response.
+                # Keep the deterministic verdict and log so PR-D's
+                # smoke can flag judge instability.
+                logger.warning(
+                    "judge_extraction parse error — keeping deterministic "
+                    "decision: %s",
+                    exc,
+                )
+                concerns = []
+
+            if concerns:
+                report = EvalReport(
+                    decision="retry",
+                    coverage_concerns=concerns,
+                    rationale=(
+                        "judge flagged "
+                        f"{len(concerns)} missed polic{'y' if len(concerns) == 1 else 'ies'} "
+                        "after deterministic rules converged"
+                    ),
+                )
+
         finalized = in_flight.model_copy(update={"eval": report})
 
         update: dict = {
