@@ -58,21 +58,35 @@ class EvalReport(BaseModel):
 class AgentIteration(BaseModel):
     """One pass of (extract → eval). `prompt_hint` is the hint reflect
     injected into THIS iteration's extract call — empty for iter 1.
+
+    `eval` is `None` while the iteration is in-flight (extract has
+    produced drafts but self_eval hasn't yet run). It MUST be populated
+    by the time the iteration lands in `AgentState.iterations` —
+    completed iterations always carry a finalized EvalReport.
     """
 
     drafts: list[SkillDraft] = Field(default_factory=list)
-    eval: EvalReport
+    eval: EvalReport | None = None
     prompt_hint: str = ""
 
 
 class AgentState(BaseModel):
     """Top-level state passed between langgraph nodes.
 
-    The `iterations` reducer (`Annotated[..., add]`) is what makes the
-    graph append-only across nodes — extract emits a partial iteration,
-    self_eval replaces it with the full record. We keep the simple "a
-    node returns a one-element list and reducer concats" pattern since
-    extract/self_eval run as a pair within one cycle (PLAN_13 §4.1).
+    `iterations` is the append-only completed-iteration log (reducer
+    `add` lets self_eval return `{"iterations": [iter]}` and have it
+    appended). The two transient buffers below are REPLACED on each
+    return — they only carry data within a single extract→self_eval or
+    reflect→extract handoff:
+
+      - `in_flight` — extract writes the partial iteration (drafts +
+        prompt_hint, eval=None). self_eval reads it, runs evaluate(),
+        finalizes the iteration with the EvalReport, and appends to
+        `iterations`. Cleared back to None on that same return.
+
+      - `pending_hint` — reflect writes the hint string for the next
+        iteration. extract reads it on entry and clears it on the same
+        return that produces the new in_flight.
     """
 
     chunk: str
@@ -80,6 +94,8 @@ class AgentState(BaseModel):
     domain: DomainCategory = "other"
     max_iter: int = Field(default=2, ge=1, le=5)
     iterations: Annotated[list[AgentIteration], add] = Field(default_factory=list)
+    in_flight: AgentIteration | None = None
+    pending_hint: str = ""
     terminated: bool = False
     reason: TerminationReason = ""
 

@@ -45,7 +45,7 @@ class PolicyExtractParseError(ValueError):
         self.raw = raw
 
 
-def _system_prompt(domain: DomainCategory) -> str:
+def _system_prompt(domain: DomainCategory, prompt_hint: str = "") -> str:
     # The trailing "## Bias" clause was selected by the Phase 2 sweep
     # (EXPERIMENT_reasoning_trace.md §5): on the GitLab handbook fixture
     # it lifted recall from 10 → 16 candidates without changing wall time
@@ -53,6 +53,22 @@ def _system_prompt(domain: DomainCategory) -> str:
     # penalty of re-enabling reasoning (634s for 14 candidates). The
     # clause is intentionally short — the Rules block above is doing the
     # schema enforcement; this clause only nudges precision↔recall.
+    #
+    # `prompt_hint`, when non-empty, is appended as a "## Previous pass"
+    # section at the very end of the prompt (PLAN_13 §4.4). It carries
+    # the reflect node's coverage_concerns from the prior iteration so
+    # the model knows what the previous pass missed. Empty string means
+    # this is iter 1 and the agent hasn't reflected yet — back-compat
+    # with the existing single-shot `/v1/policy/extract` route.
+    hint_block = (
+        "\n\n## Previous pass\n"
+        "An earlier extraction pass on this same chunk had these gaps. "
+        "Re-read the chunk and emit candidates that address them.\n"
+        f"{prompt_hint.strip()}"
+        if prompt_hint.strip()
+        else ""
+    )
+
     return (
         "You are the policy extractor for a workflow-automation product's "
         "skill-bootstrap flow. The user uploaded a team document; the next "
@@ -99,6 +115,7 @@ def _system_prompt(domain: DomainCategory) -> str:
         "rather than dropping it. The downstream review UI can prune false "
         "positives, but cannot recover policies that were never extracted. "
         "Aim for high recall over precision."
+        + hint_block
     )
 
 
@@ -157,6 +174,7 @@ async def extract_policies(
     domain: DomainCategory = "other",
     *,
     images: list[str] | None = None,
+    prompt_hint: str = "",
 ) -> list[SkillDraft]:
     """Extract zero+ skill candidates from one document chunk.
 
@@ -164,6 +182,12 @@ async def extract_policies(
     PyMuPDF travels alongside `chunk` (the page's text) so the model
     sees both. Until Phase D ships document_parser's image rendering,
     callers pass None and the path stays text-only.
+
+    `prompt_hint` is the PLAN_13 reflective entry point: when non-empty
+    it gets appended to the system prompt as a "## Previous pass"
+    section listing the prior iteration's gaps. The single-shot route
+    `/v1/policy/extract` always passes "" so its output matches the
+    pre-PLAN_13 behavior byte-for-byte.
     """
     text = chunk.strip()
     if not text and not images:
@@ -173,7 +197,7 @@ async def extract_policies(
         return []
 
     raw = await backend.complete(
-        system=_system_prompt(domain),
+        system=_system_prompt(domain, prompt_hint=prompt_hint),
         user_message=text,
         max_tokens=POLICY_EXTRACT_MAX_TOKENS,
         images=images,
