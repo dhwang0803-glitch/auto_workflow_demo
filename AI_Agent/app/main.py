@@ -23,10 +23,17 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.agents.policy_extract_agent import build_agent
+from app.agents.state import AgentState
 from app.backends.protocols import EmbeddingBackend, LLMBackend
 from app.config import Settings
 from app.container import AIAgentContainer
 from app.dependencies import get_backend, get_settings
+from app.models.agents import (
+    AgentTrace,
+    PolicyExtractReflectiveRequest,
+    PolicyExtractReflectiveResponse,
+)
 from app.models.domain import DomainClassification, DomainClassifyRequest
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
 from app.models.skills import (
@@ -245,6 +252,66 @@ def create_app(
             }
             raise HTTPException(status_code=502, detail=detail) from exc
         return PolicyExtractResponse(candidates=drafts)
+
+    @app.post(
+        "/v1/policy/extract_reflective",
+        response_model=PolicyExtractReflectiveResponse,
+    )
+    async def policy_extract_reflective(
+        payload: PolicyExtractReflectiveRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> PolicyExtractReflectiveResponse:
+        """Closed-loop reflective extraction (PLAN_13).
+
+        Wraps the same per-chunk extraction as /v1/policy/extract in
+        the langgraph agent: extract → self_eval → (reflect → extract)*
+        up to `max_iter` times. Response carries the FINAL iteration's
+        candidates plus the full agent_trace so operators can audit
+        each pass without an external trace UI.
+
+        Co-exists with /v1/policy/extract — callers running A/B
+        regression measurement (PR-D's smoke) hit both with the same
+        chunk and compare recall + latency.
+        """
+        agent = build_agent(backend)
+        initial = AgentState(
+            chunk=payload.chunk,
+            domain=payload.domain,
+            images=payload.images,
+            max_iter=payload.max_iter,
+        )
+
+        try:
+            final_state = await agent.ainvoke(initial)
+        except PolicyExtractParseError as exc:
+            # Same 502 envelope as /v1/policy/extract: a parse failure
+            # in any iteration's extract call propagates up. Reflect/
+            # eval don't call the LLM (PR-D's judge will, and PR-D
+            # adopts this same envelope), so this catches every LLM-
+            # parse path the agent currently has.
+            detail = {
+                "error": str(exc),
+                "raw_len": len(exc.raw),
+                "raw": exc.raw[:1500],
+            }
+            raise HTTPException(status_code=502, detail=detail) from exc
+
+        # langgraph returns a plain dict (the state values), not the
+        # AgentState model. Index into it explicitly.
+        iterations = final_state["iterations"]
+        # PLAN_13 §8 #4: final iter's drafts are treated as the superset
+        # (reflect's hint enrichment means later iters subsume earlier).
+        final_candidates = iterations[-1].drafts if iterations else []
+
+        return PolicyExtractReflectiveResponse(
+            candidates=final_candidates,
+            agent_trace=AgentTrace(
+                iterations=iterations,
+                terminated=final_state["terminated"],
+                reason=final_state["reason"],
+            ),
+            langsmith_url=None,  # PR-D wires LangSmith run URL
+        )
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(
