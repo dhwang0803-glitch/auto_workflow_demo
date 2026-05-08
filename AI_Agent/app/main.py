@@ -17,6 +17,8 @@ thin in this PR so the boundary is easy to validate.
 """
 from __future__ import annotations
 
+import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -273,7 +275,12 @@ def create_app(
         regression measurement (PR-D's smoke) hit both with the same
         chunk and compare recall + latency.
         """
-        agent = build_agent(backend)
+        # Same backend powers both extraction and the LLM judge — both
+        # paths go through the same Modal Gemma deployment, so the
+        # alternative would be a second model and a different cost
+        # profile. Keep the single-backend wiring until PR-D smoke
+        # shows a need.
+        agent = build_agent(backend, judge_backend=backend)
         initial = AgentState(
             chunk=payload.chunk,
             domain=payload.domain,
@@ -281,8 +288,24 @@ def create_app(
             max_iter=payload.max_iter,
         )
 
+        # Pre-generate the LangSmith run id so the route handler can
+        # tell the caller WHICH run to look up in the LangSmith UI
+        # without round-tripping through the LangSmith client. langgraph
+        # threads `run_id` through to its tracer when LangSmith is on;
+        # when tracing is off this is just a UUID we don't reuse.
+        # Read the env dynamically (not via tracing.TRACING_ENABLED
+        # which is bound at import time) so a Modal redeploy that adds
+        # the API key flips this on without rebuilding the container.
+        tracing_on = (
+            os.environ.get("LANGCHAIN_TRACING_V2", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and bool(os.environ.get("LANGCHAIN_API_KEY", "").strip())
+        )
+        run_id = str(uuid.uuid4())
+        config: dict = {"run_id": run_id} if tracing_on else {}
+
         try:
-            final_state = await agent.ainvoke(initial)
+            final_state = await agent.ainvoke(initial, config=config)
         except PolicyExtractParseError as exc:
             # Same 502 envelope as /v1/policy/extract: a parse failure
             # in any iteration's extract call propagates up. Reflect/
@@ -303,6 +326,14 @@ def create_app(
         # (reflect's hint enrichment means later iters subsume earlier).
         final_candidates = iterations[-1].drafts if iterations else []
 
+        # The canonical LangSmith run URL needs the org_id +
+        # project_id, neither of which the agent server carries — we
+        # surface only the UUID and let the client (smoke script /
+        # Frontend) paste it into the LangSmith UI's search. Setting
+        # this to None when tracing is off makes the absence of a
+        # trace explicit on the wire.
+        langsmith_run_id: str | None = run_id if tracing_on else None
+
         return PolicyExtractReflectiveResponse(
             candidates=final_candidates,
             agent_trace=AgentTrace(
@@ -310,7 +341,7 @@ def create_app(
                 terminated=final_state["terminated"],
                 reason=final_state["reason"],
             ),
-            langsmith_url=None,  # PR-D wires LangSmith run URL
+            langsmith_run_id=langsmith_run_id,
         )
 
     @app.get("/v1/health", response_model=HealthResponse)

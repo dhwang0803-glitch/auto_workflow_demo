@@ -72,6 +72,13 @@ image = (
         "MODEL_PATH": MODEL_PATH,
         "LLAMA_SERVER_URL": f"http://127.0.0.1:{LLAMA_SERVER_PORT}",
         "PORT": str(FASTAPI_PORT),
+        # PLAN_13 PR-D — LangSmith tracing on by default in Modal so
+        # PLAN_13 demo runs surface in the LangSmith UI. The actual
+        # API key is injected via the langsmith_secret below; without
+        # the key tracing.py keeps `@traceable` as a no-op so the agent
+        # runs identically.
+        "LANGCHAIN_TRACING_V2": "true",
+        "LANGCHAIN_PROJECT": "auto-workflow-policy-extract",
     })
     # Dockerfile's ENTRYPOINT runs entrypoint.sh which checks MODEL_PATH and
     # exits 1 when missing — that blocks every Modal container start
@@ -84,6 +91,14 @@ image = (
 model_volume = modal.Volume.from_name("agent-models", create_if_missing=True)
 bearer_secret = modal.Secret.from_name("agent-bearer-token")
 hf_secret = modal.Secret.from_name("huggingface-token")
+# PLAN_13 PR-D — LangSmith API key. The Secret is created once
+# (manually or via `modal secret create langsmith-api-key
+# LANGCHAIN_API_KEY=""` for an empty placeholder); subsequent value
+# rotation flows through `scripts/sync-modal-secrets.py` from GCP
+# Secret Manager. With an empty key, tracing.py keeps `@traceable`
+# as a no-op so the agent runs unchanged; sync the secret + redeploy
+# to flip tracing on without code changes.
+langsmith_secret = modal.Secret.from_name("langsmith-api-key")
 
 app = modal.App(APP_NAME)
 
@@ -129,7 +144,7 @@ def download_model() -> None:
     image=image,
     gpu="L4",
     volumes={MODEL_DIR: model_volume},
-    secrets=[bearer_secret, hf_secret],
+    secrets=[bearer_secret, hf_secret, langsmith_secret],
     timeout=600,
     scaledown_window=300,
 )

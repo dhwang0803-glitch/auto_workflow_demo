@@ -54,6 +54,13 @@ MODAL = shutil.which("modal") or shutil.which("modal.cmd") or "modal"
 # don't add the row.
 MAPPING: list[tuple[str, str, str]] = [
     ("agent-bearer-token", "AGENT_BEARER_TOKEN", "agent-bearer-token-staging"),
+    # PLAN_13 PR-D — LangSmith API key for `@traceable` ingestion. The
+    # `langsmith-api-key-staging` GCP secret is created manually once
+    # (the user generates a key from smith.langchain.com → Settings →
+    # API Keys, then `gcloud secrets create langsmith-api-key-staging
+    # --data-file=-` with the key piped in). After this script runs,
+    # redeploy AI_Agent so the new container picks up the env var.
+    ("langsmith-api-key", "LANGCHAIN_API_KEY", "langsmith-api-key-staging"),
 ]
 
 

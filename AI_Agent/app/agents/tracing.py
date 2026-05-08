@@ -35,7 +35,17 @@ def _env_truthy(name: str) -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
-TRACING_ENABLED = _env_truthy("LANGCHAIN_TRACING_V2")
+# Tracing is "on" only when BOTH the master switch is truthy AND a
+# LangSmith API key is in the env. Modal sets `LANGCHAIN_TRACING_V2=true`
+# unconditionally (image env, not Secret), and the API key is injected
+# via the langsmith Modal Secret which may be unsynced on a first deploy
+# (`create_if_missing=True` in modal_app.py). Without the key, the
+# langsmith client would just retry-fail in the background — cleaner to
+# skip the decorator entirely and stay no-op until the secret lands.
+TRACING_ENABLED = (
+    _env_truthy("LANGCHAIN_TRACING_V2")
+    and bool(os.environ.get("LANGCHAIN_API_KEY", "").strip())
+)
 
 
 if TRACING_ENABLED:

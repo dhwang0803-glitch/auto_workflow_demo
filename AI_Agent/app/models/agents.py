@@ -77,10 +77,15 @@ class PolicyExtractReflectiveResponse(BaseModel):
     drops, the union policy will be revisited.
 
     `agent_trace` carries every intermediate pass for operator review;
-    `langsmith_url`, if non-null, points to the public read-only run
-    on the LangSmith dashboard (PR-D).
+    `langsmith_run_id`, if non-null, is the UUID langgraph used as the
+    LangSmith run id when tracing was active. The client (smoke script,
+    Frontend, dashboard link) can paste it into the LangSmith UI's
+    search to navigate to the run — we don't construct a URL
+    server-side because the canonical run URL needs the user's
+    LangSmith org_id and project_id, neither of which the agent
+    server carries.
     """
 
     candidates: list[SkillDraft] = Field(default_factory=list)
     agent_trace: AgentTrace
-    langsmith_url: str | None = None
+    langsmith_run_id: str | None = None

@@ -298,6 +298,179 @@ async def test_rule_3_drafts_identical_converges() -> None:
 # --- prompt_hint plumbing through service --------------------------------
 
 
+# --- LLM judge integration (PR-D) ---------------------------------------
+
+
+class _DualBackend:
+    """Two response queues — one for extract calls, one for judge.
+
+    The judge prompt has a distinctive prefix; we route on it so a
+    single backend instance can feed both call sites without the test
+    having to interleave responses. Same idea as the route tests'
+    `_SequencedBackend`, kept local so each test file is self-contained.
+    """
+
+    _JUDGE_PREFIX = "You are a critic for a policy-extraction step."
+
+    def __init__(
+        self,
+        extract_responses: list[str],
+        judge_responses: list[str],
+    ) -> None:
+        self._extract = list(extract_responses)
+        self._judge = list(judge_responses)
+        self.extract_calls = 0
+        self.judge_calls = 0
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> str:
+        if system.startswith(self._JUDGE_PREFIX):
+            if self.judge_calls >= len(self._judge):
+                raise AssertionError(
+                    f"judge ran out of responses at call #{self.judge_calls + 1}"
+                )
+            out = self._judge[self.judge_calls]
+            self.judge_calls += 1
+            return out
+
+        if self.extract_calls >= len(self._extract):
+            raise AssertionError(
+                f"extract ran out of responses at call #{self.extract_calls + 1}"
+            )
+        out = self._extract[self.extract_calls]
+        self.extract_calls += 1
+        return out
+
+
+async def test_judge_flips_converge_to_retry_when_concerns_surface() -> None:
+    """Iter 1: extract returns one solid candidate (rules → converge).
+    Judge returns a missed-policy concern → eval flips to retry.
+    Iter 2: extract returns more drafts → judge returns empty.
+    """
+    backend = _DualBackend(
+        extract_responses=[
+            _payload(_candidate(name="first")),
+            _payload(_candidate(name="first"), _candidate(name="second")),
+        ],
+        judge_responses=[
+            json.dumps({"missed": ["second policy not extracted"]}),
+            json.dumps({"missed": []}),
+        ],
+    )
+    agent = build_agent(backend, judge_backend=backend)
+
+    out = await agent.ainvoke(
+        AgentState(chunk="some chunk with policies", max_iter=3)
+    )
+
+    assert backend.extract_calls == 2
+    assert backend.judge_calls == 2
+    assert len(out["iterations"]) == 2
+    # Iter 1 was flipped from converge → retry by the judge.
+    iter1 = out["iterations"][0]
+    assert iter1.eval is not None
+    assert iter1.eval.decision == "retry"
+    assert "judge flagged" in iter1.eval.rationale
+    assert "second policy not extracted" in iter1.eval.coverage_concerns
+    # Iter 2's prompt_hint was reflect's translation of those concerns.
+    assert out["iterations"][1].prompt_hint.startswith("- ")
+    assert "second policy not extracted" in out["iterations"][1].prompt_hint
+
+
+async def test_judge_skipped_when_deterministic_rule_already_retried() -> None:
+    """Iter 1: empty drafts on a policy-keyword chunk → rule 1 retry.
+    The judge should NOT be called — deterministic rules already
+    decided.
+    """
+    backend = _DualBackend(
+        extract_responses=[
+            _payload(),  # rule 1 retry
+            _payload(_candidate()),  # converge in iter 2
+        ],
+        judge_responses=[
+            json.dumps({"missed": []}),  # only used by iter 2's converge
+        ],
+    )
+    agent = build_agent(backend, judge_backend=backend)
+
+    out = await agent.ainvoke(
+        AgentState(chunk="Refunds must be approved.", max_iter=3)
+    )
+
+    # Judge ran exactly once — for iter 2's converge, not iter 1's retry.
+    assert backend.judge_calls == 1
+    assert backend.extract_calls == 2
+    assert out["reason"] == "converge"
+
+
+async def test_judge_skipped_on_last_allowed_iteration() -> None:
+    """When the converge happens on the LAST allowed iteration, the
+    judge would only be able to flip to retry → max_iter_exhausted,
+    which is wasted budget. Skip it. (The deterministic verdict still
+    drives `reason` — "converge" if rule 4 cleared, "max_iter_exhausted"
+    if a retry rule fired but couldn't be retried — we only assert
+    that the judge wasn't called.)
+    """
+    backend = _DualBackend(
+        extract_responses=[_payload(_candidate())],
+        judge_responses=[],  # empty: assertion fires if judge called
+    )
+    agent = build_agent(backend, judge_backend=backend)
+
+    out = await agent.ainvoke(
+        AgentState(chunk="Refunds must be approved.", max_iter=1)
+    )
+
+    assert backend.judge_calls == 0
+    assert backend.extract_calls == 1
+    assert out["terminated"] is True
+
+
+async def test_judge_parse_error_keeps_deterministic_decision() -> None:
+    """A malformed judge response should NOT crash the agent — the
+    deterministic verdict stays in place and the run completes.
+    """
+    backend = _DualBackend(
+        extract_responses=[_payload(_candidate())],
+        judge_responses=["not json at all"],  # parse error
+    )
+    agent = build_agent(backend, judge_backend=backend)
+
+    out = await agent.ainvoke(
+        AgentState(chunk="Refunds must be approved.", max_iter=2)
+    )
+
+    # Judge got called once and crashed; deterministic converge stays.
+    assert backend.judge_calls == 1
+    assert out["reason"] == "converge"
+    assert out["iterations"][0].eval.decision == "converge"
+
+
+async def test_no_judge_backend_means_pure_deterministic() -> None:
+    """Backwards-compat with PR-A/PR-B: passing no judge backend
+    means self_eval never makes the extra LLM call.
+    """
+    backend = _DualBackend(
+        extract_responses=[_payload(_candidate())],
+        judge_responses=[],  # asserts if called
+    )
+    agent = build_agent(backend)  # no judge_backend
+
+    out = await agent.ainvoke(
+        AgentState(chunk="Refunds must be approved.", max_iter=2)
+    )
+
+    assert backend.judge_calls == 0
+    assert backend.extract_calls == 1
+    assert out["reason"] == "converge"
+
+
 async def test_prompt_hint_appears_in_extract_call_system_prompt() -> None:
     """Belt-and-suspenders: confirm reflect's bullet-formatted hint
     actually flows through `services.policy_extract._system_prompt` and
