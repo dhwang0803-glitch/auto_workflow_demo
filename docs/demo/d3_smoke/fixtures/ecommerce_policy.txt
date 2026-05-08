@@ -1,0 +1,62 @@
+## Refunds, returns, and order policy (Acme Storefront)
+
+This is the operating policy our team works from. It supersedes anything
+the storefront UI says by default — if a customer asks for a refund or
+exchange, follow this document first and only escalate to the founder
+when the case is outside these rules.
+
+### 1. Refund eligibility
+
+We accept refund requests within 30 calendar days of the original
+delivery date as recorded by the carrier. Customers must provide either
+the order ID or the email used at checkout. After 30 days, refunds are
+denied unless the item is defective on arrival ("DOA") and the customer
+flagged the defect within 7 days of delivery.
+
+Defective items are refunded at full purchase price including original
+shipping. Buyer's-remorse returns are refunded at purchase price minus
+the original shipping fee; return shipping is the customer's
+responsibility.
+
+### 2. Restocking fee
+
+For non-defective returns of opened items, we charge a 15% restocking
+fee on the item subtotal (not on shipping). Sealed/unused items are
+exempt. The restocking fee is disclosed on the return-confirmation
+email before the return ships, never silently deducted at refund time.
+
+### 3. Refund processing time
+
+Refunds are issued to the original payment method within 3 business
+days of receiving the returned item at our warehouse. Bank settlement
+is typically an additional 3–5 business days; we do not control that
+window and we tell customers so up front.
+
+### 4. Exchanges
+
+Same-SKU exchanges (size or color swap) are free within the 30-day
+window — we cover return shipping AND replacement shipping. Different-
+SKU exchanges are processed as a refund-and-rebuy and the customer pays
+shipping on the new order.
+
+### 5. Items not eligible for refund
+
+- Custom or personalized items (engraving, monogram)
+- Final-sale clearance (clearly marked at checkout)
+- Digital downloads after first successful download
+- Gift cards
+
+For these categories the only remediation is store credit on a
+case-by-case basis at the founder's discretion.
+
+### 6. Cancellations
+
+Orders can be cancelled for a full refund up until the carrier has
+scanned the package. Once scanned, cancellations are processed as
+returns under section 1.
+
+### 7. Damaged-in-transit claims
+
+Photo evidence of the damaged package and contents is required within
+48 hours of delivery. Claims older than 48 hours are denied because the
+carrier's own claim window has typically closed by then.
