@@ -285,3 +285,119 @@ dependencies = [
 - 메모리 `project_session_20260506_recall_recovery.md` — aggressive prompt sweep 결과 (reflective 가 회복해야 하는 누락 패턴 #8/#12/#15)
 - 메모리 `feedback_test_before_pr.md` — PR 분할 시 외부 검증 선행 의무
 - 메모리 `feedback_no_auto_merge.md` — 본 PLAN 의 모든 PR 은 명시 승인 전까지 머지 X
+
+---
+
+## 11. Agent loop refactor (ADR-024, 2026-05-09)
+
+### 11.1 동기
+
+§1-§10 은 **결정론적 langgraph workflow** — `extract → self_eval → reflect` 의 노드 순서를 hand-coded conditional edge (`decide_after_eval`, `decide_after_reflect`) 가 정한다. Anthropic "Building effective agents" (2024-12) 의 분류로는 **workflow 이지 agent 아님** — LLM 이 다음 행동을 결정하지 않는다.
+
+해커톤 narrative ("**시스템이 학습한다**") 는 두 축에서 agent 자격을 요구:
+
+1. **Storytelling 30%** — 심사위원 청중에게 "agent" 는 강한 단어다. workflow 라고 부르면 narrative 가 절반 톤 다운.
+2. **Impact & Vision 40%** — PLAN_14 (HITL → personal_skill 회수) 의 자율 학습 narrative 가 "사용자 행동을 보고 시스템이 자기 출력을 조정한다" 인데, 도구 (retrieval) 를 LLM 이 자기 결정으로 부르는 모델이 있어야 그 narrative 가 일관됨. workflow 위에 persona-skill retrieval 을 hardcode 하면 "조건만 추가된 같은 자동화" 로 들린다.
+
+### 11.2 결정
+
+**`extract_policies` / `evaluate_coverage` / `finalize` 를 tool 로 노출하고, ReAct-style agent loop 가 LLM 의 `<tool_call>` / `<finish>` 결정으로 흐름을 운영하도록 전환**. 4 PR (α/β/γ/δ/ε/ζ) 로 분할:
+
+| PR | 내용 | 검증 |
+|---|---|---|
+| **α** (본 PR) | Tool dataclass + ReAct loop + `<tool_call>`/`<finish>` parser. 기존 langgraph 미건드림 (병행) | 22 신규 unit / 223 회귀 0 |
+| **β** | 기존 extract / judge / finalize → Tool 정의. `policy_extract_agent.py` 의 langgraph 제거, agent loop 으로 교체 | 라이브 smoke +3 cand recall 재현 |
+| **γ** | `personal_skills` 테이블 + BGE-M3 indexing + `search_personal_skills(user_id, query)` tool | DB 마이그레이션 + tool unit |
+| **δ** | `search_industry_baselines(domain, query)` tool — 시드 YAML 정책 BGE-M3 indexing | tool unit + agent 통합 |
+| **ε** | `validate_skill_schema(draft)` + `cite_source_url(draft, domain)` 결정론적 tool | tool unit |
+| **ζ** | D3 evidence 재캡처 (PR #168 supersede). 새 NDJSON + 새 스크린샷 + 새 README narrative | 라이브 smoke green |
+
+### 11.3 Tool 카탈로그 (β-ε 합산 후 최종)
+
+```
+extract_policies(chunk, hint?, domain, images?)
+    → list[SkillDraft]
+    LLM 추출 호출. hint 비면 iter 1, 채워지면 iter 2+ retry.
+
+evaluate_coverage(drafts, chunk)
+    → {decision: "converge"|"retry", coverage_concerns: list[str], rationale: str}
+    PLAN_13 §4.3 결정론적 룰 (eval.py) + 선택적 LLM judge (judge.py).
+    agent 가 직접 부른다는 점만 다르고 내부 구현 그대로.
+
+search_personal_skills(user_id, query, k=3)
+    → list[SkillDraft]
+    이 사용자의 과거 승인된 skill 중 BGE-M3 cosine top-k. PLAN_14 가
+    채울 personal_skills 테이블 조회. 빈 결과 가능 (cold-start).
+
+search_industry_baselines(domain, query, k=3)
+    → list[{policy_id, name, sources}]
+    시드 YAML 정책의 BGE-M3 indexing 위 retrieval. 도메인 표준 정책의
+    grounding hint 로 prompt 주입 의도.
+
+validate_skill_schema(draft)
+    → {valid: bool, issues: list[str]}
+    결정론적: condition+action 비어있지 않은지 / 길이 한계 / 형식 등.
+
+cite_source_url(draft, domain)
+    → {sources: list[{title, url}], source_kind: ...}
+    YAML seed match → ADR-022 §8.4 source_kind 분류 + URL 회수.
+
+finalize(drafts)
+    → 종료 시그널. <finish> 와 동등하지만 "drafts 가 명시적 ouptut" 임을
+    드러내기 위해 분리.
+```
+
+### 11.4 ReAct 와이어 포맷 (ADR-024 §3)
+
+매 assistant turn 의 마지막 블록 정확히 1개:
+
+```
+<tool_call name="TOOL_NAME">
+{...JSON args...}
+</tool_call>
+```
+또는
+```
+<finish>
+{...JSON 최종 결과...}
+</finish>
+```
+
+Observation 은 다음 user turn 에:
+```
+<tool_result tool="TOOL_NAME">
+{JSON serialized return value}
+</tool_result>
+```
+
+Gemma 4 native tool calling 미사용 — `judge.py` 의 prompt-engineered JSON 출력 패턴과 동일 posture. 모델 의존성 추가 X.
+
+### 11.5 Agent loop 종료 사유
+
+| reason | 의미 |
+|---|---|
+| `finish` | 모델이 `<finish>` 를 emit 했다 |
+| `parse_error` | 모델 출력이 `<tool_call>` / `<finish>` 어느 쪽으로도 파싱 불가 |
+| `tool_not_found` | 등록되지 않은 tool 호출 (1회는 obs error 로 회복 시도, 반복 시 no_progress) |
+| `max_iter_exhausted` | budget 초과. 기본 8 (search × 2 + extract × 2 + eval × 2 + finish + slack) |
+| `no_progress` | 같은 (tool, args) 가 연속 2회. 모델이 stuck — max_iter 까지 안 기다리고 끊는다 |
+
+### 11.6 회귀 가드 (PR-β 검증 전제)
+
+PR-α 이후 agent loop 인프라만 추가됐고 langgraph 그대로. **PR-β 에서 langgraph 제거 + agent loop 로 교체 시점에** D3 라이브 smoke 의 결과 재현이 회귀 가드:
+
+- GitLab handbook 5-chunk sample, max_iter=2 (β) 또는 8 (γ-ε 가 retrieval 추가한 후) 기준
+- single-shot 1 cand vs reflective 4 cand → **+3 recall delta 유지**
+- 회귀 시 prompt 튜닝 (system_goal 의 도구 사용 가이드 보강) 또는 scope 축소
+
+`tests/fixtures/gitlab_handbook_excerpt.pdf` 의 23-chunk 분해 결과는 `services.document_parser` 결정론적 → recall 측정 ground truth 가 모델 nondeterminism 에 갇히지 않음.
+
+### 11.7 PLAN_14 와의 연결
+
+PR-γ (`search_personal_skills` tool + `personal_skills` 테이블) 가 PLAN_14 의 closed-loop 인프라 절반:
+
+- PLAN_14 가 사용자 편집 diff 로 personal_skill 후보 회수 → `personal_skills` 테이블에 저장
+- 다음 추출 호출 시 agent 가 자기 결정으로 `search_personal_skills` 호출 → 이 사용자의 과거 패턴이 추출 컨텍스트에 자연스럽게 포함
+- 사용자는 "어 내가 보통 추가하던 게 미리 들어가있네" 자각 → ADR-023 §6 의 narrative invisibility 충족
+
+PLAN_14 가 `personal_skills` 테이블만 채우면 본 PLAN 의 retrieval tool 이 자동으로 그 데이터를 활용. **PLAN_14 PR 수가 9 → 7-8 압축 가능** (검색 인프라 sunk cost 됐음).
