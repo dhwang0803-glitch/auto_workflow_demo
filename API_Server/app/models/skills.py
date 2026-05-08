@@ -201,3 +201,69 @@ class SkillResponse(BaseModel):
 
 class SkillListResponse(BaseModel):
     skills: list[SkillResponse]
+
+
+# --- /skills/extract (PLAN_13 reflective wizard pre-step) -----------------
+#
+# Mirrors AI_Agent's `PolicyExtractReflectiveRequest/Response` (in
+# `AI_Agent/app/models/agents.py`) plus `AgentIteration` / `EvalReport`
+# (in `AI_Agent/app/agents/state.py`). Re-validated at this boundary so a
+# malformed Modal response surfaces as 502 here rather than leaking
+# garbage to the wizard. `images` is intentionally omitted at the wire
+# boundary — text-mode paste is the D1-D3 path; the burn-in stage adds
+# document upload + image rendering on top of this same proxy.
+
+EvalDecisionLiteral = Literal["converge", "retry"]
+
+# "" means the run is still in flight; AI_Agent sets one of the four
+# labels on END.
+TerminationReasonLiteral = Literal[
+    "",
+    "converge",
+    "max_iter_exhausted",
+    "no_change",
+    "schema_error",
+]
+
+
+class EvalReportBody(BaseModel):
+    decision: EvalDecisionLiteral
+    coverage_concerns: list[str] = Field(default_factory=list)
+    schema_issues: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
+class AgentIterationBody(BaseModel):
+    drafts: list[SkillDraftBody] = Field(default_factory=list)
+    eval: EvalReportBody | None = None
+    prompt_hint: str = ""
+
+
+class AgentTraceBody(BaseModel):
+    iterations: list[AgentIterationBody] = Field(default_factory=list)
+    terminated: bool
+    reason: TerminationReasonLiteral
+
+
+class ExtractRequest(BaseModel):
+    """Wizard pre-step input. One paste of policy text → candidate skills.
+
+    `max_iter` mirrors AI_Agent's reflective bound — 2 is the wizard
+    default; raise to recover late candidates a single self_eval missed.
+    """
+    chunk: str = Field(min_length=1, max_length=8000)
+    domain: DomainCategory = "other"
+    max_iter: int = Field(default=2, ge=1, le=5)
+
+
+class ExtractResponse(BaseModel):
+    """Final candidates + the full reflective trace for the wizard UI.
+
+    `agent_trace` carries every (extract → eval) pass so the wizard can
+    surface a "Why we found these" toggle without a second round-trip.
+    `langsmith_run_id` is null when LangSmith tracing is disabled; the
+    wizard hides the trace link in that case.
+    """
+    candidates: list[SkillDraftBody] = Field(default_factory=list)
+    agent_trace: AgentTraceBody
+    langsmith_run_id: str | None = None

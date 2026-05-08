@@ -3,6 +3,10 @@
 Owns the wizard flow:
 
 1. classify_domain  — proxy to AI_Agent so the frontend can label the user
+1b. extract_policy  — PLAN_13 reflective pre-step: paste policy text →
+                      candidate skills + agent_trace. Pure proxy, no DB
+                      write — selected candidates flow into bootstrap as
+                      `extracted_skills`.
 2. analyze_gaps     — pull missing-policy questions from AI_Agent (no DB write)
 3. answer_questions — invoke answers_to_skill on AI_Agent (batch — N answers
                       per policy → 1 SkillDraft) + INSERT a skill with
@@ -37,6 +41,7 @@ from app.models.skills import (
     BootstrapResponse,
     DomainClassificationResponse,
     ExtractedSkillBody,
+    ExtractResponse,
     ParameterAnswerBody,
     PolicySourceBody,
     SkillResponse,
@@ -74,6 +79,25 @@ class SkillBootstrapService:
 
     async def classify_domain(self, text: str) -> DomainClassificationResponse:
         return await self._ai.classify_domain(text)
+
+    # --- 1b. extract (PLAN_13 reflective wizard pre-step) --------------
+
+    async def extract_policy(
+        self,
+        *,
+        chunk: str,
+        domain: str,
+        max_iter: int,
+    ) -> ExtractResponse:
+        # Pure proxy — DB write happens later when the user picks
+        # candidates in the wizard and the bootstrap → answers turn lands
+        # via the existing path. Owner attribution waits until then;
+        # extract itself is read-only with respect to the user.
+        return await self._ai.extract_reflective(
+            chunk=chunk,
+            domain=domain,
+            max_iter=max_iter,
+        )
 
     # --- 2. bootstrap (gap analysis) -----------------------------------
 

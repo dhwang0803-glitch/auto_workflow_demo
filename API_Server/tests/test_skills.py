@@ -18,7 +18,11 @@ from urllib.parse import parse_qs, urlparse
 
 from app.main import create_app
 from app.models.skills import (
+    AgentIterationBody,
+    AgentTraceBody,
     DomainClassificationResponse,
+    EvalReportBody,
+    ExtractResponse,
     PolicyGapBody,
     SkillDraftBody,
     WizardQuestionBody,
@@ -50,20 +54,25 @@ class FakeAIAgent:
         classify: DomainClassificationResponse | None = None,
         gaps: list[PolicyGapBody] | None = None,
         draft: SkillDraftBody | None = None,
+        extract: ExtractResponse | None = None,
         classify_error: int | None = None,
         gaps_error: int | None = None,
         answers_error: int | None = None,
+        extract_error: int | None = None,
     ) -> None:
         self._classify = classify
         self._gaps = gaps or []
         self._draft = draft
+        self._extract = extract
         self._classify_error = classify_error
         self._gaps_error = gaps_error
         self._answers_error = answers_error
+        self._extract_error = extract_error
         # Capture last call args for assertion.
         self.last_classify_text: str | None = None
         self.last_gap_args: tuple[str, list] | None = None
         self.last_answers_args: dict | None = None
+        self.last_extract_args: dict | None = None
 
     @staticmethod
     def _err(status: int) -> httpx.HTTPStatusError:
@@ -96,6 +105,17 @@ class FakeAIAgent:
             raise self._err(self._answers_error)
         assert self._draft is not None
         return self._draft
+
+    async def extract_reflective(self, *, chunk, domain, max_iter):
+        self.last_extract_args = {
+            "chunk": chunk,
+            "domain": domain,
+            "max_iter": max_iter,
+        }
+        if self._extract_error is not None:
+            raise self._err(self._extract_error)
+        assert self._extract is not None
+        return self._extract
 
 
 # --- fixtures -------------------------------------------------------------
@@ -201,6 +221,137 @@ async def test_classify_domain_requires_auth(skills_client_factory):
             "/api/v1/skills/classify_domain", json={"text": "hi"}
         )
         assert r.status_code == 401
+        await _truncate(app)
+
+
+# --- /extract -------------------------------------------------------------
+
+
+def _sample_extract_response() -> ExtractResponse:
+    """Build a 2-iteration trace with one final candidate.
+
+    The shape mirrors what the reflective agent emits when iter 1 misses
+    a draft and iter 2 recovers it under a reflect-injected hint —
+    exactly the narrative the wizard's "Why we found these" toggle
+    surfaces.
+    """
+    iter1_draft = SkillDraftBody(
+        name="Refund window",
+        condition="Customer requests refund",
+        action="Approve if within 30 days",
+    )
+    iter2_drafts = [
+        iter1_draft,
+        SkillDraftBody(
+            name="Refund threshold escalation",
+            condition="Refund amount > $500",
+            action="Forward to manager",
+        ),
+    ]
+    return ExtractResponse(
+        candidates=iter2_drafts,
+        agent_trace=AgentTraceBody(
+            iterations=[
+                AgentIterationBody(
+                    drafts=[iter1_draft],
+                    eval=EvalReportBody(
+                        decision="retry",
+                        coverage_concerns=["No threshold rule found"],
+                    ),
+                ),
+                AgentIterationBody(
+                    drafts=iter2_drafts,
+                    eval=EvalReportBody(decision="converge"),
+                    prompt_hint="Look for monetary thresholds",
+                ),
+            ],
+            terminated=True,
+            reason="converge",
+        ),
+        langsmith_run_id="00000000-0000-0000-0000-000000000001",
+    )
+
+
+async def test_extract_returns_candidates_and_trace(skills_client_factory):
+    expected = _sample_extract_response()
+    fake = FakeAIAgent(extract=expected)
+    app, client = await skills_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        r = await client.post(
+            "/api/v1/skills/extract",
+            json={
+                "chunk": "Refunds within 30 days. Refunds over $500 need manager approval.",
+                "domain": "ecommerce",
+                "max_iter": 2,
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["candidates"]) == 2
+        assert body["candidates"][1]["name"] == "Refund threshold escalation"
+        assert body["agent_trace"]["terminated"] is True
+        assert body["agent_trace"]["reason"] == "converge"
+        assert len(body["agent_trace"]["iterations"]) == 2
+        assert body["agent_trace"]["iterations"][1]["prompt_hint"] == "Look for monetary thresholds"
+        assert body["langsmith_run_id"] == "00000000-0000-0000-0000-000000000001"
+        assert fake.last_extract_args == {
+            "chunk": "Refunds within 30 days. Refunds over $500 need manager approval.",
+            "domain": "ecommerce",
+            "max_iter": 2,
+        }
+
+        await _truncate(app)
+
+
+async def test_extract_502_on_upstream_failure(skills_client_factory):
+    fake = FakeAIAgent(extract_error=502)
+    app, client = await skills_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        r = await client.post(
+            "/api/v1/skills/extract",
+            json={"chunk": "anything", "domain": "other", "max_iter": 2},
+        )
+        assert r.status_code == 502
+        await _truncate(app)
+
+
+async def test_extract_requires_auth(skills_client_factory):
+    fake = FakeAIAgent(extract=_sample_extract_response())
+    app, client = await skills_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        # No login → 401, and the upstream client is never called.
+        r = await client.post(
+            "/api/v1/skills/extract",
+            json={"chunk": "hi", "domain": "other", "max_iter": 2},
+        )
+        assert r.status_code == 401
+        assert fake.last_extract_args is None
+        await _truncate(app)
+
+
+async def test_extract_rejects_oversized_chunk(skills_client_factory):
+    fake = FakeAIAgent(extract=_sample_extract_response())
+    app, client = await skills_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        # Pydantic max_length=8000 — the wire bound matches AI_Agent's
+        # PolicyExtractReflectiveRequest, so a too-large paste fails fast
+        # at the API_Server boundary instead of round-tripping to Modal.
+        r = await client.post(
+            "/api/v1/skills/extract",
+            json={"chunk": "x" * 8001, "domain": "other", "max_iter": 2},
+        )
+        assert r.status_code == 422
+        assert fake.last_extract_args is None
         await _truncate(app)
 
 

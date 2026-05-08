@@ -33,6 +33,7 @@ import httpx
 from app.models.skills import (
     DomainClassificationResponse,
     ExtractedSkillBody,
+    ExtractResponse,
     ParameterAnswerBody,
     PolicyGapBody,
     SkillDraftBody,
@@ -147,3 +148,24 @@ class AIAgentHTTPBackend:
             },
         )
         return SkillDraftBody.model_validate(body)
+
+    async def extract_reflective(
+        self,
+        *,
+        chunk: str,
+        domain: str,
+        max_iter: int,
+    ) -> ExtractResponse:
+        # Modal cold-start + reflective max_iter=2 can push past 60s on a
+        # fresh container — the default 180s budget covers it. Wizard UI
+        # disables the Extract button while in flight so a long wait is
+        # visible to the user rather than silent.
+        body = await self._post_json(
+            "/v1/policy/extract_reflective",
+            {
+                "chunk": chunk,
+                "domain": domain,
+                "max_iter": max_iter,
+            },
+        )
+        return ExtractResponse.model_validate(body)

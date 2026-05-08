@@ -33,6 +33,8 @@ from app.models.skills import (
     BootstrapResponse,
     ClassifyDomainRequest,
     DomainClassificationResponse,
+    ExtractRequest,
+    ExtractResponse,
     SkillListResponse,
     SkillResponse,
     SkillStatusLiteral,
@@ -78,6 +80,26 @@ async def classify_domain(
 ) -> DomainClassificationResponse:
     try:
         return await svc.classify_domain(payload.text)
+    except httpx.HTTPStatusError as exc:
+        raise _wrap_upstream(exc) from exc
+
+
+@router.post("/extract", response_model=ExtractResponse)
+async def extract(
+    payload: ExtractRequest,
+    user: User = Depends(get_current_user),
+    svc: SkillBootstrapService = Depends(get_skill_bootstrap_service),
+) -> ExtractResponse:
+    # Wizard pre-step: paste policy text → reflective extract → candidates.
+    # Auth-gated like classify_domain — wizard entry stays behind the
+    # same gate as the rest of the bootstrap flow even though no DB
+    # write happens here.
+    try:
+        return await svc.extract_policy(
+            chunk=payload.chunk,
+            domain=payload.domain,
+            max_iter=payload.max_iter,
+        )
     except httpx.HTTPStatusError as exc:
         raise _wrap_upstream(exc) from exc
 
