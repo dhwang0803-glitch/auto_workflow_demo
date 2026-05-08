@@ -1524,6 +1524,74 @@ Google API 가 refresh_token 갱신 시 `invalid_grant` 를 리턴하는 3 대 �
 
 ---
 
+## ADR-023 — HITL 편집 회수 → Personal Skill (사용자 수정 패턴 학습)
+
+**상태**: Proposed · **날짜**: 2026-05-07
+
+**Context**
+
+ADR-022 (Skill Bootstrap) 는 팀의 정적 도메인 지식을 skill 로 명시화하는 입구를 만들었다 — docs 가 있으면 추출, 없으면 인터뷰. 그 결과 워크플로 초안 생성 시 BGE-M3 retrieval 로 skill 이 시스템 프롬프트에 inject 된다. ADR-022 §11.5 후속 영향에 "관찰 기반 skill 후보" 가 명시됐지만 실제 구현은 미정으로 남았다.
+
+해커톤 마감 (2026-05-18, 11일) 시점에 차별화 narrative 재정렬 결과:
+
+- 평가기준 70% 가 비기술 (Impact & Vision 40 + Storytelling 30). 기술적 깊이는 30% 만.
+- n8n / Zapier 의 본질적 한계는 "**시스템이 사용자를 학습하지 않음**" — 사용자가 매번 같은 손맛으로 같은 수정을 반복함. 이 갭이 시중 자동화 도구와의 진짜 차별 지점.
+- ADR-022 의 skill bootstrap 만으로는 회수 루프가 비어있음 — AI 가 만든 워크플로 초안을 사용자가 수정한 결과가 다시 skill 로 환류되지 않음.
+- 워크플로 v1 (AI 초안) vs v2 (사용자 수정본) 의 diff 는 사용자의 일관 편집 패턴을 자연스럽게 노출. 이게 새 skill 의 원천이 될 수 있음.
+- PLAN_13 의 reflective agent (extract → self_eval → reflect) 의 propose+judge 패턴이 "diff 가 일반화 가능한 패턴인가?" 판단에 직접 fit. 새 모델 학습 / 새 인프라 X.
+
+**Decision**
+
+1. **HITL 편집 diff 를 personal_skill 의 새 입력 채널로 채택**. ADR-022 의 docs / wizard 입력에 "hitl_edit" 입력을 추가해 동일 skill 데이터 모델에서 통합. 회수 루프를 skill bootstrap 의 자연스러운 폐쇄 (closed-loop) 단계로 자리매김.
+
+2. **Diff 는 semantic, not text**. 워크플로 schema 의 노드/엣지/매개변수 단위 비교. 노드 id 보존 + deep equality + changed_keys 추출. 텍스트 diff (label/typo) 는 propose 단계에서 noise drop.
+
+3. **Propose+Judge 2단계 LLM 게이트** (PLAN_13 reflective agent 패턴 재활용):
+   - Propose: diff + v1 컨텍스트 → 일반화 hint (max_tokens=256)
+   - Judge: hint 가 (i) 일반화 가능 (ii) 모순 없음 (iii) 1회성 noise 가 아님 판단 (max_tokens=128)
+   - 통과 → personal_skill_candidate (status="pending_review"), 거절 → drop + suggestion_hash 로 재추천 억제
+   - reflect 루프 X — 1회 판정으로 종료 (diff noise 면 반복해도 노이즈)
+
+4. **자동 활성 X — 사용자 검토 게이트 유지**. ADR-022 §11.1 "MVP 사용자 검토" 정책 일관. 검토 결정 (accept / edit / reject) 은 별 테이블 `personal_skill_reviews` 에 누적 — Claude Code 의 프로젝트별 `MEMORY.md` 와 동일 위치, 사용자별 일관 결정 이력 영속화.
+
+5. **Personal skill 격리 + 단일 풀 inject**:
+   - Skill 테이블에 `scope: "workspace" | "user"` + `user_id` 컬럼 추가. retrieval 쿼리에서 user_id filter 강제 — 사용자 A 의 personal skill 이 B 의 검색 풀에 절대 들어가지 않음.
+   - 시스템 프롬프트는 단일 "## Skills" 섹션 — workspace vs personal 구분 표시 X. **Narrative invisibility 가 핵심**: 사용자가 자기 손맛이 자연스럽게 녹은 초안을 받고 "어 내가 보통 추가하던 거네" 자각하는 순간이 가장 강한 차별화 narrative. 분리 표시는 invisibility 를 깨뜨림.
+   - 충돌 (workspace vs personal 모순) 은 본 ADR Out of Scope. 빈번 시 future ADR 에서 reranker / scope 표시 / 가중치 도입.
+
+6. **시연 narrative**: "**팀이 시스템을 학습시키는 게 아니라, 시스템이 팀을 학습한다**". 영상 30초 안에 "초안 v1 → 사용자 수정 → 다른 워크플로 초안에서 그 수정이 미리 반영됨" 시퀀스로 보여줄 수 있음. n8n 직격 차별화.
+
+**Consequences**
+
+- (+) **Skill bootstrap 의 closed-loop 완성** — ADR-022 후속 영향의 "관찰 기반 skill 후보" 직접 구현. 정적 입력 (docs/wizard) + 동적 입력 (hitl_edit) 동일 backend.
+- (+) **차별화 narrative 직격** — Impact & Vision 40% 평가기준에서 "시스템이 사용자를 학습한다" 가 n8n 미커버 영역. Storytelling 30% 도 30초 시퀀스로 영상화 가능.
+- (+) **재활용 인프라로 8일 안에 완결** — 새 모델 학습 X / 새 retrieval 인프라 X / PLAN_13 propose+judge 그대로 재활용. PLAN_14 가 9 PR 분할로 5/11→5/16 페이스.
+- (+) **Cold-start 친화** — 사용자 1명의 1회 수정으로 후보 1개 생성. 통계 누적 모델 (반려 옵션 c) 과 달리 시연 시점에 즉시 효과.
+- (+) **Privacy 격리 명시** — 테이블 단위 user_id filter + 단위 테스트 (격리 가드). 사용자 간 손맛 누출 차단.
+- (−) **Database 마이그레이션 3건** — `workflow_revisions` 테이블 + `skills` 컬럼 4개 추가 + `personal_skill_reviews` 테이블. Alembic 절차는 기존 그대로지만 staging schema pollution flakiness (`project_test_flakiness_debt.md`) 모니터링 의무.
+- (−) **LLM judge 추가 비용** — 워크플로 저장당 propose+judge 2회 호출 (~10-15s warm). 비동기 후처리이므로 사용자 인터랙션 차단 X — Modal 콜드 스타트 시연 시 미리 warm-up 호출 의무.
+- (−) **단일 풀 inject 의 LLM 우선순위 위임 리스크** — workspace ↔ personal 충돌 시 LLM 의 자연 통합에 위임. 충돌 빈번 시 fallback 으로 reranker / scope 표시 / 가중치 도입 (future ADR).
+- (−) **Frontend UI 부담 1.5일** — Library "Suggested from your edits" 섹션 + 활성/편집/거절 UI + 노드 옆 "당신의 패턴" 배지 옵션. 시간 부족 시 PR-H 컷 후보 1순위 — LangSmith trace + DB query 데모로 fallback.
+- (−) **LangSmith 외부 송출 (ADR-022 update 와 동일)** — propose+judge 호출도 트레이스 대상. 해커톤 fixture 는 공개 자료라 무관, 실고객 적용 시 self-hosted LangSmith.
+
+**미해결 (PLAN_14 에서 확정)**
+
+1. Diff 추출의 정밀도 — 노드 매개변수 deep equality 가 너무 엄격하면 propose 단계 drop 룰 강화. 실측 후.
+2. Personal skill 의 시간적 감쇠 — 본 ADR 은 active/archived 만. 자동 retire 임계는 future.
+3. Workspace 공유 (opt-in) — 사용자가 personal skill 을 팀에 공유 옵션. ADR-022 §11.5 다중 멤버십 future 와 묶어 후속.
+4. Compose 시 단일 풀 inject 효과 — LLM 이 personal skill 을 자연 흡수하는지 실측. Reranker / scope 표시 / Frontend 배지 visibility 도 narrative 효과 측정 후 옵션.
+5. Reject 사유 사용자 표시 — 거절된 후보를 "거절된 제안 보기" 토글로 노출 옵션.
+6. Suggestion_hash 충돌 — SHA256 prefix 16 char 면 충돌 무시 가능, 실측 시 충돌 발견되면 hint 텍스트도 hash 입력에 포함.
+
+**Related**
+
+- Builds on: ADR-022 (skill bootstrap 부모), PLAN_12 (skill DB / retrieval / inject 인프라), PLAN_13 (propose+judge 패턴 재활용)
+- Resolves (deferred): ADR-022 §11.5 후속 영향의 "관찰 기반 skill 후보 / adversarial harness 자동화" 의 첫 절반
+- Affects branches: `docs` (본 ADR), `AI_Agent` (agents/personalization_agent + services/workflow_diff + 라우트), `API_Server` (revision hook + 프록시), `Database` (마이그레이션 + 모델), `Frontend` (Library 검토 UI)
+- Next ADR (예정): personal skill 의 workspace 공유 / 시간적 감쇠 / 충돌 해소 — 본 ADR 실측 후 별 ADR 분리
+
+---
+
 ## ADR-022 — 런타임 하네스 + Skill Bootstrap: 통합 파이프라인 + Multi-turn LLM + Retrieval
 
 **상태**: Accepted · **날짜**: 2026-04-25
