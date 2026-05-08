@@ -66,6 +66,16 @@ def parse_args() -> argparse.Namespace:
         default=600.0,
         help="per-call HTTP timeout (reflective can take longer than single-shot)",
     )
+    p.add_argument(
+        "--text-file",
+        type=pathlib.Path,
+        default=None,
+        help=(
+            "skip the PDF pipeline and treat this UTF-8 file as a single "
+            "pre-chunked text input (chunk_index=0). --vision is a no-op "
+            "with --text-file because plain text has no rendered page image."
+        ),
+    )
     return p.parse_args()
 
 
@@ -201,24 +211,36 @@ def main() -> int:
         )
         return 2
 
-    if not FIXTURE.exists():
-        print(f"fixture missing: {FIXTURE}", file=sys.stderr)
-        return 2
-
     sys.path.insert(0, str(REPO / "AI_Agent"))
-    from app.services.document_parser import parse_document  # noqa: E402
+    from app.services.document_parser import DocumentChunk  # noqa: E402
 
-    chunks = parse_document(FIXTURE.read_bytes(), "application/pdf")
-    if not chunks:
-        print("fixture produced no chunks", file=sys.stderr)
-        return 1
-    indices = select_indices(len(chunks), args.sample)
-    selected = [chunks[i] for i in indices]
+    if args.text_file is not None:
+        if not args.text_file.exists():
+            print(f"--text-file missing: {args.text_file}", file=sys.stderr)
+            return 2
+        text = args.text_file.read_text(encoding="utf-8")
+        chunks = [DocumentChunk(index=0, text=text, image=None)]
+        indices = [0]
+        selected = chunks
+        fixture_label = str(args.text_file)
+    else:
+        if not FIXTURE.exists():
+            print(f"fixture missing: {FIXTURE}", file=sys.stderr)
+            return 2
+        from app.services.document_parser import parse_document  # noqa: E402
+
+        chunks = parse_document(FIXTURE.read_bytes(), "application/pdf")
+        if not chunks:
+            print("fixture produced no chunks", file=sys.stderr)
+            return 1
+        indices = select_indices(len(chunks), args.sample)
+        selected = [chunks[i] for i in indices]
+        fixture_label = str(FIXTURE)
 
     print(f"# PLAN_13 reflective smoke -- endpoint={args.endpoint}", file=sys.stderr)
     print(
-        f"# fixture: {len(chunks)} chunks parsed, sampling {len(selected)} "
-        f"at indices {indices}",
+        f"# fixture: {fixture_label} ({len(chunks)} chunks), "
+        f"sampling {len(selected)} at indices {indices}",
         file=sys.stderr,
     )
     print(
