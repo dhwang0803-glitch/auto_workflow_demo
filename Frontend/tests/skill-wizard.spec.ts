@@ -166,6 +166,10 @@ test("Skill wizard: pick domain → batch-answer 2 policies → approve + reject
 
   await page.goto("/skills/new");
   await page.getByTestId("domain-chip-ecommerce").click();
+  // D2 reflective pre-extract added a doc-choice screen between domain
+  // pick and bootstrap. This test exercises the no-doc path; extract is
+  // covered by the dedicated reflective spec below.
+  await page.getByTestId("doc-skip").click();
 
   // First policy renders both parameter cards. Submit is gated until
   // every parameter has an answer.
@@ -254,6 +258,7 @@ test("Skill wizard: help_text expander toggles on click", async ({ page }) => {
 
   await page.goto("/skills/new");
   await page.getByTestId("domain-chip-ecommerce").click();
+  await page.getByTestId("doc-skip").click();
 
   // help_text is hidden until the user clicks "What is this?".
   await expect(
@@ -338,6 +343,7 @@ test("Skill wizard: needs_clarification surfaces follow-up", async ({
 
   await page.goto("/skills/new");
   await page.getByTestId("domain-chip-consulting").click();
+  await page.getByTestId("doc-skip").click();
   await page.getByTestId("answer-input-SCOPE_PROCESS").fill("we figure it out");
   await page.getByTestId("wizard-submit-policy").click();
 
@@ -386,6 +392,7 @@ test("Skill wizard: bootstrap with no gaps lands on done state", async ({
 
   await page.goto("/skills/new");
   await page.getByTestId("domain-chip-other").click();
+  await page.getByTestId("doc-skip").click();
 
   await expect(page.getByTestId("wizard-no-gaps")).toBeVisible();
   await expect(page.getByTestId("wizard-submit-policy")).toHaveCount(0);
@@ -404,6 +411,7 @@ test("Skill wizard: bootstrap error surfaces banner with retry", async ({
 
   await page.goto("/skills/new");
   await page.getByTestId("domain-chip-services").click();
+  await page.getByTestId("doc-skip").click();
 
   const banner = page.getByTestId("wizard-error");
   await expect(banner).toBeVisible();
@@ -472,6 +480,7 @@ test("Skill wizard: approve API failure shows error + keeps controls", async ({
 
   await page.goto("/skills/new");
   await page.getByTestId("domain-chip-ecommerce").click();
+  await page.getByTestId("doc-skip").click();
   await page.getByTestId("answer-input-P").fill("answer");
   await page.getByTestId("wizard-submit-policy").click();
 
@@ -484,4 +493,214 @@ test("Skill wizard: approve API failure shows error + keeps controls", async ({
   await expect(
     page.getByTestId(`skill-card-${skillId}`),
   ).toHaveAttribute("data-action-status", "failed");
+});
+
+// --- D2 reflective pre-extract --------------------------------------------
+
+test("Skill wizard: paste → extract → review candidates → continue feeds bootstrap", async ({
+  page,
+}) => {
+  // Two reflective candidates: iter 1 finds the first, iter 2 (under a
+  // reflect-injected hint) recovers the second. The wizard's "Why we
+  // found these" toggle surfaces this iter-by-iter trace.
+  const candidates = [
+    {
+      name: "Refund window",
+      description: "30-day refund window applies to all purchases.",
+      condition: "Customer requests refund",
+      action: "Approve if within 30 days of purchase",
+      rationale: "",
+      needs_clarification: false,
+      clarification_hint: "",
+    },
+    {
+      name: "Refund threshold escalation",
+      description: "",
+      condition: "Refund amount > $500",
+      action: "Forward to manager for approval",
+      rationale: "",
+      needs_clarification: false,
+      clarification_hint: "",
+    },
+  ];
+
+  let extractCalled = false;
+  let bootstrapBody: { extracted_skills: { name: string }[] } | null = null;
+
+  await page.route("**/api/v1/skills/extract", async (route) => {
+    extractCalled = true;
+    const body = route.request().postDataJSON();
+    expect(body.domain).toBe("ecommerce");
+    expect(body.max_iter).toBe(2);
+    expect(body.chunk).toContain("Refunds within 30 days");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        candidates,
+        agent_trace: {
+          iterations: [
+            {
+              drafts: [candidates[0]],
+              eval: {
+                decision: "retry",
+                coverage_concerns: ["No threshold rule found"],
+                schema_issues: [],
+                rationale: "Iter 1 missed the dollar threshold.",
+              },
+              prompt_hint: "",
+            },
+            {
+              drafts: candidates,
+              eval: {
+                decision: "converge",
+                coverage_concerns: [],
+                schema_issues: [],
+                rationale: "All concerns covered.",
+              },
+              prompt_hint: "Look for monetary thresholds",
+            },
+          ],
+          terminated: true,
+          reason: "converge",
+        },
+        langsmith_run_id: "abc-123",
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/skills/bootstrap", async (route) => {
+    const body = route.request().postDataJSON();
+    bootstrapBody = body;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        session_id: body.session_id,
+        domain: "ecommerce",
+        // No remaining gaps — extract already covered everything.
+        missing: [],
+      }),
+    });
+  });
+
+  await page.goto("/skills/new");
+  await page.getByTestId("domain-chip-ecommerce").click();
+
+  // doc-choice screen with both options visible.
+  await expect(page.getByTestId("doc-choice")).toBeVisible();
+  await expect(page.getByTestId("doc-skip")).toBeVisible();
+
+  // Paste policy text and Extract.
+  await page
+    .getByTestId("doc-paste-input")
+    .fill(
+      "Refunds within 30 days. Refunds over $500 require manager approval.",
+    );
+  await page.getByTestId("doc-extract").click();
+
+  // extract-review surfaces both candidates (default-selected).
+  await expect(page.getByTestId("extract-review")).toBeVisible();
+  const c0 = page.getByTestId("extract-candidate-0");
+  const c1 = page.getByTestId("extract-candidate-1");
+  await expect(c0).toContainText("Refund window");
+  await expect(c1).toContainText("Refund threshold escalation");
+  await expect(page.getByTestId("extract-candidate-toggle-0")).toBeChecked();
+  await expect(page.getByTestId("extract-candidate-toggle-1")).toBeChecked();
+
+  // Drop the first candidate; only the second should flow into bootstrap.
+  await page.getByTestId("extract-candidate-toggle-0").click();
+  await expect(page.getByTestId("extract-candidate-toggle-0")).not.toBeChecked();
+
+  // agent_trace toggle reveals the iter-by-iter detail.
+  await expect(page.getByTestId("agent-trace-detail")).toHaveCount(0);
+  await page.getByTestId("agent-trace-toggle").click();
+  const detail = page.getByTestId("agent-trace-detail");
+  await expect(detail).toBeVisible();
+  await expect(detail).toContainText("iter 1");
+  await expect(detail).toContainText("iter 2");
+  await expect(detail).toContainText("No threshold rule found");
+  await expect(detail).toContainText("Look for monetary thresholds");
+  await expect(detail).toContainText("abc-123");
+
+  // Continue with the one remaining selection.
+  await expect(page.getByTestId("extract-continue")).toContainText(
+    "Continue with 1 skill",
+  );
+  await page.getByTestId("extract-continue").click();
+
+  // Bootstrap landed on done (no missing) — reached via the extract path.
+  await expect(page.getByTestId("wizard-no-gaps")).toBeVisible();
+
+  expect(extractCalled).toBe(true);
+  expect(bootstrapBody).not.toBeNull();
+  expect(bootstrapBody!.extracted_skills).toHaveLength(1);
+  expect(bootstrapBody!.extracted_skills[0].name).toBe(
+    "Refund threshold escalation",
+  );
+});
+
+test("Skill wizard: extract → Back returns to doc-choice with paste preserved", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/skills/extract", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        candidates: [
+          {
+            name: "X",
+            description: "",
+            condition: "c",
+            action: "a",
+            rationale: "",
+            needs_clarification: false,
+            clarification_hint: "",
+          },
+        ],
+        agent_trace: {
+          iterations: [],
+          terminated: true,
+          reason: "converge",
+        },
+        langsmith_run_id: null,
+      }),
+    });
+  });
+
+  await page.goto("/skills/new");
+  await page.getByTestId("domain-chip-ecommerce").click();
+
+  const paste = page.getByTestId("doc-paste-input");
+  await paste.fill("Some policy text.");
+  await page.getByTestId("doc-extract").click();
+
+  await expect(page.getByTestId("extract-review")).toBeVisible();
+  await page.getByTestId("extract-back").click();
+
+  // Back to doc-choice; paste is preserved so the user doesn't retype.
+  await expect(page.getByTestId("doc-choice")).toBeVisible();
+  await expect(paste).toHaveValue("Some policy text.");
+});
+
+test("Skill wizard: extract API failure surfaces the error banner", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/skills/extract", (route) =>
+    route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "ai_agent error 503" }),
+    }),
+  );
+
+  await page.goto("/skills/new");
+  await page.getByTestId("domain-chip-services").click();
+  await page.getByTestId("doc-paste-input").fill("Some text.");
+  await page.getByTestId("doc-extract").click();
+
+  const banner = page.getByTestId("wizard-error");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("502");
 });
