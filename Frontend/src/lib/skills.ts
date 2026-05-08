@@ -141,6 +141,53 @@ export interface SkillListResponse {
   skills: SkillRecord[];
 }
 
+// --- /skills/extract (PLAN_13 reflective wizard pre-step) -----------------
+//
+// Mirrors API_Server's ExtractRequest / ExtractResponse + AgentTrace
+// shapes. The wizard renders agent_trace under a "Why we found these"
+// toggle so the user sees what each iteration discovered (and what the
+// reflective pass added on top of iter 1).
+
+export type EvalDecision = "converge" | "retry";
+
+export type TerminationReason =
+  | ""
+  | "converge"
+  | "max_iter_exhausted"
+  | "no_change"
+  | "schema_error";
+
+export interface EvalReport {
+  decision: EvalDecision;
+  coverage_concerns: string[];
+  schema_issues: string[];
+  rationale: string;
+}
+
+export interface AgentIteration {
+  drafts: SkillDraft[];
+  eval: EvalReport | null;
+  prompt_hint: string;
+}
+
+export interface AgentTrace {
+  iterations: AgentIteration[];
+  terminated: boolean;
+  reason: TerminationReason;
+}
+
+export interface ExtractRequest {
+  chunk: string;
+  domain: DomainCategory;
+  max_iter: number;
+}
+
+export interface ExtractResponse {
+  candidates: SkillDraft[];
+  agent_trace: AgentTrace;
+  langsmith_run_id: string | null;
+}
+
 const jsonInit = (body: unknown): RequestInit => ({
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -149,6 +196,9 @@ const jsonInit = (body: unknown): RequestInit => ({
 
 export const bootstrapSkills = (req: BootstrapRequest) =>
   apiFetch<BootstrapResponse>("/api/v1/skills/bootstrap", jsonInit(req));
+
+export const extractFromText = (req: ExtractRequest) =>
+  apiFetch<ExtractResponse>("/api/v1/skills/extract", jsonInit(req));
 
 export const answerWizardQuestions = (req: AnswersRequest) =>
   apiFetch<AnswersResponse>("/api/v1/skills/answers", jsonInit(req));

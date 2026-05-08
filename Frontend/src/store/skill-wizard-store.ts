@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type {
+  AgentTrace,
   AnswersResponse,
   BootstrapResponse,
   DomainCategory,
+  ExtractResponse,
   ParameterAnswer,
   PolicyGap,
   PolicySource,
@@ -13,12 +15,25 @@ import type {
 } from "@/lib/skills";
 
 // Wizard phases drive which view the panel renders:
-//   domain   — chip picker (no session yet)
-//   loading  — bootstrap or answer in flight
-//   asking   — queue[currentIndex] is the policy awaiting all parameter answers
-//   done     — every policy answered; show drafts summary
-//   error    — terminal failure surface (user retries from "domain")
-export type WizardPhase = "domain" | "loading" | "asking" | "done" | "error";
+//   domain         — chip picker (no session yet)
+//   doc-choice     — domain picked; user opts to paste a policy doc or
+//                    skip straight to industry-standard bootstrap
+//   extracting     — /skills/extract in flight (reflective agent)
+//   extract-review — candidate skills + agent_trace under review; user
+//                    picks which candidates feed the bootstrap turn
+//   loading        — bootstrap or answer in flight
+//   asking         — queue[currentIndex] is the policy awaiting all parameter answers
+//   done           — every policy answered; show drafts summary
+//   error          — terminal failure surface (user retries from "domain")
+export type WizardPhase =
+  | "domain"
+  | "doc-choice"
+  | "extracting"
+  | "extract-review"
+  | "loading"
+  | "asking"
+  | "done"
+  | "error";
 
 // W2-5b: queue is now policy-grained, not flat-question-grained. Each
 // turn is one policy with N parameter cards the user fills in together
@@ -86,6 +101,16 @@ interface WizardState {
   drafts: WizardDraft[];
   lastError: string | null;
 
+  // PR 2 (D2) reflective pre-extract state. Only populated while the
+  // user is in the doc-choice → extracting → extract-review path.
+  pastedText: string;
+  extractCandidates: SkillDraft[];
+  // Indices into extractCandidates that the user kept; default is "all
+  // selected" right after acceptExtract so the easy path is one click.
+  selectedCandidateIdx: number[];
+  agentTrace: AgentTrace | null;
+  langsmithRunId: string | null;
+
   // Actions
   start: (domain: DomainCategory, sessionId: string) => void;
   setLoading: () => void;
@@ -105,6 +130,12 @@ interface WizardState {
   ) => void;
   applyServerStatus: (skillId: string, status: SkillStatus) => void;
   pushFollowUpQuestion: (skillId: string) => void;
+  // PR 2 (D2) extract actions.
+  setPastedText: (t: string) => void;
+  setExtracting: () => void;
+  acceptExtract: (resp: ExtractResponse) => void;
+  toggleCandidate: (idx: number) => void;
+  backToDocChoice: () => void;
   reset: () => void;
 }
 
@@ -132,10 +163,20 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
   currentAnswers: {},
   drafts: [],
   lastError: null,
+  pastedText: "",
+  extractCandidates: [],
+  selectedCandidateIdx: [],
+  agentTrace: null,
+  langsmithRunId: null,
 
+  // Lands the user on doc-choice instead of jumping straight into
+  // bootstrap — the wizard now branches: paste a policy doc → reflective
+  // extract, or skip → industry-standard bootstrap. The component
+  // triggers the network call from doc-choice (Skip) or extract-review
+  // (Continue) so the store stays decoupled from fetch ordering.
   start: (domain, sessionId) =>
     set({
-      phase: "loading",
+      phase: "doc-choice",
       domain,
       sessionId,
       queue: [],
@@ -143,6 +184,11 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
       currentAnswers: {},
       drafts: [],
       lastError: null,
+      pastedText: "",
+      extractCandidates: [],
+      selectedCandidateIdx: [],
+      agentTrace: null,
+      langsmithRunId: null,
     }),
 
   setLoading: () => set({ phase: "loading", lastError: null }),
@@ -262,6 +308,44 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
       };
     }),
 
+  setPastedText: (t) => set({ pastedText: t }),
+
+  setExtracting: () => set({ phase: "extracting", lastError: null }),
+
+  acceptExtract: (resp) =>
+    set({
+      phase: "extract-review",
+      extractCandidates: resp.candidates,
+      // Default "all selected" — reflective extract already filtered
+      // through self_eval + judge, so the easy path is "keep them all".
+      // Users uncheck the ones they don't want before Continue.
+      selectedCandidateIdx: resp.candidates.map((_, i) => i),
+      agentTrace: resp.agent_trace,
+      langsmithRunId: resp.langsmith_run_id,
+      lastError: null,
+    }),
+
+  toggleCandidate: (idx) =>
+    set((s) => {
+      const has = s.selectedCandidateIdx.includes(idx);
+      const next = has
+        ? s.selectedCandidateIdx.filter((i) => i !== idx)
+        : [...s.selectedCandidateIdx, idx].sort((a, b) => a - b);
+      return { selectedCandidateIdx: next };
+    }),
+
+  backToDocChoice: () =>
+    set({
+      phase: "doc-choice",
+      // Keep pastedText so the user doesn't retype on Back; clear the
+      // extract output so a fresh run starts clean.
+      extractCandidates: [],
+      selectedCandidateIdx: [],
+      agentTrace: null,
+      langsmithRunId: null,
+      lastError: null,
+    }),
+
   reset: () =>
     set({
       phase: "domain",
@@ -272,5 +356,10 @@ export const useSkillWizardStore = create<WizardState>()((set) => ({
       currentAnswers: {},
       drafts: [],
       lastError: null,
+      pastedText: "",
+      extractCandidates: [],
+      selectedCandidateIdx: [],
+      agentTrace: null,
+      langsmithRunId: null,
     }),
 }));
