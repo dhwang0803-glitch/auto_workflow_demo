@@ -50,6 +50,7 @@ from app.services.domain_classifier import (
     ClassifierParseError,
     classify_domain,
 )
+from app.services.industry_baselines import IndustryBaselinePool
 from app.services.personal_memory import PersonalMemoryPool
 from app.services.policy_extract import (
     PolicyExtractParseError,
@@ -292,6 +293,21 @@ def create_app(
             payload.user_id,
         )
 
+        # Industry-baseline pool is loaded the same way — once per
+        # request, scoped to the chunk's domain, embeddings cached at
+        # the module level so subsequent same-domain requests in the
+        # same container skip the BGE-M3 pass. With `domain="other"`
+        # (smoke default), an unseeded domain, or no embedding backend,
+        # `load()` returns an empty pool and the agent declines to
+        # register `search_industry_baselines` — same regression
+        # guarantee PR-γ established for personal memory (memory
+        # `project_personalization_memory_pattern.md`).
+        baseline_pool = await IndustryBaselinePool.load(
+            settings.industry_baseline_dir or None,
+            payload.domain,
+            embedding,
+        )
+
         # Same backend powers both extraction and the LLM judge — both
         # paths go through the same Modal Gemma deployment, so a second
         # model would just add a different cost profile without buying
@@ -322,6 +338,7 @@ def create_app(
                     judge_backend=backend,
                     memory_pool=memory_pool,
                     embedding_backend=embedding,
+                    baseline_pool=baseline_pool,
                 )
             )
         except PolicyExtractParseError as exc:

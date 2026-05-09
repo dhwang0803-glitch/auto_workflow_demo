@@ -1,8 +1,12 @@
-"""ReAct agent driver for policy_extract (PLAN_15 / ADR-024 / PR-β + γ).
+"""ReAct agent driver for policy_extract (PLAN_15 / ADR-024 / PR-β + γ + δ).
 
 Replaces the langgraph StateGraph that lived here through PR-A/B/C/D.
-The new shape (PR-β with optional PR-γ retrieval prepended):
+The new shape (PR-β with optional PR-γ + PR-δ retrieval prepended):
 
+    [search_industry_baselines(query)]  ← PR-δ, registered only when
+            │                              the chunk's domain has a
+            │                              seeded YAML and an
+            │                              embedding backend is wired
     [search_personal_skills(query)]   ← PR-γ, registered only when
             │                            a non-empty user memory pool
             ▼                            is supplied
@@ -30,6 +34,13 @@ The agent (LLM) chooses tool order. We provide:
     tool is absent from the catalog and the system goal omits its
     guidance section, preserving the cold-start baseline (Path 1
     design, memory `project_personalization_memory_pattern.md`).
+  * `search_industry_baselines(query, k)` — optional, registered only
+    when a populated `IndustryBaselinePool` and an `EmbeddingBackend`
+    reach this driver. The cold-start guarantee is the same shape as
+    PR-γ: empty pool / `domain="other"` / no embedder → tool absent
+    from the catalog, system goal omits the section, agent behavior
+    is bit-identical to PR-β/γ baseline (PLAN_13 §11.6 regression
+    guard).
 
 `<finish>` (no separate `finalize` tool) carries the final drafts. We
 considered a `finalize(drafts)` tool for symmetry with the other two but
@@ -57,6 +68,7 @@ from app.agents.tracing import traceable
 from app.backends.protocols import EmbeddingBackend, LLMBackend
 from app.models.domain import DomainCategory
 from app.models.skills import SkillDraft
+from app.services.industry_baselines import IndustryBaselinePool
 from app.services.personal_memory import PersonalMemoryPool
 from app.services.policy_extract import (
     PolicyExtractParseError,
@@ -79,7 +91,11 @@ _REASON_MAP: dict[str, TerminationReason] = {
 
 
 def _system_goal(
-    domain: DomainCategory, max_iter: int, *, memory_enabled: bool
+    domain: DomainCategory,
+    max_iter: int,
+    *,
+    memory_enabled: bool,
+    baseline_enabled: bool,
 ) -> str:
     """Tell the agent its job + guardrails. Tone is medium-prescriptive:
     we describe the typical flow so the model has an easy default, but
@@ -90,11 +106,13 @@ def _system_goal(
     if we omit it the loop's hard cap still fires but the model wastes
     the late iterations re-extracting fruitlessly.
 
-    `memory_enabled` controls whether `search_personal_skills` is in
-    the tool catalog. When False (cold-start, anonymous request, or
-    feature disabled) the goal text omits the retrieval guidance
-    entirely so the model isn't tempted to call a tool that isn't
-    registered.
+    `memory_enabled` / `baseline_enabled` each gate one optional
+    retrieval section. When False (cold-start, anonymous request, or
+    feature disabled) the corresponding guidance is omitted from the
+    goal so the model is not tempted to call a tool that isn't
+    registered. The "ALWAYS start with extract_policies" rule in the
+    base text holds — retrieval is described as a step that happens
+    BEFORE that first extract, never as a substitute for it.
     """
     base = (
         "You are an extraction agent that pulls policy candidates from "
@@ -134,33 +152,66 @@ def _system_goal(
         '"action": "tool_call", "name": "extract_policies", "args": {}}\n'
     )
 
-    if not memory_enabled:
+    if not memory_enabled and not baseline_enabled:
         return base
 
-    # Memory tool is registered — teach the model when (and when NOT)
-    # to use it. The "before extract_policies" placement matters: if
-    # the model interleaves it after the first extract, the matches
-    # cannot influence iter 1, defeating the point. The "ONCE per
-    # chunk" cap keeps the LLM cost bounded — there is no scenario
-    # where calling search a second time helps.
-    extra = (
-        "\n## Optional retrieval (the user's past edits)\n"
-        "\n"
-        "You also have `search_personal_skills(query, k=3)` available. "
-        "It looks up policies the user has previously hand-edited and "
-        "returns matches plus a `pool_size` field describing how many "
-        "patterns the user has accumulated.\n"
-        "\n"
-        "- You MAY call it ONCE before the FIRST `extract_policies`, "
-        "passing the chunk's main topic as `query`. If matches come "
-        "back, fold them into the FIRST `extract_policies` call as the "
-        "`hint` argument so the extractor uses them as light scaffolding.\n"
-        "- DO NOT call it more than once per chunk — repeated lookups "
-        "won't surface anything new and waste budget.\n"
-        "- If `pool_size == 0`, the user has no recorded patterns yet; "
-        "skip retrieval and proceed straight to `extract_policies`.\n"
-    )
-    return base + extra
+    extras = ""
+    if memory_enabled:
+        # Memory tool is registered — teach the model when (and when NOT)
+        # to use it. The "before extract_policies" placement matters: if
+        # the model interleaves it after the first extract, the matches
+        # cannot influence iter 1, defeating the point. The "ONCE per
+        # chunk" cap keeps the LLM cost bounded — there is no scenario
+        # where calling search a second time helps.
+        extras += (
+            "\n## Optional retrieval (the user's past edits)\n"
+            "\n"
+            "You also have `search_personal_skills(query, k=3)` available. "
+            "It looks up policies the user has previously hand-edited and "
+            "returns matches plus a `pool_size` field describing how many "
+            "patterns the user has accumulated.\n"
+            "\n"
+            "- You MAY call it ONCE before the FIRST `extract_policies`, "
+            "passing the chunk's main topic as `query`. If matches come "
+            "back, fold them into the FIRST `extract_policies` call as the "
+            "`hint` argument so the extractor uses them as light scaffolding.\n"
+            "- DO NOT call it more than once per chunk — repeated lookups "
+            "won't surface anything new and waste budget.\n"
+            "- If `pool_size == 0`, the user has no recorded patterns yet; "
+            "skip retrieval and proceed straight to `extract_policies`.\n"
+        )
+    if baseline_enabled:
+        # Industry-baseline tool surfaces vetted domain policies (the
+        # same `data/policies/{domain}.yaml` that drives the wizard's
+        # gap_analyze short-circuit). Wording is parallel to the
+        # personal-memory section so the model treats the two as
+        # complementary retrieval inputs, not alternates: personal
+        # patterns win precedence (they reflect THIS user's intent),
+        # baselines fill the gap when there is no personal pattern.
+        extras += (
+            "\n## Optional retrieval (industry-standard baselines)\n"
+            "\n"
+            "You also have `search_industry_baselines(query, k=3)` "
+            "available. It looks up vetted domain-standard policies "
+            "for the chunk's domain and returns matches plus a "
+            "`pool_size` field. Each match carries `policy_id`, "
+            "`name`, the `condition`/`action` text, and any source "
+            "citations the catalog has on file.\n"
+            "\n"
+            "- You MAY call it ONCE before the FIRST `extract_policies`, "
+            "passing the chunk's main topic as `query`. Use the matches "
+            "as a sanity-check for what a typical team in this domain "
+            "would have a policy about; fold a one-line summary into "
+            "the FIRST `extract_policies` call's `hint` argument so the "
+            "extractor sees the grounding.\n"
+            "- DO NOT call it more than once per chunk.\n"
+            "- DO NOT copy a baseline's text verbatim into the final "
+            "drafts — the chunk is the source of truth for THIS team's "
+            "policy. Baselines are only a pattern hint; the extractor "
+            "must still pull the team-specific condition+action from "
+            "the chunk itself.\n"
+        )
+    return base + extras
 
 
 def _draft_dict(d: SkillDraft) -> dict[str, Any]:
@@ -199,6 +250,7 @@ async def run_policy_extract_agent(
     judge_backend: LLMBackend | None = None,
     memory_pool: PersonalMemoryPool | None = None,
     embedding_backend: EmbeddingBackend | None = None,
+    baseline_pool: IndustryBaselinePool | None = None,
 ) -> tuple[list[AgentIteration], bool, TerminationReason, list[SkillDraft]]:
     """Drive the agent over one chunk and return a langgraph-compatible trace.
 
@@ -305,17 +357,24 @@ async def run_policy_extract_agent(
             "rationale": report.rationale,
         }
 
-    # `search_personal_skills` is registered ONLY when there is something
-    # to retrieve — that means an active pool with size > 0 AND an
-    # embedding backend to embed the query. With `memory_pool=None` (the
-    # cold-start / feature-disabled path), the tool is absent from the
-    # catalog, the system goal omits its guidance section, and the
-    # agent's behavior is bit-for-bit identical to PR-β. This is the
-    # GitLab smoke regression guard from
-    # `project_personalization_memory_pattern.md`.
+    # `search_personal_skills` and `search_industry_baselines` are each
+    # registered ONLY when there is something to retrieve — that means
+    # an active pool with size > 0 AND an embedding backend to embed
+    # the query. With either pool=None (cold-start / feature-disabled
+    # path) the corresponding tool is absent from the catalog, the
+    # system goal omits its guidance section, and the agent's behavior
+    # is bit-for-bit identical to the previous PR's baseline. This is
+    # the GitLab smoke regression guard from
+    # `project_personalization_memory_pattern.md` (PR-γ) extended to
+    # PR-δ.
     memory_enabled = (
         memory_pool is not None
         and memory_pool.size > 0
+        and embedding_backend is not None
+    )
+    baseline_enabled = (
+        baseline_pool is not None
+        and baseline_pool.size > 0
         and embedding_backend is not None
     )
 
@@ -355,6 +414,46 @@ async def run_policy_extract_agent(
                 for h in hits
             ],
             "pool_size": memory_pool.size,
+        }
+
+    async def search_industry_baselines_handler(args: Mapping[str, Any]) -> Any:
+        # Mirror of the personal-skills handler shape: same closure
+        # pattern (one pool loaded per request), same defensive guards
+        # (return empty shape if the registration check is bypassed),
+        # same `k` coercion (Gemma 4 stringly-typed integer quirk).
+        # The return shape adds `policy_id` and `sources` because
+        # PLAN_13 §11.3 promised those fields specifically — they are
+        # the grounding hint the model needs to differentiate vetted
+        # standards from the user's chunk text.
+        if baseline_pool is None or embedding_backend is None:
+            return {"matches": [], "pool_size": 0}
+        query = str(args.get("query", "") or "").strip()
+        if not query:
+            return {"matches": [], "pool_size": baseline_pool.size}
+        k_raw = args.get("k", 3)
+        try:
+            k = int(k_raw)
+        except (TypeError, ValueError):
+            k = 3
+        if k <= 0:
+            return {"matches": [], "pool_size": baseline_pool.size}
+        vectors = await embedding_backend.embed([query])
+        if not vectors:
+            return {"matches": [], "pool_size": baseline_pool.size}
+        hits = baseline_pool.search(vectors[0], k=k)
+        return {
+            "matches": [
+                {
+                    "policy_id": h.policy_id,
+                    "name": h.name,
+                    "condition": h.condition,
+                    "action": h.action,
+                    "sources": list(h.sources),
+                    "source_kind": h.source_kind,
+                }
+                for h in hits
+            ],
+            "pool_size": baseline_pool.size,
         }
 
     extract_tool = _make_tool(
@@ -410,13 +509,45 @@ async def run_policy_extract_agent(
         },
         handler=search_personal_skills_handler,
     )
+    baseline_tool = _make_tool(
+        name="search_industry_baselines",
+        description=(
+            "Look up vetted industry-standard policies for the chunk's "
+            "domain. Returns up to `k` matches plus a `pool_size` "
+            "field showing how many baselines the catalog holds. Each "
+            "match carries `policy_id`, `name`, `condition`/`action` "
+            "text, and any source citations. Useful BEFORE the first "
+            "`extract_policies` call as a sanity-check for what a "
+            "typical team in this domain would have a policy about — "
+            "but the chunk is still the source of truth; do not copy "
+            "baseline text verbatim into final drafts."
+        ),
+        parameters={
+            "query": (
+                "string — the chunk's main topic, e.g., 'refund "
+                "approval threshold'. Phrase it as a noun phrase rather "
+                "than a sentence."
+            ),
+            "k": (
+                "integer (default 3) — maximum matches to return. The "
+                "default is plenty; raising it adds prompt-budget noise."
+            ),
+        },
+        handler=search_industry_baselines_handler,
+    )
 
-    tools = [extract_tool, evaluate_tool]
+    # Catalog ordering: retrieval tools FIRST when enabled, so the
+    # agent's top-down read of the tool list surfaces them in front of
+    # `extract_policies`. Personal skills outrank baselines because
+    # the user's own past edits are a stronger signal of THIS team's
+    # intent than a generic domain standard. `extract_policies` and
+    # `evaluate_coverage` always anchor the tail.
+    tools: list[Any] = []
     if memory_enabled:
-        # Insert search ahead of extract so the catalog rendering puts
-        # it first — the agent reads tools top-down and we want the
-        # retrieval option in front when relevant.
-        tools = [search_tool, extract_tool, evaluate_tool]
+        tools.append(search_tool)
+    if baseline_enabled:
+        tools.append(baseline_tool)
+    tools.extend([extract_tool, evaluate_tool])
 
     user_request = f"chunk:\n```\n{chunk}\n```"
 
@@ -431,7 +562,10 @@ async def run_policy_extract_agent(
         result: AgentResult = await run_agent(
             backend,
             system_goal=_system_goal(
-                domain, max_iter, memory_enabled=memory_enabled
+                domain,
+                max_iter,
+                memory_enabled=memory_enabled,
+                baseline_enabled=baseline_enabled,
             ),
             user_request=user_request,
             tools=tools,

@@ -58,3 +58,15 @@ class Settings(BaseSettings):
     # In production this points at a Modal Volume mount; PLAN_14 PR-D
     # adds the write path that populates files here.
     personal_memory_dir: str = ""
+
+    # Directory holding industry-baseline seed YAMLs
+    # (`{industry_baseline_dir}/{domain}.yaml`). Empty string falls back
+    # to the bundled `app/data/policies/` path that the wizard's
+    # `gap_analyze` short-circuit also reads from — production runs
+    # with the default and never sets this env. Tests inject a tmp_path
+    # to isolate fixtures. The cold-start guarantee from
+    # `project_personalization_memory_pattern.md` extends to this
+    # tool: `domain="other"`, an unseeded domain, or a missing YAML
+    # all resolve to an empty pool, leaving the GitLab smoke baseline
+    # bit-for-bit unchanged.
+    industry_baseline_dir: str = ""

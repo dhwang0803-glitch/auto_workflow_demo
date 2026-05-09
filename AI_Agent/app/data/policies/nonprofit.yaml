@@ -175,8 +175,6 @@ policies:
         help_text: "A retrievable record of screening completion per volunteer. Must be available for audit (insurance, regulatory) and for incident response. Volunteer management platforms (VolunteerMatch, Better Impact, Galaxy Digital) have this built in; smaller orgs use shared-drive folders with a consistent naming convention."
         example_answer: "Better Impact volunteer profile (screening fields)"
     sources:
-      - title: "Nonprofit Risk Management Center — Background Checks, Screening and Your Nonprofit"
-        url: "https://nonprofitrisk.org/resources/background-checks-screening-and-your-nonprofit/"
       - title: "NRMC — Background Screening for Nonprofits: What to Consider"
         url: "https://nonprofitrisk.org/resources/background-screening-for-nonprofits-what-to-consider/"
     source_kind: industry-baseline
