@@ -1814,6 +1814,101 @@ ADR-020 기반 (~$30/mo: Cloud SQL + Cloud Run API_Server min=1) 과 합쳐 **~$
 
 ---
 
+## ADR-024 — Reflective workflow → ReAct agent loop (LLM 이 도구 사용 결정)
+
+**상태**: Accepted · **날짜**: 2026-05-09
+
+**Context**
+
+PLAN_13 까지 만든 `policy_extract_reflective` 는 LangGraph StateGraph + 노드 3개 (extract / self_eval / reflect) 의 **결정론적 workflow** 다 — 노드 순서를 hand-coded conditional edge (`decide_after_eval`, `decide_after_reflect`) 가 정한다. Anthropic "Building effective agents" (2024-12) 의 분류 기준으로:
+
+> Workflows are systems where LLMs and tools are orchestrated through **predefined code paths**. Agents are systems where LLMs **dynamically direct their own processes and tool usage**.
+
+본 시스템은 명백히 workflow 측. 라이브 smoke 결과 (D3, +3 cand recall delta) 가 입증한 것은 self-critique 회로의 동작이지, LLM 의 자율 선택 능력이 아니다.
+
+해커톤 narrative ("**시스템이 학습한다**", ADR-023 §6) 은 두 축에서 agent 자격을 요구:
+
+1. **Storytelling 30%**: 심사위원 청중 (Kaggle, 비기술 평가자 다수) 에게 "agent" 는 강한 단어. workshop 규모 자동화 ≠ agent 라는 인식이 인더스트리 전반에 정렬돼있어, workflow 라고 부르면 narrative 가 무게를 잃는다.
+2. **Impact & Vision 40%**: PLAN_14 의 자율 학습 narrative ("사용자가 시스템을 학습시키는 게 아니라 시스템이 사용자를 학습한다") 는 도구 (personal_skills retrieval) 를 LLM 이 자기 결정으로 부르는 그림에서만 자연스러움. workflow 위에 retrieval 을 hardcode 하면 "조건만 추가된 같은 자동화" 로 들린다.
+
+마감까지 9일 남음 (5/9 → 5/18). PLAN_14 의 `personal_skills` 인프라가 어차피 5/11 부터 만들어질 것이므로 — **agent 도구 카탈로그에 미리 자리를 잡으면 sunk cost 가 invest 로 전환**.
+
+**Decision**
+
+1. **Tool dataclass + ReAct-style agent loop 신규 (PR-α, 본 ADR 도입과 함께 머지)**.
+   - `app/agents/tool.py` Tool 정의 (name / description / parameters / handler)
+   - `app/agents/agent_loop.py` `run_agent()` — LLM 의 `<tool_call>` 을 파싱 → dispatch → observation 환송 → loop
+   - `app/agents/_tool_parse.py` 와이어 포맷 파서
+
+2. **와이어 포맷: prompt-engineered XML 태그 블록**. Native function calling 미사용 — Gemma 4 via llama.cpp 의 native tool 안정성 검증 안 됨, 추가 모델 의존성 회피. `judge.py` 의 prompt-engineered JSON 출력과 동일 posture.
+
+   ```
+   <tool_call name="TOOL_NAME">
+   {"arg": "value"}
+   </tool_call>
+   ```
+   또는
+   ```
+   <finish>
+   {...JSON 결과...}
+   </finish>
+   ```
+
+   Observation 환송 (다음 user turn 에 포함):
+   ```
+   <tool_result tool="TOOL_NAME">
+   {JSON serialized return value}
+   </tool_result>
+   ```
+
+3. **기존 `extract_policies` / `evaluate_coverage` (deterministic + LLM judge) 를 tool 로 노출 (PR-β)**. langgraph StateGraph 제거, agent loop 으로 교체. 외부 API (`/v1/policy/extract_reflective`) 의 응답 shape 보존 — 호출자 (API_Server proxy, Frontend wizard) 무수정.
+
+4. **추가 도구 (PR-γ/δ/ε) 로 진정한 agent capability 부여**:
+   - `search_personal_skills(user_id, query, k)` — BGE-M3 retrieval over `personal_skills` 테이블 (PLAN_14 가 채울 자리)
+   - `search_industry_baselines(domain, query, k)` — 시드 YAML 정책 위 retrieval
+   - `validate_skill_schema(draft)` — 결정론적 형식 검증
+   - `cite_source_url(draft, domain)` — 결정론적 소스 매칭 + URL 회수
+
+   이 4개 도구는 LLM 이 "자기 추출 직전에 사용자의 과거 패턴 / 업계 표준 / 검증 / 인용을 자기 결정으로 부른다" 의 narrative 를 만든다 — Anthropic 정의의 agent 자격 충족.
+
+5. **Termination 사유 5종**:
+   - `finish` (정상 종료, model 의 `<finish>`)
+   - `parse_error` (model 출력 unparseable)
+   - `tool_not_found` (등록 안 된 tool 호출, 1회 obs error 로 회복 시도)
+   - `max_iter_exhausted` (기본 8)
+   - `no_progress` (같은 (tool, args) 가 연속 2회 — 모델 stuck)
+
+6. **회귀 가드: D3 라이브 smoke 의 +3 cand recall delta 보존**. PR-β 머지 전 GitLab handbook 5-chunk sample 재실행. 회귀 시 system_goal 의 도구 사용 가이드 보강 또는 PR scope 축소.
+
+**Consequences**
+
+- (+) **Anthropic-정의 agent 자격 충족**. Storytelling / Impact 평가축에서 narrative 정렬.
+- (+) **PLAN_14 의 retrieval 인프라가 sunk cost 로 전환**. PLAN_14 PR 수 9 → 7-8 압축 가능. 일정 net 영향 0~1일.
+- (+) **확장 가능 도구 모델**. 미래 W4 (adversarial harness) / 정책 충돌 검사 / 외부 SaaS 통합 모두 새 tool 등록만으로 흡수.
+- (+) **외부 API 무수정**. `/v1/policy/extract_reflective` 응답 shape 보존 — API_Server proxy 와 Frontend wizard 미영향.
+- (−) **Latency 증가 (turn 수 증가)**. 기존 langgraph 가 1-2 LLM call/iter 였던 것이 agent loop 에서 1 turn = 1 LLM call 로 분리 → 도구 4개 사용 시 5-6 LLM call. text-mode warm 5-25s/call 기준 실제 25-100s/chunk. **Mitigation**: 회귀 가드 통과 시 acceptable. 영상에서는 cold-start 후 warm chunk 만 시연.
+- (−) **Determinism 감소**. 같은 입력에 다른 도구 순서 가능. **Mitigation**: 회귀 측정은 같은 입력 N회 재실행으로 분산 측정. 시연 narrative 는 trace tree 로 "agent 가 자기 결정으로 도구 부른 흔적" 을 강점화.
+- (−) **PR #168 (D3 evidence) 의 NDJSON / 스크린샷 obsolete**. PR-ζ 에서 재캡처. 사용자 합의 후 진행 (이미 합의: "PR #168 머지 보류, refactor 와 합쳐서 재편").
+- (−) **Tool 호출 비용 (LLM 이 args 잘못 emit 시 재시도)**. `no_progress` brake 가 budget 보호. 실측 시 budget hit 빈번하면 system_goal 보강.
+- (−) **PLAN_13 §1-§10 본문 stale**. §11 에서 명시적으로 retrofit. PLAN_15 별도 작성 X (사용자 결정).
+
+**미해결 (PR-β-ζ 에서 확정)**
+
+1. PR-β 의 회귀 측정에서 +3 cand 미달 시 fallback — agent 의 system_goal 보강으로 해소 vs PR scope 축소 (도구 일부 PR-γ 이후로 이연).
+2. agent_trace JSON shape — 기존 (langgraph iterations) vs 새 (agent steps). 외부 wire 호환성 위해 기존 shape 변환 어댑터 추가 vs Frontend `agentTrace` 타입 갱신 동시 PR. PR-β 에서 결정.
+3. cold-start chunk 의 max_iter — 기본 8 이 충분한가. 관찰 후 조정.
+4. judge 도구의 `evaluate_coverage` 통합 — 기존 self_eval 의 결정론적 룰 + LLM judge 두 단계를 한 tool 로 묶을지 / `evaluate_coverage` (룰) + `judge_extraction` (LLM judge) 두 tool 로 분리할지. 분리하면 LLM 이 비용 의식적으로 judge 호출 결정 가능 — PR-β 에서 실측.
+
+**Related**
+
+- Builds on: PLAN_13 (workflow 골격, judge 도구화 대상), ADR-022 §11.5 (관찰 기반 skill 후보 — agent retrieval 이 실현 경로)
+- Refines: PLAN_13 §1-§10 (workflow → agent 전환을 §11 에서 retrofit)
+- Resolves (narrative): ADR-023 §6 의 "시스템이 학습한다" narrative 의 mechanism 전제 (agent + retrieval) 정렬
+- Affects branches: `AI_Agent` (agent loop / 도구 카탈로그 / langgraph 제거), `Database` (personal_skills 테이블 — PR-γ), `Frontend` (agent_trace shape 변경 시 — PR-β 에서 결정), `docs` (본 ADR + PLAN_13 §11)
+- 메모리 `feedback_no_auto_merge.md` — 본 ADR 의 모든 PR 은 명시 승인 전까지 머지 X
+
+---
+
 ## 관련 문서
 
 - 전체 아키텍처: [`architecture.md`](./architecture.md)
