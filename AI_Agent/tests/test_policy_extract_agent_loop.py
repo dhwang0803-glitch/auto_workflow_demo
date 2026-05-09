@@ -27,6 +27,10 @@ import pytest
 
 from app.agents.policy_extract_agent import run_policy_extract_agent
 from app.backends.stub_embedding import StubEmbeddingBackend
+from app.services.industry_baselines import (
+    BaselineEntry,
+    IndustryBaselinePool,
+)
 from app.services.personal_memory import (
     PersonalMemoryPool,
     PersonalSkillEntry,
@@ -612,3 +616,232 @@ async def test_images_forwarded_to_extract_call() -> None:
     # arrives (the agent-loop call doesn't pass images), so this
     # assertion isolates the contract.
     assert backend.last_extract_images == [img]
+
+
+# --- search_industry_baselines (PR-δ baseline tool) ----------------------
+
+
+def _populated_baseline_pool() -> IndustryBaselinePool:
+    """A pool with one baseline entry whose `policy_id` is detectable
+    in the smoke assertions below. Embedding shape matches the stub's
+    1024-dim contract so the dim-check inside `pool.search` passes."""
+    return IndustryBaselinePool(
+        [
+            BaselineEntry(
+                policy_id="ecommerce.refund_threshold",
+                name="Refund threshold escalation",
+                condition="Refunds above team's auto-approve limit",
+                action="Route to manager via escalation channel",
+                sources=[
+                    {
+                        "title": "Stripe — Refunds",
+                        "url": "https://docs.stripe.com/refunds",
+                    }
+                ],
+                source_kind="industry-baseline",
+                embedding=[1.0] + [0.0] * 1023,
+            ),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_industry_baselines_invoked_before_extract() -> None:
+    """Populated baseline pool path. The agent calls
+    `search_industry_baselines` first, folds the match into the
+    extract `hint`, then continues with the standard
+    extract → evaluate → finish flow.
+    """
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call(
+                "search_industry_baselines",
+                {"query": "refund approvals", "k": 3},
+            ),
+            _agent_call(
+                "extract_policies",
+                {
+                    "hint": "industry baseline: refund threshold escalation",
+                },
+            ),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    iterations, _t, reason, finals = await run_policy_extract_agent(
+        backend,
+        chunk="Refunds over $500 must be approved by a manager.",
+        domain="ecommerce",
+        baseline_pool=_populated_baseline_pool(),
+        embedding_backend=StubEmbeddingBackend(),
+    )
+
+    assert reason == "converge"
+    assert len(iterations) == 1
+    assert (
+        iterations[0].prompt_hint
+        == "industry baseline: refund threshold escalation"
+    )
+    assert backend.extract_calls == 1
+    assert len(finals) == 1
+
+
+@pytest.mark.asyncio
+async def test_cold_start_baseline_pool_omits_tool_from_catalog() -> None:
+    """Regression guard for the GitLab smoke baseline. With no baseline
+    pool, `search_industry_baselines` MUST NOT appear in the agent's
+    tool catalog — otherwise the agent might still try to call it and
+    waste a turn. Cold-start = bit-identical to PR-β/γ baseline.
+    """
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call("extract_policies"),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    seen_prompts: list[str] = []
+    original = backend.complete
+
+    async def capturing_complete(**kwargs):
+        if kwargs["system"].startswith(_AGENT_PROMPT_PREFIX):
+            seen_prompts.append(kwargs["system"])
+        return await original(**kwargs)
+
+    backend.complete = capturing_complete  # type: ignore[method-assign]
+
+    await run_policy_extract_agent(
+        backend,
+        chunk="Refunds over $500 must be approved.",
+        # No baseline_pool, no embedding_backend — cold-start path.
+    )
+
+    assert seen_prompts, "agent loop did not run"
+    assert all(
+        "search_industry_baselines" not in p for p in seen_prompts
+    ), "search_industry_baselines leaked into cold-start system prompt"
+
+
+@pytest.mark.asyncio
+async def test_empty_baseline_pool_omits_tool_from_catalog() -> None:
+    """Same guarantee as cold-start, but when `industry_baseline_dir`
+    is set and the chunk's domain has no seeded baseline (e.g.
+    `domain="other"` falling through `IndustryBaselinePool.load`).
+    `pool.size == 0` is the trigger to keep the tool out of the
+    catalog so we don't pay a turn for a guaranteed-empty lookup.
+    """
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call("extract_policies"),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    seen_prompts: list[str] = []
+    original = backend.complete
+
+    async def capturing_complete(**kwargs):
+        if kwargs["system"].startswith(_AGENT_PROMPT_PREFIX):
+            seen_prompts.append(kwargs["system"])
+        return await original(**kwargs)
+
+    backend.complete = capturing_complete  # type: ignore[method-assign]
+
+    await run_policy_extract_agent(
+        backend,
+        chunk="Refunds must be approved.",
+        baseline_pool=IndustryBaselinePool([]),  # explicit empty
+        embedding_backend=StubEmbeddingBackend(),
+    )
+
+    assert seen_prompts
+    assert all(
+        "search_industry_baselines" not in p for p in seen_prompts
+    )
+
+
+@pytest.mark.asyncio
+async def test_both_retrieval_pools_register_both_tools() -> None:
+    """Personal memory + industry baselines together: both tools
+    register, both guidance sections appear in the system prompt, the
+    agent picks order. Catalog ordering is personal-then-baseline
+    (the user's own pattern is a stronger signal than a generic
+    industry standard) — we assert that ordering on the rendered
+    prompt."""
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call(
+                "search_personal_skills",
+                {"query": "refund", "k": 3},
+            ),
+            _agent_call(
+                "search_industry_baselines",
+                {"query": "refund", "k": 3},
+            ),
+            _agent_call(
+                "extract_policies",
+                {"hint": "scaffolding from past edits + industry baseline"},
+            ),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    seen_prompts: list[str] = []
+    original = backend.complete
+
+    async def capturing_complete(**kwargs):
+        if kwargs["system"].startswith(_AGENT_PROMPT_PREFIX):
+            seen_prompts.append(kwargs["system"])
+        return await original(**kwargs)
+
+    backend.complete = capturing_complete  # type: ignore[method-assign]
+
+    iterations, _t, reason, finals = await run_policy_extract_agent(
+        backend,
+        chunk="Refunds over $500 must be approved by a manager.",
+        domain="ecommerce",
+        memory_pool=PersonalMemoryPool(
+            [
+                PersonalSkillEntry(
+                    id="past-edit-1",
+                    condition={"text": "Refunds over $500"},
+                    action={"text": "Manager approval"},
+                    suggestion_hash="hash-1",
+                    embedding=[1.0] + [0.0] * 1023,
+                    source="hitl_edit",
+                    first_observed_at="2026-05-01T00:00:00Z",
+                    active=True,
+                ),
+            ]
+        ),
+        baseline_pool=_populated_baseline_pool(),
+        embedding_backend=StubEmbeddingBackend(),
+    )
+
+    assert reason == "converge"
+    assert len(finals) == 1
+    # Both guidance sections are rendered.
+    assert all(
+        "search_personal_skills" in p and "search_industry_baselines" in p
+        for p in seen_prompts
+    )
+    # Catalog ordering: personal precedes baseline. The tool catalog
+    # is rendered by `agent_loop._render_tool_catalog`, so the relative
+    # order in the system prompt mirrors the `tools` list assembly in
+    # `policy_extract_agent.run_policy_extract_agent`.
+    for prompt in seen_prompts:
+        i_personal = prompt.find("search_personal_skills")
+        i_baseline = prompt.find("search_industry_baselines")
+        assert 0 <= i_personal < i_baseline
