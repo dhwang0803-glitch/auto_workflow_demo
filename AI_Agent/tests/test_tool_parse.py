@@ -1,4 +1,4 @@
-"""Unit tests for `_tool_parse.parse_action` (ADR-024 §3 wire format)."""
+"""Unit tests for `_tool_parse.parse_action` (ADR-024 §3, JSON envelope)."""
 from __future__ import annotations
 
 import pytest
@@ -13,113 +13,140 @@ from app.agents._tool_parse import (
 
 def test_parses_minimal_tool_call() -> None:
     out = parse_action(
-        '<tool_call name="extract">\n{"chunk": "abc"}\n</tool_call>'
+        '{"action": "tool_call", "name": "extract", "args": {"chunk": "abc"}}'
     )
     assert isinstance(out, ToolCall)
     assert out.name == "extract"
     assert out.args == {"chunk": "abc"}
 
 
-def test_parses_tool_call_with_preamble() -> None:
-    raw = (
-        "Let me first search for relevant context.\n"
-        '<tool_call name="search">\n{"query": "refunds"}\n</tool_call>'
+def test_parses_tool_call_with_thought_field() -> None:
+    out = parse_action(
+        '{"thought": "let me search first", "action": "tool_call", '
+        '"name": "search", "args": {"query": "refunds"}}'
     )
-    out = parse_action(raw)
     assert isinstance(out, ToolCall)
     assert out.name == "search"
     assert out.args == {"query": "refunds"}
 
 
+def test_parses_tool_call_with_prose_preamble() -> None:
+    raw = (
+        "Let me first search for relevant context.\n\n"
+        '{"action": "tool_call", "name": "search", "args": {"query": "refunds"}}'
+    )
+    out = parse_action(raw)
+    assert isinstance(out, ToolCall)
+    assert out.name == "search"
+
+
 def test_parses_finish_with_payload() -> None:
-    out = parse_action('<finish>\n{"drafts": [], "count": 0}\n</finish>')
+    out = parse_action(
+        '{"action": "finish", "result": {"drafts": [], "count": 0}}'
+    )
     assert isinstance(out, Finish)
     assert out.result == {"drafts": [], "count": 0}
 
 
-def test_parses_empty_finish_as_none() -> None:
-    out = parse_action("<finish></finish>")
+def test_parses_finish_without_result_as_none() -> None:
+    out = parse_action('{"action": "finish"}')
     assert isinstance(out, Finish)
     assert out.result is None
 
 
 def test_parses_no_arg_tool_call() -> None:
-    out = parse_action('<tool_call name="finalize"></tool_call>')
+    out = parse_action('{"action": "tool_call", "name": "finalize", "args": {}}')
     assert isinstance(out, ToolCall)
     assert out.args == {}
 
 
-def test_finish_wins_when_both_blocks_present() -> None:
-    """Spec disallows both, but if a model emits both, finish wins.
+def test_parses_no_arg_tool_call_with_args_omitted() -> None:
+    out = parse_action('{"action": "tool_call", "name": "finalize"}')
+    assert isinstance(out, ToolCall)
+    assert out.args == {}
 
-    The agent loop prefers to terminate over loop, since a stuck-but-
-    finishing model is the safer failure mode.
+
+def test_last_envelope_wins_when_multiple_present() -> None:
+    """If the model emits multiple JSON objects, the last is the action.
+
+    Mirrors the prior `<finish>` over `<tool_call>` precedence — a model
+    that sketched an example then committed to a different action gets
+    the committed one honored, since it's the terminal block.
     """
     raw = (
-        '<tool_call name="extract">{}</tool_call>\n'
-        '<finish>{"done": true}</finish>'
+        '{"action": "tool_call", "name": "extract", "args": {}}\n'
+        '{"action": "finish", "result": {"done": true}}'
     )
     out = parse_action(raw)
     assert isinstance(out, Finish)
+    assert out.result == {"done": True}
 
 
-def test_strips_json_code_fence_inside_tool_call() -> None:
+def test_parses_when_wrapped_in_code_fence() -> None:
     raw = (
-        '<tool_call name="extract">\n'
+        "Here is my decision:\n"
         "```json\n"
-        '{"chunk": "abc"}\n'
-        "```\n"
-        "</tool_call>"
+        '{"action": "tool_call", "name": "extract", "args": {"x": 1}}\n'
+        "```"
     )
     out = parse_action(raw)
     assert isinstance(out, ToolCall)
-    assert out.args == {"chunk": "abc"}
+    assert out.name == "extract"
+    assert out.args == {"x": 1}
 
 
-def test_strips_plain_code_fence() -> None:
-    raw = (
-        "<finish>\n"
-        "```\n"
-        "{\"x\": 1}\n"
-        "```\n"
-        "</finish>"
-    )
-    out = parse_action(raw)
-    assert isinstance(out, Finish)
-    assert out.result == {"x": 1}
-
-
-def test_raises_on_no_block() -> None:
-    with pytest.raises(ToolParseError):
-        parse_action("Just some text with no terminal block.")
-
-
-def test_raises_on_invalid_json_args() -> None:
+def test_raises_on_no_json_object() -> None:
     with pytest.raises(ToolParseError) as exc_info:
-        parse_action('<tool_call name="x">{not json}</tool_call>')
-    assert "x" in str(exc_info.value)
-    # raw text preserved for trace
-    assert "not json" in exc_info.value.raw
+        parse_action("Just some text with no JSON envelope at all.")
+    assert "no JSON action object" in str(exc_info.value)
+
+
+def test_raises_on_unknown_action() -> None:
+    with pytest.raises(ToolParseError) as exc_info:
+        parse_action('{"action": "do_something", "name": "x"}')
+    assert "unknown action" in str(exc_info.value)
+
+
+def test_raises_on_missing_action() -> None:
+    with pytest.raises(ToolParseError):
+        parse_action('{"thought": "no action key here"}')
+
+
+def test_raises_on_missing_name_for_tool_call() -> None:
+    with pytest.raises(ToolParseError) as exc_info:
+        parse_action('{"action": "tool_call", "args": {}}')
+    assert "name" in str(exc_info.value)
 
 
 def test_raises_on_non_object_args() -> None:
     with pytest.raises(ToolParseError) as exc_info:
-        parse_action('<tool_call name="x">[1, 2, 3]</tool_call>')
-    assert "JSON object" in str(exc_info.value)
+        parse_action('{"action": "tool_call", "name": "x", "args": [1, 2, 3]}')
+    assert "object" in str(exc_info.value)
 
 
 def test_handles_multiline_json_body() -> None:
     raw = (
-        '<tool_call name="extract">\n'
         "{\n"
-        '  "chunk": "long text",\n'
-        '  "domain": "ecommerce",\n'
-        '  "max_iter": 2\n'
-        "}\n"
-        "</tool_call>"
+        '  "thought": "Long reasoning across\\nmultiple lines.",\n'
+        '  "action": "tool_call",\n'
+        '  "name": "extract",\n'
+        '  "args": {\n'
+        '    "chunk": "long text",\n'
+        '    "domain": "ecommerce",\n'
+        '    "max_iter": 2\n'
+        "  }\n"
+        "}"
     )
     out = parse_action(raw)
     assert isinstance(out, ToolCall)
     assert out.args["chunk"] == "long text"
     assert out.args["domain"] == "ecommerce"
     assert out.args["max_iter"] == 2
+
+
+def test_raw_text_preserved_on_parse_error() -> None:
+    """ToolParseError carries the raw response for trace debugging."""
+    raw = '{"action": "tool_call", "name": "x", "args": "not an object"}'
+    with pytest.raises(ToolParseError) as exc_info:
+        parse_action(raw)
+    assert exc_info.value.raw == raw

@@ -25,8 +25,7 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.agents.policy_extract_agent import build_agent
-from app.agents.state import AgentState
+from app.agents.policy_extract_agent import run_policy_extract_agent
 from app.backends.protocols import EmbeddingBackend, LLMBackend
 from app.config import Settings
 from app.container import AIAgentContainer
@@ -276,55 +275,47 @@ def create_app(
         chunk and compare recall + latency.
         """
         # Same backend powers both extraction and the LLM judge — both
-        # paths go through the same Modal Gemma deployment, so the
-        # alternative would be a second model and a different cost
-        # profile. Keep the single-backend wiring until PR-D smoke
-        # shows a need.
-        agent = build_agent(backend, judge_backend=backend)
-        initial = AgentState(
-            chunk=payload.chunk,
-            domain=payload.domain,
-            images=payload.images,
-            max_iter=payload.max_iter,
-        )
-
-        # Pre-generate the LangSmith run id so the route handler can
-        # tell the caller WHICH run to look up in the LangSmith UI
-        # without round-tripping through the LangSmith client. langgraph
-        # threads `run_id` through to its tracer when LangSmith is on;
-        # when tracing is off this is just a UUID we don't reuse.
-        # Read the env dynamically (not via tracing.TRACING_ENABLED
-        # which is bound at import time) so a Modal redeploy that adds
-        # the API key flips this on without rebuilding the container.
+        # paths go through the same Modal Gemma deployment, so a second
+        # model would just add a different cost profile without buying
+        # us anything. PR-α/β onward (ADR-024) routes everything through
+        # the ReAct agent loop; the agent itself decides when to call
+        # extract vs evaluate via `<tool_call>` blocks.
         tracing_on = (
             os.environ.get("LANGCHAIN_TRACING_V2", "").strip().lower()
             in {"1", "true", "yes", "on"}
             and bool(os.environ.get("LANGCHAIN_API_KEY", "").strip())
         )
+        # Pre-mint the LangSmith run id so the wire response can carry
+        # it before the trace is fully ingested. Older PRs threaded this
+        # through langgraph's `config={"run_id": ...}`; the agent_loop
+        # uses `@traceable` and inherits the parent run id from the
+        # active LangSmith RunTree. We surface the bare UUID; clients
+        # paste it into the LangSmith UI search to find the run.
         run_id = str(uuid.uuid4())
-        config: dict = {"run_id": run_id} if tracing_on else {}
 
         try:
-            final_state = await agent.ainvoke(initial, config=config)
+            iterations, terminated, reason, final_candidates = (
+                await run_policy_extract_agent(
+                    backend,
+                    chunk=payload.chunk,
+                    domain=payload.domain,
+                    images=payload.images,
+                    max_iter=payload.max_iter,
+                    judge_backend=backend,
+                )
+            )
         except PolicyExtractParseError as exc:
             # Same 502 envelope as /v1/policy/extract: a parse failure
-            # in any iteration's extract call propagates up. Reflect/
-            # eval don't call the LLM (PR-D's judge will, and PR-D
-            # adopts this same envelope), so this catches every LLM-
-            # parse path the agent currently has.
+            # on the FIRST extraction propagates up. Later-iter parse
+            # failures get folded into the agent trace as a tool error
+            # obs (the agent can recover or finish), matching the
+            # pre-refactor behavior closely enough for callers.
             detail = {
                 "error": str(exc),
                 "raw_len": len(exc.raw),
                 "raw": exc.raw[:1500],
             }
             raise HTTPException(status_code=502, detail=detail) from exc
-
-        # langgraph returns a plain dict (the state values), not the
-        # AgentState model. Index into it explicitly.
-        iterations = final_state["iterations"]
-        # PLAN_13 §8 #4: final iter's drafts are treated as the superset
-        # (reflect's hint enrichment means later iters subsume earlier).
-        final_candidates = iterations[-1].drafts if iterations else []
 
         # The canonical LangSmith run URL needs the org_id +
         # project_id, neither of which the agent server carries — we
@@ -338,8 +329,8 @@ def create_app(
             candidates=final_candidates,
             agent_trace=AgentTrace(
                 iterations=iterations,
-                terminated=final_state["terminated"],
-                reason=final_state["reason"],
+                terminated=terminated,
+                reason=reason,
             ),
             langsmith_run_id=langsmith_run_id,
         )
