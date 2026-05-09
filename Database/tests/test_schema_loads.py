@@ -132,6 +132,9 @@ async def test_schema_applies_and_checks_enforced():
             # PLAN_12 / ADR-022 — Skill Bootstrap (005_skill_bootstrap.sql)
             "skills", "skill_sources", "skill_applications",
             "policy_documents", "policy_extractions",
+            # PLAN_14 / ADR-023 — Personalization (006_personalization.sql,
+            # absorbed into PLAN_15 PR-γ)
+            "workflow_revisions", "personal_skill_reviews",
         }
         assert expected.issubset(tables), f"missing: {expected - tables}"
 
