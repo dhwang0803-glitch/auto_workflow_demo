@@ -6,10 +6,18 @@ status codes, envelope, auth, validation, langsmith_run_id surfacing,
 and that `images` reach `backend.complete`. The mock backend is the
 same 3-bucket pattern used by `test_policy_extract_agent_loop.py`:
 agent / extract / judge prompts route into separate response queues.
+
+PR-γ adds personalization wiring — the route loads a
+`PersonalMemoryPool` once per request and threads it into the agent.
+The tests below cover the four `user_id` paths (none / set with file /
+set without file / file disabled by config), and verify the
+`search_personal_skills` tool only appears in the system prompt when
+there's something to find.
 """
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -431,6 +439,171 @@ async def test_langsmith_run_id_null_when_only_master_switch_set(
 
 
 # --- max_iter=1 single-pass equivalence ----------------------------------
+
+
+# --- personalization (PR-γ memory) --------------------------------------
+
+
+def _populated_skill_record() -> dict[str, Any]:
+    return {
+        "id": "past-edit-1",
+        "condition": {"text": "Refunds over $500"},
+        "action": {"text": "Manager approval"},
+        "suggestion_hash": "hash-1",
+        # 1024-dim to match `StubEmbeddingBackend.dimension` — the
+        # search path drops dim mismatches, so a real-shape vector is
+        # required for the entry to be findable.
+        "embedding": [1.0] + [0.0] * 1023,
+        "source": "hitl_edit",
+        "first_observed_at": "2026-05-01T00:00:00Z",
+        "active": True,
+    }
+
+
+def _write_user_memory(base_dir: Path, user_id: str, skills: list[dict]) -> None:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    (base_dir / f"{user_id}.json").write_text(
+        json.dumps({"user_id": user_id, "skills": skills}),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_id_with_populated_memory_routes_search(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end through the route: memory dir set, user_id passed,
+    file present with one entry. The agent must run search → extract
+    → evaluate → finish, the trace shows the hint that flowed from
+    the memory match, and the response stays a 200."""
+    monkeypatch.setenv("PERSONAL_MEMORY_DIR", str(tmp_path))
+    _write_user_memory(tmp_path, "alice", [_populated_skill_record()])
+
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call(
+                "search_personal_skills",
+                {"query": "refund approvals", "k": 3},
+            ),
+            _agent_call(
+                "extract_policies",
+                {"hint": "from prior approval pattern"},
+            ),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={
+                "chunk": "Refunds over $500 must be approved by a manager.",
+                "user_id": "alice",
+                "max_iter": 2,
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["candidates"]) == 1
+    # The hint surfaced through the trace — this is the operator-visible
+    # signal that memory shaped iteration 1.
+    assert body["agent_trace"]["iterations"][0]["prompt_hint"] == (
+        "from prior approval pattern"
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_id_with_no_file_yields_cold_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Memory dir is configured but the user has not edited anything
+    yet — file missing → empty pool → search tool not registered →
+    agent runs the baseline extract path. This is the GitLab-smoke
+    +3-cand regression guard expressed at the route boundary."""
+    monkeypatch.setenv("PERSONAL_MEMORY_DIR", str(tmp_path))
+
+    cand = _candidate()
+    # Script the baseline 3-turn shape — no search call. If memory had
+    # leaked in, the agent script would diverge and the assertion below
+    # on `extract_calls == 1` would still pass but `agent_calls == 3`
+    # would fail (4 expected).
+    backend = _converge_in_one(cand)
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={
+                "chunk": "Refunds must be approved by a manager.",
+                "user_id": "fresh-user",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert backend.agent_calls == 3
+    assert backend.extract_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_user_id_none_yields_cold_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anonymous request — memory dir is configured (could be in prod)
+    but the wire payload omits `user_id`. The pool is empty by design,
+    no search tool registered."""
+    monkeypatch.setenv("PERSONAL_MEMORY_DIR", str(tmp_path))
+    # Even a populated file for some OTHER user must not leak into the
+    # anonymous request. Write one to prove isolation.
+    _write_user_memory(tmp_path, "alice", [_populated_skill_record()])
+
+    backend = _converge_in_one(_candidate())
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={"chunk": "Refunds must be approved.", "user_id": None},
+        )
+
+    assert resp.status_code == 200
+    assert backend.agent_calls == 3
+    assert backend.extract_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_personal_memory_dir_empty_disables_feature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The feature flag — empty `PERSONAL_MEMORY_DIR` short-circuits
+    the loader before it touches the filesystem. Even with a real
+    `user_id` on the wire, the pool is empty and the agent runs the
+    baseline shape."""
+    monkeypatch.setenv("PERSONAL_MEMORY_DIR", "")
+
+    backend = _converge_in_one(_candidate())
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={
+                "chunk": "Refunds must be approved.",
+                "user_id": "alice",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert backend.agent_calls == 3
+    assert backend.extract_calls == 1
 
 
 @pytest.mark.asyncio

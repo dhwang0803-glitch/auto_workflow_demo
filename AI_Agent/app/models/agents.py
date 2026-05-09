@@ -49,6 +49,13 @@ class PolicyExtractReflectiveRequest(BaseModel):
     domain: DomainCategory = "other"
     images: list[str] | None = None
     max_iter: int = Field(default=2, ge=1, le=5)
+    # Optional caller identity. Drives personalization retrieval
+    # (`search_personal_skills` tool, PLAN_15 PR-γ). None / empty means
+    # an anonymous request — the agent runs against an empty memory
+    # pool, identical to the pre-PR-γ behavior. Format is opaque to
+    # this layer; the file loader rejects values containing path
+    # traversal characters.
+    user_id: str | None = None
 
 
 class AgentTrace(BaseModel):

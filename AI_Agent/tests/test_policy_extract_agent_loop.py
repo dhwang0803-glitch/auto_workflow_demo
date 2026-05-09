@@ -26,6 +26,11 @@ from typing import Any
 import pytest
 
 from app.agents.policy_extract_agent import run_policy_extract_agent
+from app.backends.stub_embedding import StubEmbeddingBackend
+from app.services.personal_memory import (
+    PersonalMemoryPool,
+    PersonalSkillEntry,
+)
 from app.services.policy_extract import PolicyExtractParseError
 
 
@@ -414,6 +419,167 @@ async def test_finish_without_evaluate_records_inflight() -> None:
     assert iterations[0].eval is not None
     assert iterations[0].eval.decision == "converge"
     assert "without evaluating" in iterations[0].eval.rationale
+
+
+# --- images forwarded into the extract backend call ----------------------
+
+
+# --- search_personal_skills (PR-γ memory tool) ---------------------------
+
+
+def _populated_pool() -> PersonalMemoryPool:
+    """A pool with one entry whose `id` is detectable in the smoke
+    assertions below. The embedding shape doesn't matter for ranking
+    here — we only have one active entry, so any non-zero query
+    returns it."""
+    return PersonalMemoryPool(
+        [
+            PersonalSkillEntry(
+                id="past-edit-1",
+                condition={"text": "Refunds over $500"},
+                action={"text": "Manager approval"},
+                suggestion_hash="hash-1",
+                # Real BGE-M3 dim is 1024 — `StubEmbeddingBackend.embed`
+                # also returns 1024 — so the entry has to match for
+                # the dim check in `pool.search` to pass.
+                embedding=[1.0] + [0.0] * 1023,
+                source="hitl_edit",
+                first_observed_at="2026-05-01T00:00:00Z",
+                active=True,
+            ),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_personal_skills_invoked_before_extract() -> None:
+    """Populated pool path. The agent calls `search_personal_skills`
+    first, folds the match into the extract `hint`, then continues
+    with the standard extract → evaluate → finish flow.
+    """
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call(
+                "search_personal_skills",
+                {"query": "refund approvals", "k": 3},
+            ),
+            _agent_call(
+                "extract_policies",
+                {"hint": "refund approval pattern from past edits"},
+            ),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    iterations, _t, reason, finals = await run_policy_extract_agent(
+        backend,
+        chunk="Refunds over $500 must be approved by a manager.",
+        domain="ecommerce",
+        memory_pool=_populated_pool(),
+        embedding_backend=StubEmbeddingBackend(),
+    )
+
+    assert reason == "converge"
+    assert len(iterations) == 1
+    # The extract hint reflects what the agent passed — useful for
+    # downstream UI showing how memory shaped the call.
+    assert iterations[0].prompt_hint == "refund approval pattern from past edits"
+    assert backend.extract_calls == 1
+    assert len(finals) == 1
+
+
+@pytest.mark.asyncio
+async def test_cold_start_pool_does_not_register_search_tool() -> None:
+    """Regression guard for the GitLab smoke baseline. With no memory
+    pool, `search_personal_skills` MUST NOT appear in the agent's tool
+    catalog — otherwise the agent might still try to call it and waste
+    a turn. We verify by:
+
+      1. Running the agent without a pool (cold-start).
+      2. Letting the script script a normal extract → evaluate → finish.
+      3. Asserting that the system prompt the agent received does
+         NOT mention `search_personal_skills`.
+
+    The `_SequencedBackend.complete` records the system text from the
+    most recent agent turn, so the absence check is a string contains
+    over the captured system_prompt of that call.
+    """
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call("extract_policies"),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    # Custom system-prompt capture — wrap `complete` to record the most
+    # recent agent prompt so we can grep for the tool name.
+    seen_prompts: list[str] = []
+    original = backend.complete
+
+    async def capturing_complete(**kwargs):
+        if kwargs["system"].startswith(_AGENT_PROMPT_PREFIX):
+            seen_prompts.append(kwargs["system"])
+        return await original(**kwargs)
+
+    backend.complete = capturing_complete  # type: ignore[method-assign]
+
+    await run_policy_extract_agent(
+        backend,
+        chunk="Refunds over $500 must be approved.",
+        # No memory_pool, no embedding_backend — cold-start path.
+    )
+
+    assert seen_prompts, "agent loop did not run"
+    # Tool absent from the rendered catalog — name must not appear.
+    assert all(
+        "search_personal_skills" not in p for p in seen_prompts
+    ), "search_personal_skills leaked into cold-start system prompt"
+
+
+@pytest.mark.asyncio
+async def test_empty_pool_does_not_register_search_tool() -> None:
+    """Same guarantee as cold-start, but when `personal_memory_dir` is
+    set and the user simply has no recorded patterns yet (file missing
+    or empty). `pool.size == 0` is the trigger to keep the tool out of
+    the catalog so we don't pay a turn for a guaranteed-empty lookup.
+    """
+    cand = _candidate()
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call("extract_policies"),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+    seen_prompts: list[str] = []
+    original = backend.complete
+
+    async def capturing_complete(**kwargs):
+        if kwargs["system"].startswith(_AGENT_PROMPT_PREFIX):
+            seen_prompts.append(kwargs["system"])
+        return await original(**kwargs)
+
+    backend.complete = capturing_complete  # type: ignore[method-assign]
+
+    await run_policy_extract_agent(
+        backend,
+        chunk="Refunds must be approved.",
+        memory_pool=PersonalMemoryPool([]),  # explicit empty
+        embedding_backend=StubEmbeddingBackend(),
+    )
+
+    assert seen_prompts
+    assert all(
+        "search_personal_skills" not in p for p in seen_prompts
+    )
 
 
 # --- images forwarded into the extract backend call ----------------------
