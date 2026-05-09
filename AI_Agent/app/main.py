@@ -29,7 +29,7 @@ from app.agents.policy_extract_agent import run_policy_extract_agent
 from app.backends.protocols import EmbeddingBackend, LLMBackend
 from app.config import Settings
 from app.container import AIAgentContainer
-from app.dependencies import get_backend, get_settings
+from app.dependencies import get_backend, get_embedding_backend, get_settings
 from app.models.agents import (
     AgentTrace,
     PolicyExtractReflectiveRequest,
@@ -50,6 +50,7 @@ from app.services.domain_classifier import (
     ClassifierParseError,
     classify_domain,
 )
+from app.services.personal_memory import PersonalMemoryPool
 from app.services.policy_extract import (
     PolicyExtractParseError,
     extract_policies,
@@ -261,6 +262,8 @@ def create_app(
     async def policy_extract_reflective(
         payload: PolicyExtractReflectiveRequest,
         backend: LLMBackend = Depends(get_backend),
+        embedding: EmbeddingBackend = Depends(get_embedding_backend),
+        settings: Settings = Depends(get_settings),
     ) -> PolicyExtractReflectiveResponse:
         """Closed-loop reflective extraction (PLAN_13).
 
@@ -274,6 +277,21 @@ def create_app(
         regression measurement (PR-D's smoke) hit both with the same
         chunk and compare recall + latency.
         """
+        # Per-user personal-skill memory loaded ONCE per request — every
+        # tool call within this request shares the same in-memory pool
+        # (sub-ms cosine, no file reload, no DB query). Path-1 design
+        # (memory `project_personalization_memory_pattern.md`): the
+        # JSON file at `{personal_memory_dir}/{user_id}.json` is the
+        # canonical store. With `personal_memory_dir=""`,
+        # `payload.user_id=None`, or a missing file, the loader returns
+        # an empty pool — `run_policy_extract_agent` then declines to
+        # register `search_personal_skills`, preserving the cold-start
+        # baseline that the GitLab smoke locks in.
+        memory_pool = PersonalMemoryPool.load(
+            settings.personal_memory_dir or None,
+            payload.user_id,
+        )
+
         # Same backend powers both extraction and the LLM judge — both
         # paths go through the same Modal Gemma deployment, so a second
         # model would just add a different cost profile without buying
@@ -302,6 +320,8 @@ def create_app(
                     images=payload.images,
                     max_iter=payload.max_iter,
                     judge_backend=backend,
+                    memory_pool=memory_pool,
+                    embedding_backend=embedding,
                 )
             )
         except PolicyExtractParseError as exc:

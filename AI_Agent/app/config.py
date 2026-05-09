@@ -49,3 +49,12 @@ class Settings(BaseSettings):
     # any non-empty value enables the BearerAuthMiddleware. Public Modal
     # endpoints set this from a Modal Secret; API_Server attaches matching token.
     agent_bearer_token: str = ""
+
+    # Directory holding per-user personal-skill memory files
+    # (`{personal_memory_dir}/{user_id}.json`). Empty string disables the
+    # personalization feature — `search_personal_skills` returns an empty
+    # pool for every request, preserving the cold-start baseline that
+    # the GitLab smoke locks in (memory `project_personalization_memory_pattern.md`).
+    # In production this points at a Modal Volume mount; PLAN_14 PR-D
+    # adds the write path that populates files here.
+    personal_memory_dir: str = ""

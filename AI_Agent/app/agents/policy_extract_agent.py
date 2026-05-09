@@ -1,8 +1,11 @@
-"""ReAct agent driver for policy_extract (PLAN_15 / ADR-024 / PR-β).
+"""ReAct agent driver for policy_extract (PLAN_15 / ADR-024 / PR-β + γ).
 
 Replaces the langgraph StateGraph that lived here through PR-A/B/C/D.
-The new shape:
+The new shape (PR-β with optional PR-γ retrieval prepended):
 
+    [search_personal_skills(query)]   ← PR-γ, registered only when
+            │                            a non-empty user memory pool
+            ▼                            is supplied
     extract_policies(hint?)   ←─┐
             │                    │
             ▼                    │
@@ -21,6 +24,12 @@ The agent (LLM) chooses tool order. We provide:
     only juggles the hint (the only piece of state the *agent* picks).
   * `evaluate_coverage()` — wraps `eval.evaluate` (deterministic) and
     optionally `judge.judge_extraction` (LLM critic, same backend).
+  * `search_personal_skills(query, k)` — optional, registered only
+    when a populated `PersonalMemoryPool` and an `EmbeddingBackend`
+    reach this driver. With no pool / empty pool / no embedder, the
+    tool is absent from the catalog and the system goal omits its
+    guidance section, preserving the cold-start baseline (Path 1
+    design, memory `project_personalization_memory_pattern.md`).
 
 `<finish>` (no separate `finalize` tool) carries the final drafts. We
 considered a `finalize(drafts)` tool for symmetry with the other two but
@@ -45,9 +54,10 @@ from app.agents.eval import evaluate
 from app.agents.judge import JudgeParseError, judge_extraction
 from app.agents.state import AgentIteration, EvalReport, TerminationReason
 from app.agents.tracing import traceable
-from app.backends.protocols import LLMBackend
+from app.backends.protocols import EmbeddingBackend, LLMBackend
 from app.models.domain import DomainCategory
 from app.models.skills import SkillDraft
+from app.services.personal_memory import PersonalMemoryPool
 from app.services.policy_extract import (
     PolicyExtractParseError,
     extract_policies as extract_policies_service,
@@ -68,7 +78,9 @@ _REASON_MAP: dict[str, TerminationReason] = {
 }
 
 
-def _system_goal(domain: DomainCategory, max_iter: int) -> str:
+def _system_goal(
+    domain: DomainCategory, max_iter: int, *, memory_enabled: bool
+) -> str:
     """Tell the agent its job + guardrails. Tone is medium-prescriptive:
     we describe the typical flow so the model has an easy default, but
     the actual decisions ("retry?", "what hint?", "when done?") still
@@ -77,8 +89,14 @@ def _system_goal(domain: DomainCategory, max_iter: int) -> str:
     `max_iter` is named explicitly so the model can budget its passes —
     if we omit it the loop's hard cap still fires but the model wastes
     the late iterations re-extracting fruitlessly.
+
+    `memory_enabled` controls whether `search_personal_skills` is in
+    the tool catalog. When False (cold-start, anonymous request, or
+    feature disabled) the goal text omits the retrieval guidance
+    entirely so the model isn't tempted to call a tool that isn't
+    registered.
     """
-    return (
+    base = (
         "You are an extraction agent that pulls policy candidates from "
         "ONE chunk of a team document.\n"
         f"\nThe chunk's domain is `{domain}`. Use the tools in this order:\n"
@@ -116,6 +134,34 @@ def _system_goal(domain: DomainCategory, max_iter: int) -> str:
         '"action": "tool_call", "name": "extract_policies", "args": {}}\n'
     )
 
+    if not memory_enabled:
+        return base
+
+    # Memory tool is registered — teach the model when (and when NOT)
+    # to use it. The "before extract_policies" placement matters: if
+    # the model interleaves it after the first extract, the matches
+    # cannot influence iter 1, defeating the point. The "ONCE per
+    # chunk" cap keeps the LLM cost bounded — there is no scenario
+    # where calling search a second time helps.
+    extra = (
+        "\n## Optional retrieval (the user's past edits)\n"
+        "\n"
+        "You also have `search_personal_skills(query, k=3)` available. "
+        "It looks up policies the user has previously hand-edited and "
+        "returns matches plus a `pool_size` field describing how many "
+        "patterns the user has accumulated.\n"
+        "\n"
+        "- You MAY call it ONCE before the FIRST `extract_policies`, "
+        "passing the chunk's main topic as `query`. If matches come "
+        "back, fold them into the FIRST `extract_policies` call as the "
+        "`hint` argument so the extractor uses them as light scaffolding.\n"
+        "- DO NOT call it more than once per chunk — repeated lookups "
+        "won't surface anything new and waste budget.\n"
+        "- If `pool_size == 0`, the user has no recorded patterns yet; "
+        "skip retrieval and proceed straight to `extract_policies`.\n"
+    )
+    return base + extra
+
 
 def _draft_dict(d: SkillDraft) -> dict[str, Any]:
     return d.model_dump()
@@ -151,6 +197,8 @@ async def run_policy_extract_agent(
     images: list[str] | None = None,
     max_iter: int = 2,
     judge_backend: LLMBackend | None = None,
+    memory_pool: PersonalMemoryPool | None = None,
+    embedding_backend: EmbeddingBackend | None = None,
 ) -> tuple[list[AgentIteration], bool, TerminationReason, list[SkillDraft]]:
     """Drive the agent over one chunk and return a langgraph-compatible trace.
 
@@ -257,6 +305,58 @@ async def run_policy_extract_agent(
             "rationale": report.rationale,
         }
 
+    # `search_personal_skills` is registered ONLY when there is something
+    # to retrieve — that means an active pool with size > 0 AND an
+    # embedding backend to embed the query. With `memory_pool=None` (the
+    # cold-start / feature-disabled path), the tool is absent from the
+    # catalog, the system goal omits its guidance section, and the
+    # agent's behavior is bit-for-bit identical to PR-β. This is the
+    # GitLab smoke regression guard from
+    # `project_personalization_memory_pattern.md`.
+    memory_enabled = (
+        memory_pool is not None
+        and memory_pool.size > 0
+        and embedding_backend is not None
+    )
+
+    async def search_personal_skills_handler(args: Mapping[str, Any]) -> Any:
+        # Closure over `memory_pool` + `embedding_backend` shares one
+        # loaded pool across every call within a request — the
+        # "session cache" requirement (round-trip / I/O minimization).
+        # Defensive guards: if the model calls this tool when memory is
+        # disabled (impossible by the registration guard, but cheap to
+        # cover), return the empty shape rather than raising.
+        if memory_pool is None or embedding_backend is None:
+            return {"matches": [], "pool_size": 0}
+        query = str(args.get("query", "") or "").strip()
+        if not query:
+            return {"matches": [], "pool_size": memory_pool.size}
+        # `k` defaults to 3 — same as the system prompt advertises.
+        # Coerce defensively: Gemma 4 occasionally emits "k": "3"
+        # (string) instead of an int.
+        k_raw = args.get("k", 3)
+        try:
+            k = int(k_raw)
+        except (TypeError, ValueError):
+            k = 3
+        if k <= 0:
+            return {"matches": [], "pool_size": memory_pool.size}
+        vectors = await embedding_backend.embed([query])
+        if not vectors:
+            return {"matches": [], "pool_size": memory_pool.size}
+        hits = memory_pool.search(vectors[0], k=k)
+        return {
+            "matches": [
+                {
+                    "condition": h.condition,
+                    "action": h.action,
+                    "rationale": "from your past edits",
+                }
+                for h in hits
+            ],
+            "pool_size": memory_pool.size,
+        }
+
     extract_tool = _make_tool(
         name="extract_policies",
         description=(
@@ -287,6 +387,36 @@ async def run_policy_extract_agent(
         parameters={},
         handler=evaluate_handler,
     )
+    search_tool = _make_tool(
+        name="search_personal_skills",
+        description=(
+            "Look up the user's past hand-edited policies for ones "
+            "similar to a query. Returns up to `k` matches plus a "
+            "`pool_size` field showing how many patterns the user has "
+            "on file. Useful BEFORE the first `extract_policies` call "
+            "to surface scaffolding the user has already approved; "
+            "fold any matches into that call's `hint`."
+        ),
+        parameters={
+            "query": (
+                "string — the chunk's main topic, e.g., 'refund "
+                "approval threshold'. Phrase it as a noun phrase rather "
+                "than a sentence."
+            ),
+            "k": (
+                "integer (default 3) — maximum matches to return. The "
+                "default is plenty; raising it adds prompt-budget noise."
+            ),
+        },
+        handler=search_personal_skills_handler,
+    )
+
+    tools = [extract_tool, evaluate_tool]
+    if memory_enabled:
+        # Insert search ahead of extract so the catalog rendering puts
+        # it first — the agent reads tools top-down and we want the
+        # retrieval option in front when relevant.
+        tools = [search_tool, extract_tool, evaluate_tool]
 
     user_request = f"chunk:\n```\n{chunk}\n```"
 
@@ -300,9 +430,11 @@ async def run_policy_extract_agent(
     try:
         result: AgentResult = await run_agent(
             backend,
-            system_goal=_system_goal(domain, max_iter),
+            system_goal=_system_goal(
+                domain, max_iter, memory_enabled=memory_enabled
+            ),
             user_request=user_request,
-            tools=[extract_tool, evaluate_tool],
+            tools=tools,
             max_iter=loop_budget,
         )
     except ToolParseError as exc:  # pragma: no cover — defensive
