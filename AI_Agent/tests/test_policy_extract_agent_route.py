@@ -47,12 +47,13 @@ def _extract_payload(*candidates: dict[str, Any]) -> str:
 
 
 def _agent_call(name: str, args: dict | None = None) -> str:
-    body = json.dumps(args or {})
-    return f"<tool_call name=\"{name}\">\n{body}\n</tool_call>"
+    return json.dumps(
+        {"action": "tool_call", "name": name, "args": args or {}}
+    )
 
 
 def _agent_finish(drafts: list[dict[str, Any]]) -> str:
-    return f"<finish>\n{json.dumps({'drafts': drafts})}\n</finish>"
+    return json.dumps({"action": "finish", "result": {"drafts": drafts}})
 
 
 class _SequencedBackend:

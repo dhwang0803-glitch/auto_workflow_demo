@@ -80,31 +80,27 @@ class AgentResult:
 
 # Output-format spec the system prompt always carries. Kept as a single
 # constant so PLAN_15 agents don't accidentally reword it — drift in
-# this section moves the model's ability to emit valid blocks.
+# this section moves the model's ability to emit valid envelopes.
 _OUTPUT_FORMAT = """\
 ## Output format
 
-On every turn, output exactly ONE terminal block. Brief reasoning may
-precede the block; the block must be the LAST thing in your response.
+End every response with EXACTLY ONE JSON action object. A `thought`
+field is optional but encouraged for sketching your reasoning.
 
-Use a tool:
+To use a tool:
 
-<tool_call name="TOOL_NAME">
-{"arg": "value", ...}
-</tool_call>
+{"thought": "why I am calling this tool", "action": "tool_call", "name": "TOOL_NAME", "args": {"arg": "value"}}
 
 When you are done:
 
-<finish>
-{...your final answer as JSON...}
-</finish>
+{"thought": "why I am finishing", "action": "finish", "result": ...your final answer as JSON...}
 
 Rules:
-- Tool args MUST be a JSON object (use {} for no-arg calls).
-- Do not emit both blocks in one turn — emit `<finish>` only when the
-  task is complete.
+- The action object must be the LAST JSON object in your reply.
+- `action` MUST be exactly "tool_call" or "finish" — no other values.
+- For `tool_call`: `args` MUST be a JSON object (use {} for no-arg tools).
 - If a tool returns an error, decide whether to retry with different
-  args, switch tools, or `<finish>` with what you have.
+  args, switch tools, or finish with what you have.
 """
 
 

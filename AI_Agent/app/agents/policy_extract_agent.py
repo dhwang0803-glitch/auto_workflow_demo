@@ -81,30 +81,39 @@ def _system_goal(domain: DomainCategory, max_iter: int) -> str:
     return (
         "You are an extraction agent that pulls policy candidates from "
         "ONE chunk of a team document.\n"
-        f"\nThe chunk's domain is `{domain}`. Use the tools below to:\n"
+        f"\nThe chunk's domain is `{domain}`. Use the tools in this order:\n"
         "\n"
-        "1. Call `extract_policies` to get an initial candidate list "
-        "from the chunk.\n"
+        "1. ALWAYS start by calling `extract_policies` — it returns "
+        "candidates, or an empty list for boilerplate chunks. Do NOT "
+        "decide on your own that a chunk is boilerplate; let "
+        "`extract_policies` decide.\n"
         "2. Call `evaluate_coverage` to check whether your candidates "
         "cover every condition+action policy stated in the chunk.\n"
         "3. If the evaluator decides `retry`, call `extract_policies` "
         "AGAIN with a `hint` argument that names the gap. The "
         "evaluator's `coverage_concerns` field tells you what to "
         "target.\n"
-        '4. Once the evaluator decides `converge`, emit '
-        '`<finish>{"drafts": [...]}` with the final candidate list.\n'
+        "4. Once the evaluator decides `converge`, emit a `finish` "
+        "action with the final candidate list as `result`.\n"
         "\n"
         "## Rules\n"
         "\n"
-        "- Treat boilerplate (page headers/footers, contact directories, "
-        "glossary entries, aspirational language) as zero-policy. The "
-        'right answer is `<finish>{"drafts": []}`.\n'
         "- Do NOT invent policies the chunk does not state.\n"
         f"- Stop after at most {max_iter} extraction passes — reflection "
         "without textual support cannot recover absent rules.\n"
-        "- The `drafts` you pass to `<finish>` MUST be the EXACT JSON "
-        "objects you received from the most recent `extract_policies` "
-        "tool result. Do not paraphrase, drop fields, or reorder keys."
+        "- The `drafts` you put in the finish `result` MUST be the EXACT "
+        "JSON objects you received from the most recent `extract_policies` "
+        "tool result. Do not paraphrase, drop fields, or reorder keys.\n"
+        '- An empty `{"drafts": []}` is the correct finish when '
+        "`extract_policies` returned no candidates and the evaluator "
+        "agreed.\n"
+        "\n"
+        "## First-turn template\n"
+        "\n"
+        "Your first action is always `extract_policies`:\n"
+        "\n"
+        '{"thought": "Examining the chunk for policy candidates.", '
+        '"action": "tool_call", "name": "extract_policies", "args": {}}\n'
     )
 
 

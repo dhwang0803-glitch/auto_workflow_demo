@@ -104,7 +104,9 @@ def raising_tool() -> Tool:
 @pytest.mark.asyncio
 async def test_immediate_finish() -> None:
     """Agent that finishes on turn 1 with no tool calls."""
-    backend = ScriptedBackend(['<finish>{"answer": 42}</finish>'])
+    backend = ScriptedBackend(
+        ['{"action": "finish", "result": {"answer": 42}}']
+    )
     result = await run_agent(
         backend,
         system_goal="Return 42.",
@@ -121,8 +123,8 @@ async def test_immediate_finish() -> None:
 async def test_single_tool_then_finish() -> None:
     backend = ScriptedBackend(
         [
-            '<tool_call name="add">{"a": 2, "b": 3}</tool_call>',
-            '<finish>{"sum": 5}</finish>',
+            '{"action": "tool_call", "name": "add", "args": {"a": 2, "b": 3}}',
+            '{"action": "finish", "result": {"sum": 5}}',
         ]
     )
     result = await run_agent(
@@ -149,9 +151,9 @@ async def test_unknown_tool_returns_error_obs() -> None:
     """
     backend = ScriptedBackend(
         [
-            '<tool_call name="nonexistent">{}</tool_call>',
-            '<tool_call name="echo">{"v": 1}</tool_call>',
-            '<finish>"done"</finish>',
+            '{"action": "tool_call", "name": "nonexistent", "args": {}}',
+            '{"action": "tool_call", "name": "echo", "args": {"v": 1}}',
+            '{"action": "finish", "result": "done"}',
         ]
     )
     result = await run_agent(
@@ -170,8 +172,8 @@ async def test_unknown_tool_returns_error_obs() -> None:
 async def test_tool_handler_exception_forwarded_as_obs() -> None:
     backend = ScriptedBackend(
         [
-            '<tool_call name="boom">{}</tool_call>',
-            '<finish>"recovered"</finish>',
+            '{"action": "tool_call", "name": "boom", "args": {}}',
+            '{"action": "finish", "result": "recovered"}',
         ]
     )
     result = await run_agent(
@@ -191,8 +193,8 @@ async def test_no_progress_on_repeated_call() -> None:
     """Same tool + same args twice in a row → no_progress termination."""
     backend = ScriptedBackend(
         [
-            '<tool_call name="echo">{"x": 1}</tool_call>',
-            '<tool_call name="echo">{"x": 1}</tool_call>',
+            '{"action": "tool_call", "name": "echo", "args": {"x": 1}}',
+            '{"action": "tool_call", "name": "echo", "args": {"x": 1}}',
         ]
     )
     result = await run_agent(
@@ -213,9 +215,9 @@ async def test_max_iter_exhausted() -> None:
     # Three distinct calls, max_iter=3 → exhausted after the third.
     backend = ScriptedBackend(
         [
-            '<tool_call name="echo">{"x": 1}</tool_call>',
-            '<tool_call name="echo">{"x": 2}</tool_call>',
-            '<tool_call name="echo">{"x": 3}</tool_call>',
+            '{"action": "tool_call", "name": "echo", "args": {"x": 1}}',
+            '{"action": "tool_call", "name": "echo", "args": {"x": 2}}',
+            '{"action": "tool_call", "name": "echo", "args": {"x": 3}}',
         ]
     )
     result = await run_agent(
@@ -231,7 +233,7 @@ async def test_max_iter_exhausted() -> None:
 
 @pytest.mark.asyncio
 async def test_parse_error_terminates() -> None:
-    backend = ScriptedBackend(["just some prose, no terminal block"])
+    backend = ScriptedBackend(["just some prose, no JSON envelope"])
     result = await run_agent(
         backend,
         system_goal="Test parse error.",
@@ -240,12 +242,12 @@ async def test_parse_error_terminates() -> None:
     )
     assert result.terminated_reason == "parse_error"
     assert result.final is None
-    assert "no <tool_call> or <finish>" in (result.steps[0].error or "")
+    assert "no JSON action object" in (result.steps[0].error or "")
 
 
 @pytest.mark.asyncio
 async def test_system_prompt_carries_tool_catalog() -> None:
-    backend = ScriptedBackend(['<finish>{}</finish>'])
+    backend = ScriptedBackend(['{"action": "finish", "result": {}}'])
     await run_agent(
         backend,
         system_goal="Test that tools are advertised.",
