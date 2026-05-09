@@ -22,12 +22,13 @@ dependencies = [
     # rendering target and is HPND-licensed.
     "pypdfium2>=4",
     "Pillow>=10",
-    # PLAN_13: closed-loop self-evaluating agent. langgraph supplies the
-    # StateGraph + conditional edges + reducer; langsmith supplies trace
-    # capture (@traceable) consumed by the LangSmith UI. Both are off the
-    # critical path when LANGCHAIN_TRACING_V2 is unset (tracing.py renders
-    # @traceable a no-op), so unit tests + local dev work without an API key.
-    "langgraph>=0.2,<1.0",
+    # PLAN_13/15: closed-loop self-evaluating agent. langgraph was used
+    # through PR-A/B/C/D for the StateGraph; PR-β (ADR-024) replaced it
+    # with a prompt-engineered ReAct agent loop and the dependency is
+    # gone. langsmith stays for trace capture (@traceable) consumed by
+    # the LangSmith UI — off the critical path when LANGCHAIN_TRACING_V2
+    # is unset (tracing.py renders @traceable a no-op), so unit tests +
+    # local dev work without an API key.
     "langsmith>=0.1",
 ]
 

@@ -1,10 +1,11 @@
-"""HTTP route tests for /v1/policy/extract_reflective (PLAN_13 PR-C).
+"""HTTP route tests for /v1/policy/extract_reflective.
 
-Drives the FastAPI app via ASGITransport (no real network), with a
-sequenced stub backend so each test exercises a specific termination
-branch end-to-end. Mirrors the conventions from
-`test_policy_extract.py` for the single-shot endpoint so a reader can
-A/B the two contracts side by side.
+PR-β rebuilt the underlying agent on the ReAct loop (ADR-024). The
+route's wire shape is unchanged, so the assertions here still target
+status codes, envelope, auth, validation, langsmith_run_id surfacing,
+and that `images` reach `backend.complete`. The mock backend is the
+same 3-bucket pattern used by `test_policy_extract_agent_loop.py`:
+agent / extract / judge prompts route into separate response queues.
 """
 from __future__ import annotations
 
@@ -15,6 +16,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
+
+
+_AGENT_PROMPT_PREFIX = "You are an extraction agent"
+_EXTRACT_PROMPT_PREFIX = "You are the policy extractor"
+_JUDGE_PROMPT_PREFIX = "You are a critic for a policy-extraction step"
 
 
 def _candidate(
@@ -36,37 +42,46 @@ def _candidate(
     }
 
 
-def _payload(*candidates: dict[str, Any]) -> str:
+def _extract_payload(*candidates: dict[str, Any]) -> str:
     return json.dumps({"candidates": list(candidates)})
 
 
-_JUDGE_PROMPT_PREFIX = "You are a critic for a policy-extraction step."
+def _agent_call(name: str, args: dict | None = None) -> str:
+    body = json.dumps(args or {})
+    return f"<tool_call name=\"{name}\">\n{body}\n</tool_call>"
+
+
+def _agent_finish(drafts: list[dict[str, Any]]) -> str:
+    return f"<finish>\n{json.dumps({'drafts': drafts})}\n</finish>"
 
 
 class _SequencedBackend:
-    """Returns the next extract response from `responses` per call.
+    """3-bucket sequenced backend.
 
-    The route handler in PR-D passes `judge_backend=backend`, so the
-    same stub serves both extract calls and judge calls. We disambiguate
-    by sniffing the system prompt — judge calls land on a separate
-    counter and (by default) silently return `{"missed": []}` so
-    tests that only care about the extraction path don't have to
-    bookkeep judge responses.
+    `agent` queue feeds the ReAct outer loop, `extract` feeds
+    `services.policy_extract`, `judge` feeds `agents.judge`. Calls are
+    dispatched by system-prompt prefix; an unrecognized prefix raises.
+    Bucket counters (`agent_calls` / `extract_calls` / `judge_calls`)
+    let tests assert "the extractor was called once" etc. without
+    bookkeeping.
 
-    Tests that DO want to exercise the judge path pass `judge_responses`
-    explicitly. The judge counter (`judge_calls`) is also surfaced so
-    a test can assert the judge ran the expected number of times.
+    `last_images` reports the images keyword the most recent EXTRACT
+    call received — agent-loop and judge calls don't pass images, so
+    this isolates the contract under test in `test_images_field_*`.
     """
 
     def __init__(
         self,
-        responses: list[str],
         *,
-        judge_responses: list[str] | None = None,
+        agent: list[str] | None = None,
+        extract: list[str] | None = None,
+        judge: list[str] | None = None,
     ) -> None:
-        self._responses = list(responses)
-        self._judge_responses = list(judge_responses or [])
-        self.calls = 0  # extract calls only
+        self._agent = list(agent or [])
+        self._extract = list(extract or [])
+        self._judge = list(judge or [])
+        self.agent_calls = 0
+        self.extract_calls = 0
         self.judge_calls = 0
         self.last_images: list[str] | None = None
 
@@ -78,27 +93,41 @@ class _SequencedBackend:
         max_tokens: int,
         images: list[str] | None = None,
     ) -> str:
+        del user_message, max_tokens
+
+        if system.startswith(_AGENT_PROMPT_PREFIX):
+            if self.agent_calls >= len(self._agent):
+                raise AssertionError(
+                    f"agent backend exhausted at agent_calls={self.agent_calls}"
+                )
+            out = self._agent[self.agent_calls]
+            self.agent_calls += 1
+            return out
+
+        if system.startswith(_EXTRACT_PROMPT_PREFIX):
+            if self.extract_calls >= len(self._extract):
+                raise AssertionError(
+                    f"extract backend exhausted at extract_calls={self.extract_calls}"
+                )
+            out = self._extract[self.extract_calls]
+            self.last_images = images
+            self.extract_calls += 1
+            return out
+
         if system.startswith(_JUDGE_PROMPT_PREFIX):
-            if self.judge_calls < len(self._judge_responses):
-                out = self._judge_responses[self.judge_calls]
+            if self.judge_calls < len(self._judge):
+                out = self._judge[self.judge_calls]
             else:
-                # Default: judge sees nothing missing → keeps the
-                # deterministic verdict.
                 out = '{"missed": []}'
             self.judge_calls += 1
             return out
 
-        if self.calls >= len(self._responses):
-            raise AssertionError(
-                f"backend ran out of responses at call #{self.calls + 1}"
-            )
-        out = self._responses[self.calls]
-        self.last_images = images
-        self.calls += 1
-        return out
+        raise AssertionError(
+            f"unrecognized system prompt prefix: {system[:80]!r}"
+        )
 
     async def stream(self, **_):  # noqa: ANN001, ANN003
-        if False:
+        if False:  # pragma: no cover
             yield ""
 
     async def ready(self) -> bool:
@@ -108,12 +137,24 @@ class _SequencedBackend:
         return None
 
 
+def _converge_in_one(cand: dict[str, Any]) -> _SequencedBackend:
+    """Common shape: agent does extract → evaluate → finish, no retry."""
+    return _SequencedBackend(
+        agent=[
+            _agent_call("extract_policies"),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[_extract_payload(cand)],
+    )
+
+
 # --- happy path -----------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_returns_200_with_final_candidates_and_full_trace() -> None:
-    backend = _SequencedBackend([_payload(_candidate())])
+    backend = _converge_in_one(_candidate())
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
@@ -129,22 +170,18 @@ async def test_returns_200_with_final_candidates_and_full_trace() -> None:
     assert resp.status_code == 200
     body = resp.json()
 
-    # Final candidates surface the iter-1 drafts (single converge case).
     assert len(body["candidates"]) == 1
     assert body["candidates"][0]["name"] == "approve-large-refunds"
 
-    # Trace is fully populated and terminated.
     trace = body["agent_trace"]
     assert trace["terminated"] is True
     assert trace["reason"] == "converge"
     assert len(trace["iterations"]) == 1
-
     iter1 = trace["iterations"][0]
     assert iter1["eval"] is not None
     assert iter1["eval"]["decision"] == "converge"
     assert iter1["prompt_hint"] == ""
 
-    # PR-D leaves langsmith_run_id null when tracing isn't enabled.
     assert body["langsmith_run_id"] is None
 
 
@@ -153,11 +190,26 @@ async def test_returns_200_with_final_candidates_and_full_trace() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_then_converge_records_both_iterations_in_trace() -> None:
+    """Iter 1 returns empty drafts on a chunk full of policy keywords —
+    deterministic rule 1 returns retry → agent re-extracts with hint →
+    iter 2 succeeds → converge.
+    """
+    cand = _candidate()
     backend = _SequencedBackend(
-        [
-            _payload(),  # iter 1: empty + policy keywords → rule 1 retry
-            _payload(_candidate()),  # iter 2: real candidate → converge
-        ]
+        agent=[
+            _agent_call("extract_policies"),
+            _agent_call("evaluate_coverage"),
+            _agent_call(
+                "extract_policies",
+                {"hint": "policy-imperative chunk had no candidates"},
+            ),
+            _agent_call("evaluate_coverage"),
+            _agent_finish([cand]),
+        ],
+        extract=[
+            _extract_payload(),       # iter 1 empty (rule 1 fires)
+            _extract_payload(cand),   # iter 2 recovers
+        ],
     )
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
@@ -177,18 +229,12 @@ async def test_retry_then_converge_records_both_iterations_in_trace() -> None:
 
     assert trace["reason"] == "converge"
     assert len(trace["iterations"]) == 2
-
-    # Iter 1: retry decision, empty drafts, no prompt_hint applied.
     assert trace["iterations"][0]["eval"]["decision"] == "retry"
     assert trace["iterations"][0]["drafts"] == []
     assert trace["iterations"][0]["prompt_hint"] == ""
-
-    # Iter 2: converge, prompt_hint carries reflect's bullet list.
     assert trace["iterations"][1]["eval"]["decision"] == "converge"
-    assert trace["iterations"][1]["prompt_hint"].startswith("- ")
-    assert "policy-imperative" in trace["iterations"][1]["prompt_hint"]
+    assert trace["iterations"][1]["prompt_hint"] != ""
 
-    # Final candidates = iter 2's drafts (latest-iter superset policy).
     assert len(body["candidates"]) == 1
 
 
@@ -197,16 +243,15 @@ async def test_retry_then_converge_records_both_iterations_in_trace() -> None:
 
 @pytest.mark.asyncio
 async def test_returns_422_on_invalid_max_iter() -> None:
-    app = create_app(backend_override=_SequencedBackend([_payload()]))
+    backend = _converge_in_one(_candidate())
+    app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        # max_iter=0 violates ge=1
         resp_low = await c.post(
             "/v1/policy/extract_reflective",
             json={"chunk": "x", "max_iter": 0},
         )
-        # max_iter=10 violates le=5
         resp_high = await c.post(
             "/v1/policy/extract_reflective",
             json={"chunk": "x", "max_iter": 10},
@@ -218,7 +263,8 @@ async def test_returns_422_on_invalid_max_iter() -> None:
 
 @pytest.mark.asyncio
 async def test_returns_422_on_empty_chunk() -> None:
-    app = create_app(backend_override=_SequencedBackend([_payload()]))
+    backend = _converge_in_one(_candidate())
+    app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -234,10 +280,22 @@ async def test_returns_422_on_empty_chunk() -> None:
 
 @pytest.mark.asyncio
 async def test_returns_502_on_parse_error() -> None:
-    """Same envelope as /v1/policy/extract — parse failure on iter 1
-    propagates out of the agent as 502 with `error/raw_len/raw` body.
+    """Same envelope as `/v1/policy/extract`. The first extraction's
+    LLM body is unparseable → `PolicyExtractParseError` propagates from
+    the agent driver → route returns 502 with the standard
+    `error/raw_len/raw` body.
     """
-    backend = _SequencedBackend(["this is not json at all"])
+    backend = _SequencedBackend(
+        agent=[
+            _agent_call("extract_policies"),
+            # The agent would receive an obs error and might try to
+            # finish; provide one finish so the agent loop terminates
+            # cleanly. The driver re-raises the captured parse error
+            # afterwards regardless.
+            _agent_finish([]),
+        ],
+        extract=["this is not json at all"],
+    )
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
@@ -248,8 +306,7 @@ async def test_returns_502_on_parse_error() -> None:
         )
 
     assert resp.status_code == 502
-    body = resp.json()
-    detail = body["detail"]
+    detail = resp.json()["detail"]
     assert "error" in detail
     assert "raw_len" in detail
     assert "raw" in detail
@@ -261,23 +318,20 @@ async def test_returns_502_on_parse_error() -> None:
 @pytest.mark.asyncio
 async def test_endpoint_gated_by_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_BEARER_TOKEN", "secret-x")
-    backend = _SequencedBackend([_payload(_candidate())])
+    backend = _converge_in_one(_candidate())
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        # No Authorization header → 401
         resp_missing = await c.post(
             "/v1/policy/extract_reflective",
             json={"chunk": "Refunds must be approved."},
         )
-        # Wrong token → 403
         resp_wrong = await c.post(
             "/v1/policy/extract_reflective",
             json={"chunk": "Refunds must be approved."},
             headers={"Authorization": "Bearer wrong"},
         )
-        # Correct token → 200
         resp_ok = await c.post(
             "/v1/policy/extract_reflective",
             json={"chunk": "Refunds must be approved."},
@@ -294,10 +348,11 @@ async def test_endpoint_gated_by_bearer(monkeypatch: pytest.MonkeyPatch) -> None
 
 @pytest.mark.asyncio
 async def test_images_field_forwarded_to_backend() -> None:
-    """`images` must reach `backend.complete` — Phase D's smoke depends
-    on this, and the reflective endpoint must preserve the contract.
+    """`images` must reach `backend.complete` on the EXTRACT call —
+    Phase D's smoke depends on this and the reflective endpoint must
+    preserve the contract through the agent loop refactor.
     """
-    backend = _SequencedBackend([_payload(_candidate())])
+    backend = _converge_in_one(_candidate())
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
@@ -316,10 +371,7 @@ async def test_images_field_forwarded_to_backend() -> None:
     assert backend.last_images == [image_url]
 
 
-# --- max_iter=1 single-pass equivalence ----------------------------------
-
-
-# --- LangSmith run_id surfacing (PR-D) -----------------------------------
+# --- LangSmith run_id surfacing -----------------------------------------
 
 
 @pytest.mark.asyncio
@@ -327,15 +379,13 @@ async def test_langsmith_run_id_populated_when_tracing_envs_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When BOTH LANGCHAIN_TRACING_V2=true AND LANGCHAIN_API_KEY are
-    set, the response should carry the UUID langgraph used as the
-    LangSmith run id. The client pastes it into LangSmith's UI search
-    to navigate to the trace — we don't construct a URL server-side
-    because the canonical URL needs org_id + project_id we don't have.
+    set, the response carries the UUID the route minted. The client
+    pastes it into LangSmith's UI search to navigate to the trace tree.
     """
     monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
     monkeypatch.setenv("LANGCHAIN_API_KEY", "fake-key-for-test")
 
-    backend = _SequencedBackend([_payload(_candidate())])
+    backend = _converge_in_one(_candidate())
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
@@ -346,13 +396,12 @@ async def test_langsmith_run_id_populated_when_tracing_envs_set(
         )
 
     assert resp.status_code == 200
-    body = resp.json()
-    run_id = body["langsmith_run_id"]
+    run_id = resp.json()["langsmith_run_id"]
     assert run_id is not None
-    # UUID-formatted (8-4-4-4-12 hex with dashes).
+
     import uuid as _uuid
 
-    _uuid.UUID(run_id)  # raises if not a valid UUID
+    _uuid.UUID(run_id)
 
 
 @pytest.mark.asyncio
@@ -360,14 +409,13 @@ async def test_langsmith_run_id_null_when_only_master_switch_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If LANGCHAIN_TRACING_V2 is on but the API key is empty (e.g.,
-    Modal Secret not yet synced), run_id should stay null. We don't
-    want to surface an id that points to a run that wasn't actually
-    ingested into LangSmith.
+    Modal Secret not yet synced), run_id stays null. We don't surface
+    an id that points to a run that wasn't actually ingested.
     """
     monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
     monkeypatch.setenv("LANGCHAIN_API_KEY", "")
 
-    backend = _SequencedBackend([_payload(_candidate())])
+    backend = _converge_in_one(_candidate())
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
@@ -381,12 +429,12 @@ async def test_langsmith_run_id_null_when_only_master_switch_set(
     assert resp.json()["langsmith_run_id"] is None
 
 
+# --- max_iter=1 single-pass equivalence ----------------------------------
+
+
 @pytest.mark.asyncio
 async def test_max_iter_1_runs_a_single_pass_via_route() -> None:
-    """The reflective endpoint with max_iter=1 should produce the same
-    candidate set as /v1/policy/extract (one extract call, no retry).
-    """
-    backend = _SequencedBackend([_payload(_candidate())])
+    backend = _converge_in_one(_candidate())
     app = create_app(backend_override=backend)
     transport = ASGITransport(app=app)
 
@@ -401,6 +449,6 @@ async def test_max_iter_1_runs_a_single_pass_via_route() -> None:
 
     assert resp.status_code == 200
     body = resp.json()
-    assert backend.calls == 1
+    assert backend.extract_calls == 1
     assert len(body["agent_trace"]["iterations"]) == 1
     assert len(body["candidates"]) == 1
