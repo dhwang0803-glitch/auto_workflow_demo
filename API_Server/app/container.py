@@ -14,6 +14,9 @@ from auto_workflow_database.repositories.skill_repository import PostgresSkillRe
 from auto_workflow_database.repositories.user_repository import PostgresUserRepository
 from auto_workflow_database.repositories.webhook_registry import PostgresWebhookRegistry
 from auto_workflow_database.repositories.workflow_repository import PostgresWorkflowRepository
+from auto_workflow_database.repositories.workflow_revision_repository import (
+    PostgresWorkflowRevisionRepository,
+)
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -52,6 +55,7 @@ class AppContainer:
 
         self.user_repo = PostgresUserRepository(self.sessionmaker)
         self.workflow_repo = PostgresWorkflowRepository(self.sessionmaker)
+        self.workflow_revision_repo = PostgresWorkflowRevisionRepository(self.sessionmaker)
         self.execution_repo = PostgresExecutionRepository(self.sessionmaker)
         self.webhook_registry = PostgresWebhookRegistry(self.sessionmaker)
         self.agent_repo = PostgresAgentRepository(self.sessionmaker)
@@ -149,6 +153,7 @@ class AppContainer:
             credential_service=self.credential_service,
             credential_store=self.credential_store,
             wake_worker=self.wake_worker,
+            revision_repo=self.workflow_revision_repo,
         )
 
     async def dispose(self) -> None:
