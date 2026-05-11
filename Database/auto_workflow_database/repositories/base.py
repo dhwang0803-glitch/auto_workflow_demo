@@ -34,6 +34,9 @@ SkillStatus = Literal["active", "pending_review", "rejected", "archived"]
 SkillScope = Literal["workspace", "user", "team"]
 SkillSourceType = Literal["document", "conversation", "observation"]
 
+# PLAN_14 / ADR-023 HITL Personalization
+WorkflowRevisionSource = Literal["ai_draft", "user_edit"]
+
 
 @dataclass
 class User:
@@ -191,6 +194,71 @@ class WorkflowRepository(ABC):
 
     @abstractmethod
     async def delete(self, workflow_id: UUID) -> None: ...
+
+
+@dataclass
+class WorkflowRevision:
+    """PLAN_14 §4.3 — one immutable WorkflowSchema snapshot per save.
+
+    `source` is whether this revision came from a fresh AI compose
+    (`ai_draft`) or from a user save on top of one (`user_edit`).
+    `parent_revision_id` links a user_edit back to the ai_draft it
+    modified — NULL on the seed revision. `revision_no` is per-workflow
+    monotonic, assigned by the repository on `record` (callers do NOT
+    pre-assign it — the unique constraint would race otherwise).
+    """
+
+    id: UUID
+    workflow_id: UUID
+    revision_no: int
+    source: WorkflowRevisionSource
+    payload: dict
+    parent_revision_id: UUID | None = None
+    created_at: datetime | None = None
+    created_by: UUID | None = None
+
+
+class WorkflowRevisionRepository(ABC):
+    """Append-only history per workflow. PLAN_14 §4.3.
+
+    `record` is the only write — there is no update or delete. CASCADE
+    on the workflow_id FK handles workflow deletion. PLAN_14's diff path
+    (PR-C) reads two recent revisions via `list_by_workflow` and computes
+    the diff on the AI_Agent side; the repository deliberately does not
+    expose a "give me v1 vs v2" helper so the diff function stays where
+    the semantic-diff logic lives.
+    """
+
+    @abstractmethod
+    async def record(
+        self,
+        *,
+        workflow_id: UUID,
+        source: WorkflowRevisionSource,
+        payload: dict,
+        parent_revision_id: UUID | None = None,
+        created_by: UUID | None = None,
+    ) -> WorkflowRevision:
+        """Append a revision; `revision_no` is assigned by the impl.
+
+        Raises a foreign-key error if `workflow_id` does not exist or
+        `parent_revision_id` points to a row from another workflow.
+        """
+        ...
+
+    @abstractmethod
+    async def get(self, revision_id: UUID) -> WorkflowRevision | None: ...
+
+    @abstractmethod
+    async def list_by_workflow(
+        self,
+        workflow_id: UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[WorkflowRevision]:
+        """Newest first (revision_no DESC). `limit` capped at 200 by impl."""
+        ...
 
 
 class UserRepository(ABC):
