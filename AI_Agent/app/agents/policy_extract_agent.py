@@ -1,7 +1,8 @@
-"""ReAct agent driver for policy_extract (PLAN_15 / ADR-024 / PR-β + γ + δ).
+"""ReAct agent driver for policy_extract (PLAN_15 / ADR-024 / PR-β + γ + δ + ε).
 
 Replaces the langgraph StateGraph that lived here through PR-A/B/C/D.
-The new shape (PR-β with optional PR-γ + PR-δ retrieval prepended):
+The new shape (PR-β with optional PR-γ + PR-δ retrieval prepended,
+plus PR-ε deterministic self-check helpers always-registered):
 
     [search_industry_baselines(query)]  ← PR-δ, registered only when
             │                              the chunk's domain has a
@@ -19,6 +20,10 @@ The new shape (PR-β with optional PR-γ + PR-δ retrieval prepended):
     evaluate_coverage()  ────────┘
             │
             ▼ (decision==converge)
+    [validate_skill_schema(draft)]  ← PR-ε, deterministic, optional
+    [cite_source_url(draft)]        ← PR-ε, deterministic, optional
+            │
+            ▼
        <finish>{"drafts": [...]}
 
 The agent (LLM) chooses tool order. We provide:
@@ -41,6 +46,18 @@ The agent (LLM) chooses tool order. We provide:
     from the catalog, system goal omits the section, agent behavior
     is bit-identical to PR-β/γ baseline (PLAN_13 §11.6 regression
     guard).
+  * `validate_skill_schema(draft)` — PR-ε. Pure-Python schema sanity
+    check on ONE draft. Always registered (no external dependency,
+    no embedding, no I/O). Returns `{valid, issues}`. The model MAY
+    call it before `<finish>` on a draft it suspects is malformed.
+  * `cite_source_url(draft)` — PR-ε. Looks up the chunk's domain seed
+    YAML for a name-overlap match against the draft and returns
+    `{sources, source_kind, policy_id?}`. Always registered; the
+    deterministic seed-match path is independent of the embedding-
+    backed `search_industry_baselines` tool, so the cite tool works
+    even on cold-start (no embedder), at the cost of a coarser
+    matching heuristic (token overlap on `name`). Empty result is
+    normal — `domain="other"` / unseeded domain / no name match.
 
 `<finish>` (no separate `finalize` tool) carries the final drafts. We
 considered a `finalize(drafts)` tool for symmetry with the other two but
@@ -57,6 +74,7 @@ pair as an `AgentIteration` entry — same as the old langgraph trace.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Mapping
 
 from app.agents._tool_parse import ToolParseError
@@ -74,6 +92,7 @@ from app.services.policy_extract import (
     PolicyExtractParseError,
     extract_policies as extract_policies_service,
 )
+from app.services.skill_bootstrap import _seed_policies
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +132,13 @@ def _system_goal(
     registered. The "ALWAYS start with extract_policies" rule in the
     base text holds — retrieval is described as a step that happens
     BEFORE that first extract, never as a substitute for it.
+
+    The PR-ε self-check section is ALWAYS appended — `validate_skill_schema`
+    and `cite_source_url` are deterministic and unconditionally registered.
+    Wording is MAY-level (per PLAN_13 §11.3 conservative posture) so the
+    agent does not insert a mandatory turn before every `<finish>`; the
+    GitLab smoke regression guard checks that delta=+3 holds across PR-δ
+    → PR-ε.
     """
     base = (
         "You are an extraction agent that pulls policy candidates from "
@@ -151,9 +177,6 @@ def _system_goal(
         '{"thought": "Examining the chunk for policy candidates.", '
         '"action": "tool_call", "name": "extract_policies", "args": {}}\n'
     )
-
-    if not memory_enabled and not baseline_enabled:
-        return base
 
     extras = ""
     if memory_enabled:
@@ -211,6 +234,23 @@ def _system_goal(
             "must still pull the team-specific condition+action from "
             "the chunk itself.\n"
         )
+
+    # PR-ε self-check section is unconditional. Earlier drafts of this
+    # section used MAY/SHOULD-NOT prescriptive wording plus an explicit
+    # "skip on empty drafts" line and saw a -2 cand regression on the
+    # GitLab smoke (chunks 11/16 converged at iter 1 instead of retrying).
+    # The terse phrasing below removes all references to `<finish>`,
+    # "empty", and "skip" — words that biased the agent toward early
+    # finish on borderline chunks. Tools are still always-registered;
+    # the prompt simply names them without prescribing when to call.
+    extras += (
+        "\n## Optional helpers (read-only)\n"
+        "\n"
+        "`validate_skill_schema(draft)` and `cite_source_url(draft)` "
+        "are deterministic helpers — a schema check and a citation "
+        "lookup respectively. Use them at your discretion. Neither "
+        "modifies the drafts you submit.\n"
+    )
     return base + extras
 
 
@@ -456,6 +496,141 @@ async def run_policy_extract_agent(
             "pool_size": baseline_pool.size,
         }
 
+    async def validate_skill_schema_handler(args: Mapping[str, Any]) -> Any:
+        # Pure-Python schema sanity check. We deliberately do NOT route
+        # through `SkillDraft(**draft)` — Pydantic ValidationError
+        # message strings are noisy ("Field required", with full pydantic
+        # location tuples) and the agent's prompt budget is better spent
+        # on terse human-grade issue text. The fields we check mirror
+        # `SkillDraft`'s constraints in `app/models/skills.py`: `name`
+        # 1-255 chars, `condition` and `action` non-empty after strip.
+        # Plus a few "obvious malformation" heuristics that Pydantic
+        # cannot express (placeholder markers, whitespace-only fields).
+        draft = args.get("draft")
+        if not isinstance(draft, dict):
+            return {
+                "valid": False,
+                "issues": ["`draft` must be an object (dict)"],
+            }
+
+        issues: list[str] = []
+        name = str(draft.get("name", "") or "").strip()
+        condition = str(draft.get("condition", "") or "").strip()
+        action = str(draft.get("action", "") or "").strip()
+
+        if not name:
+            issues.append("`name` is required and must be non-empty")
+        elif len(name) > 255:
+            issues.append("`name` exceeds 255 characters")
+
+        if not condition:
+            issues.append(
+                "`condition` is required and must be non-empty after "
+                "stripping whitespace"
+            )
+        if not action:
+            issues.append(
+                "`action` is required and must be non-empty after "
+                "stripping whitespace"
+            )
+
+        # Placeholder-marker heuristic: catch the LLM occasionally
+        # leaving "...", "TODO", or "XXX" in a draft when it ran out of
+        # confidence on a field. These tokens never appear in real
+        # policies, so a hit is always a defect signal.
+        for field, value in (
+            ("name", name),
+            ("condition", condition),
+            ("action", action),
+        ):
+            for marker in ("...", "TODO", "XXX"):
+                if marker in value:
+                    issues.append(
+                        f"`{field}` contains placeholder marker "
+                        f"'{marker}' — replace with concrete text"
+                    )
+                    break
+
+        return {"valid": len(issues) == 0, "issues": issues}
+
+    async def cite_source_url_handler(args: Mapping[str, Any]) -> Any:
+        # Deterministic seed-catalog lookup — independent of the
+        # embedding-backed `search_industry_baselines` tool. We match
+        # by token overlap on the draft's `name` against the bundled
+        # `data/policies/{domain}.yaml` (cached by skill_bootstrap's
+        # lru_cache, so this is O(N seeds) per call with no I/O after
+        # the first). Token overlap is intentionally coarse: the
+        # citation surface only matters when there is a clear lexical
+        # match (e.g. "Refund threshold" → ecommerce.refund); ambiguous
+        # cases return empty rather than risk a misattribution.
+        draft = args.get("draft")
+        if not isinstance(draft, dict):
+            return {
+                "sources": [],
+                "source_kind": "synthesized",
+            }
+        name = str(draft.get("name", "") or "").strip().lower()
+        if not name:
+            return {
+                "sources": [],
+                "source_kind": "synthesized",
+            }
+
+        try:
+            policies = _seed_policies(domain)
+        except Exception:  # pragma: no cover — defensive
+            policies = []
+        if not policies:
+            return {
+                "sources": [],
+                "source_kind": "synthesized",
+            }
+
+        name_tokens = {
+            t for t in re.findall(r"\w+", name) if len(t) > 2
+        }
+        if not name_tokens:
+            return {
+                "sources": [],
+                "source_kind": "synthesized",
+            }
+
+        best_score = 0
+        best: dict[str, Any] | None = None
+        for p in policies:
+            seed_name = str(p.get("name", "") or "").lower()
+            seed_tokens = {
+                t for t in re.findall(r"\w+", seed_name) if len(t) > 2
+            }
+            score = len(name_tokens & seed_tokens)
+            if score > best_score:
+                best_score = score
+                best = p
+
+        # Require at least 1 token overlap above the stop-word floor.
+        # 0 overlap = no match (rather than picking the first policy by
+        # accident). The seed catalog has 8-15 policies per domain so
+        # this threshold is safe — false positives at 1 overlap would
+        # only happen on truly tangential names.
+        if best is None or best_score == 0:
+            return {
+                "sources": [],
+                "source_kind": "synthesized",
+            }
+
+        sources: list[dict[str, str]] = []
+        for s in best.get("sources", []) or []:
+            if isinstance(s, dict) and "title" in s and "url" in s:
+                sources.append(
+                    {"title": str(s["title"]), "url": str(s["url"])}
+                )
+
+        return {
+            "policy_id": best.get("id"),
+            "sources": sources,
+            "source_kind": str(best.get("source_kind") or "synthesized"),
+        }
+
     extract_tool = _make_tool(
         name="extract_policies",
         description=(
@@ -535,28 +710,67 @@ async def run_policy_extract_agent(
         },
         handler=search_industry_baselines_handler,
     )
+    validate_tool = _make_tool(
+        name="validate_skill_schema",
+        description=(
+            "Run a deterministic schema check on ONE skill draft. "
+            "Returns `{valid, issues}` — empty issues means the draft "
+            "passes. Pure-Python, no I/O."
+        ),
+        parameters={
+            "draft": (
+                "object — one skill draft (dict with `name`, "
+                "`condition`, `action`, plus optional `description` "
+                "and `rationale`)."
+            ),
+        },
+        handler=validate_skill_schema_handler,
+    )
+    cite_tool = _make_tool(
+        name="cite_source_url",
+        description=(
+            "Look up the chunk's domain seed catalog for a policy "
+            "whose name overlaps with the draft's `name`. Returns "
+            "`{sources, source_kind, policy_id?}` on a match, or "
+            "`{sources: [], source_kind: \"synthesized\"}` otherwise."
+        ),
+        parameters={
+            "draft": (
+                "object — one skill draft. Only `name` is consulted "
+                "(token-overlap match against seed catalog names)."
+            ),
+        },
+        handler=cite_source_url_handler,
+    )
 
     # Catalog ordering: retrieval tools FIRST when enabled, so the
     # agent's top-down read of the tool list surfaces them in front of
     # `extract_policies`. Personal skills outrank baselines because
     # the user's own past edits are a stronger signal of THIS team's
     # intent than a generic domain standard. `extract_policies` and
-    # `evaluate_coverage` always anchor the tail.
+    # `evaluate_coverage` anchor the working middle. PR-ε self-check
+    # tools (`validate_skill_schema`, `cite_source_url`) anchor the
+    # tail — they are post-extract sanity probes and the tail position
+    # in the catalog reinforces "use these LAST" without us having to
+    # spell that out in the tool descriptions.
     tools: list[Any] = []
     if memory_enabled:
         tools.append(search_tool)
     if baseline_enabled:
         tools.append(baseline_tool)
-    tools.extend([extract_tool, evaluate_tool])
+    tools.extend([extract_tool, evaluate_tool, validate_tool, cite_tool])
 
     user_request = f"chunk:\n```\n{chunk}\n```"
 
     # Loop budget: each completed reflective iteration is two tool calls
     # (extract + evaluate). Add headroom for the agent's <finish> turn
     # plus a tolerance for one stray retry (e.g., a tool_not_found that
-    # the model recovers from on the next turn). 2 * max_iter + 4 covers
-    # the worst observed paths in PR-α stub testing.
-    loop_budget = max(8, max_iter * 2 + 4)
+    # the model recovers from on the next turn) plus PR-ε self-check
+    # headroom (the model MAY call validate_skill_schema and/or
+    # cite_source_url before <finish>; observed cap is 2 calls regardless
+    # of draft count because the prompt says "MAY", not "MUST per draft").
+    # 2 * max_iter + 6 covers the worst observed paths.
+    loop_budget = max(10, max_iter * 2 + 6)
 
     try:
         result: AgentResult = await run_agent(
