@@ -58,17 +58,30 @@ saturated**. The two NDJSON captures together show both ends:
   return/refund policy written for this demo. Single-chunk plain text,
   ~2.4 KB.
 
-  Recall: **single-shot=10 cands, reflective=10 cands, delta=0**.
-  Single-shot saturates on this dense, well-structured prose; the
-  reflect loop's self-eval correctly judges "all coverage concerns
-  addressed" and converges in iter 1. This is the "no-op when
-  unnecessary" half of the contract: the agent doesn't burn iterations
-  on chunks that don't need them. (Latency is still ~24 s for the
-  reflective call because iter 1 still runs the extract+judge legs.)
+  Recall: **single-shot=10 cands, reflective=12 cands, delta=+2**.
+  Single-shot already extracts the seven headline rules; the reflect
+  loop's judge then flags two implicit policies that the prose only
+  asserts in passing ("Disclose restocking fee on the return-confirmation
+  email before shipping" and "Deny damaged-in-transit claims older than
+  48 hours") and the iter 2 pass under those hints surfaces both.
 
-Together the two captures show the reflective agent does the right
-thing on both extremes — recovers under-extracted PDF chunks and
-defers when single-shot already covers everything.
+  The terminal `reason` on this row reads `schema_error` rather than
+  `converge`. That is a known mapping artifact: `_REASON_MAP` in
+  `AI_Agent/app/agents/policy_extract_agent.py` routes the agent loop's
+  `parse_error` termination — which fires when a dense `<finish>` payload
+  bumps against the 1024-token per-turn output cap and truncates the
+  trailing JSON — to `schema_error`. The two iterations themselves
+  complete cleanly (12 drafts are surfaced under `agent_trace.iterations`
+  with `decision=converge` on iter 2); only the final wrap-up turn is
+  the one that gets cut. Net effect: candidate recall is honest, but
+  the operator-facing reason string overstates the failure mode. A
+  follow-up could either widen the per-call budget for dense fixtures
+  or split `parse_error` out of `schema_error` in the reason vocabulary.
+
+Together the two captures show the reflective agent recovers coverage
+on both extremes — pulls under-extracted PDF chunks back up to baseline
+(GitLab) and surfaces implicit-rule coverage that single-shot misses
+even when single-shot already pulls the headline rules (ecommerce).
 
 ### Screenshots
 
