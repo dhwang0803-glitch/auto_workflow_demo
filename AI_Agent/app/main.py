@@ -37,6 +37,10 @@ from app.models.agents import (
 )
 from app.models.domain import DomainClassification, DomainClassifyRequest
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
+from app.models.personalization import (
+    PersonalizationExtractRequest,
+    PersonalizationExtractResponse,
+)
 from app.models.skills import (
     AnswersToSkillRequest,
     AnswerToSkillRequest,
@@ -52,6 +56,9 @@ from app.services.domain_classifier import (
 )
 from app.services.industry_baselines import IndustryBaselinePool
 from app.services.personal_memory import PersonalMemoryPool
+from app.services.personalization_service import (
+    extract_personalization_from_diff,
+)
 from app.services.policy_extract import (
     PolicyExtractParseError,
     extract_policies,
@@ -371,6 +378,47 @@ def create_app(
             ),
             langsmith_run_id=langsmith_run_id,
         )
+
+    @app.post(
+        "/v1/personalization/extract_from_diff",
+        response_model=PersonalizationExtractResponse,
+    )
+    async def personalization_extract_from_diff(
+        payload: PersonalizationExtractRequest,
+        backend: LLMBackend = Depends(get_backend),
+    ) -> PersonalizationExtractResponse:
+        """Compute a workflow diff and run propose+judge to surface a
+        personal_skill candidate from one HITL edit (PLAN_14 §3).
+
+        AI_Agent is stateless on this endpoint — no DB write, no
+        per-user state. API_Server (PR-G) consumes the response and
+        persists the candidate / review rows. The `rejected_hashes`
+        the caller passes is the only user-scoping signal that reaches
+        the agent, and the route plumbs `user_id` through to the
+        structured log line so operators can attribute accepts.
+
+        `langsmith_run_id` is minted here (same pattern as
+        `/v1/policy/extract_reflective`) and stamped onto the response
+        only when LangSmith tracing is active — clients paste the UUID
+        into the LangSmith UI to find the run.
+        """
+        tracing_on = (
+            os.environ.get("LANGCHAIN_TRACING_V2", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and bool(os.environ.get("LANGCHAIN_API_KEY", "").strip())
+        )
+        run_id = str(uuid.uuid4()) if tracing_on else None
+
+        response = await extract_personalization_from_diff(
+            backend,
+            v1=payload.v1,
+            v2=payload.v2,
+            rejected_hashes=payload.rejected_hashes,
+            user_id=payload.user_id,
+        )
+        if run_id is not None:
+            response = response.model_copy(update={"langsmith_run_id": run_id})
+        return response
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(
