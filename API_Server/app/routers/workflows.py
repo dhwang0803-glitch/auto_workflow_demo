@@ -10,7 +10,7 @@ from uuid import UUID
 
 from auto_workflow_database.repositories.base import User
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import Response
 
 from app.dependencies import get_current_user
@@ -21,6 +21,8 @@ from app.models.workflow import (
     WorkflowCreate,
     WorkflowListResponse,
     WorkflowResponse,
+    WorkflowRevisionListResponse,
+    WorkflowRevisionResponse,
     WorkflowUpdate,
 )
 from app.services.workflow_service import WorkflowService
@@ -73,6 +75,27 @@ async def update_workflow(
 ) -> WorkflowResponse:
     wf = await svc.update(user, workflow_id, body)
     return WorkflowResponse.model_validate(wf)
+
+
+@router.get(
+    "/{workflow_id}/revisions",
+    response_model=WorkflowRevisionListResponse,
+)
+async def list_workflow_revisions(
+    workflow_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(get_current_user),
+    svc: WorkflowService = Depends(get_workflow_service),
+) -> WorkflowRevisionListResponse:
+    rows = await svc.list_revisions(
+        user, workflow_id, limit=limit, offset=offset
+    )
+    return WorkflowRevisionListResponse(
+        items=[WorkflowRevisionResponse.model_validate(r) for r in rows],
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post(

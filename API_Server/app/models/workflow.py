@@ -34,12 +34,21 @@ class WorkflowCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     settings: dict = Field(default_factory=dict)
     graph: WorkflowGraph
+    # PLAN_14 §4.3 — the client tells us whether this save is an
+    # AI-composed first draft or a user edit. Default user_edit so the
+    # frontend can omit it on the manual-build path; the wizard's
+    # post-compose Apply explicitly sends "ai_draft".
+    revision_source: Literal["ai_draft", "user_edit"] = "user_edit"
 
 
 class WorkflowUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     settings: dict = Field(default_factory=dict)
     graph: WorkflowGraph
+    # PLAN_14 §4.3 — update is almost always a user_edit; we keep the
+    # field configurable for parity with create and for the (rare) case
+    # where /v1/compose re-drafts on top of an existing workflow.
+    revision_source: Literal["ai_draft", "user_edit"] = "user_edit"
 
 
 class WorkflowSummary(BaseModel):
@@ -70,6 +79,33 @@ class WorkflowListResponse(BaseModel):
     limit: int
     plan_tier: str
     approaching_limit: bool
+
+
+class WorkflowRevisionResponse(BaseModel):
+    """PLAN_14 §4.3 revision row as surfaced over HTTP.
+
+    `parent_revision_id` is the immediate ancestor (NULL on the seed
+    revision). `payload` is the full WorkflowSchema at this revision —
+    AI_Agent's diff function (PLAN_14 PR-C) reads two of these and
+    compares them directly without us pre-computing a diff.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    workflow_id: UUID
+    revision_no: int
+    source: Literal["ai_draft", "user_edit"]
+    payload: dict
+    parent_revision_id: UUID | None = None
+    created_at: datetime | None = None
+    created_by: UUID | None = None
+
+
+class WorkflowRevisionListResponse(BaseModel):
+    items: list[WorkflowRevisionResponse]
+    limit: int
+    offset: int
 
 
 class ActivateRequest(BaseModel):

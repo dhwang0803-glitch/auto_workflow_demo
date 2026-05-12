@@ -29,6 +29,9 @@ from auto_workflow_database.repositories.base import (
     WebhookRegistry,
     Workflow,
     WorkflowRepository,
+    WorkflowRevision,
+    WorkflowRevisionRepository,
+    WorkflowRevisionSource,
 )
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -47,6 +50,7 @@ from app.models.workflow import (
 from app.services.credential_service import CredentialService
 from app.services.dag_validator import validate_dag
 from app.services.wake_worker import WakeWorker
+from app.services.workflow_revisions import record_save_revision
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,7 @@ class WorkflowService:
         credential_service: CredentialService | None = None,
         credential_store: CredentialStore | None = None,
         wake_worker: WakeWorker | None = None,
+        revision_repo: WorkflowRevisionRepository | None = None,
     ) -> None:
         self._repo = repo
         self._exec_repo = execution_repo
@@ -77,6 +82,10 @@ class WorkflowService:
         self._webhook_registry = webhook_registry
         self._user_repo = user_repo
         self._agent_repo = agent_repo
+        # PLAN_14 PR-B — optional so unit tests that construct the
+        # service without DB-backed revision support still work; in
+        # production AppContainer always wires the Postgres impl.
+        self._revision_repo = revision_repo
         # NOT `agent_connections or {}` — an empty dict is falsy so that
         # pattern would swap in a new dict, disconnecting WorkflowService
         # from the one the WS router appends to. Preserve the shared ref.
@@ -129,15 +138,24 @@ class WorkflowService:
                 f"{user.plan_tier} tier (plan upgrade available)"
             )
 
+        graph_payload = body.graph.model_dump()
         wf = Workflow(
             id=uuid4(),
             owner_id=user.id,
             name=body.name,
             settings=body.settings,
-            graph=body.graph.model_dump(),
+            graph=graph_payload,
             is_active=True,
         )
         await self._repo.save(wf)
+        if self._revision_repo is not None:
+            await record_save_revision(
+                self._revision_repo,
+                workflow_id=wf.id,
+                payload=graph_payload,
+                source=body.revision_source,
+                created_by=user.id,
+            )
         return wf
 
     async def update(
@@ -146,11 +164,42 @@ class WorkflowService:
         wf = await self.get_owned(user, workflow_id)
         validate_dag(body.graph)
 
+        graph_payload = body.graph.model_dump()
         wf.name = body.name
         wf.settings = body.settings
-        wf.graph = body.graph.model_dump()
+        wf.graph = graph_payload
         await self._repo.save(wf)
+        if self._revision_repo is not None:
+            await record_save_revision(
+                self._revision_repo,
+                workflow_id=wf.id,
+                payload=graph_payload,
+                source=body.revision_source,
+                created_by=user.id,
+            )
         return wf
+
+    async def list_revisions(
+        self,
+        user: User,
+        workflow_id: UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[WorkflowRevision]:
+        """PLAN_14 §4.3 — newest-first revisions for an owned workflow.
+
+        Ownership check goes through `get_owned`, which raises
+        `NotFoundError` (404) when the workflow is missing, inactive,
+        or owned by someone else — same enumeration-defence behavior as
+        every other read on this service.
+        """
+        await self.get_owned(user, workflow_id)
+        if self._revision_repo is None:
+            return []
+        return await self._revision_repo.list_by_workflow(
+            workflow_id, limit=limit, offset=offset
+        )
 
     async def soft_delete(self, user: User, workflow_id: UUID) -> None:
         wf = await self.get_owned(user, workflow_id)
