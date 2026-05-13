@@ -17,6 +17,9 @@ from auto_workflow_database.repositories.workflow_repository import PostgresWork
 from auto_workflow_database.repositories.workflow_revision_repository import (
     PostgresWorkflowRevisionRepository,
 )
+from auto_workflow_database.repositories.personal_skill_review_repository import (
+    PostgresPersonalSkillReviewRepository,
+)
 
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -35,6 +38,7 @@ from app.services.credential_service import CredentialService
 from app.services.email_sender import EmailSender, make_email_sender
 from app.services.google_oauth_client import GoogleOAuthClient
 from app.services.oauth_state import OAuthStateSigner
+from app.services.personalization_service import PersonalizationService
 from app.services.skill_bootstrap_service import SkillBootstrapService
 from app.services.wake_worker import WakeWorker
 from app.services.workflow_service import WorkflowService
@@ -60,6 +64,9 @@ class AppContainer:
         self.webhook_registry = PostgresWebhookRegistry(self.sessionmaker)
         self.agent_repo = PostgresAgentRepository(self.sessionmaker)
         self.skill_repo = PostgresSkillRepository(self.sessionmaker)
+        self.personal_skill_review_repo = PostgresPersonalSkillReviewRepository(
+            self.sessionmaker
+        )
         self.credential_store = FernetCredentialStore(
             self.sessionmaker,
             master_key=settings.credential_master_key.encode("utf-8"),
@@ -130,6 +137,8 @@ class AppContainer:
         # otherwise so dev envs without an AI_Agent endpoint see a clear
         # "not configured" error instead of an httpx connection failure.
         self.skill_bootstrap_service: SkillBootstrapService | None = None
+        # PLAN_14 PR-G — HITL personalization. Same wiring guard.
+        self.personalization_service: PersonalizationService | None = None
         if settings.ai_agent_base_url:
             skill_ai_client = AIAgentHTTPBackend(
                 base_url=settings.ai_agent_base_url,
@@ -139,6 +148,13 @@ class AppContainer:
             self.skill_bootstrap_service = SkillBootstrapService(
                 ai_agent=skill_ai_client,
                 skill_repo=self.skill_repo,
+            )
+            self.personalization_service = PersonalizationService(
+                ai_agent=skill_ai_client,
+                workflow_repo=self.workflow_repo,
+                revision_repo=self.workflow_revision_repo,
+                skill_repo=self.skill_repo,
+                review_repo=self.personal_skill_review_repo,
             )
 
         self.workflow_service = WorkflowService(

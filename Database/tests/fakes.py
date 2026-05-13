@@ -32,8 +32,12 @@ from auto_workflow_database.repositories.base import (
     NodeCatalogRepository,
     NodeDefinition,
     NodeLogStatus,
+    PersonalSkillReview,
+    PersonalSkillReviewAction,
+    PersonalSkillReviewRepository,
     PlanTier,
     Skill,
+    SkillProvenance,
     SkillRepository,
     SkillScope,
     SkillSourceType,
@@ -565,6 +569,9 @@ class InMemorySkillRepository(SkillRepository):
         status: SkillStatus = "pending_review",
         source_type: SkillSourceType | None = None,
         source_ref: dict | None = None,
+        user_id: UUID | None = None,
+        source: SkillProvenance = "docs",
+        suggestion_hash: str | None = None,
     ) -> Skill:
         if (source_type is None) != (source_ref is None):
             raise ValueError(
@@ -582,6 +589,9 @@ class InMemorySkillRepository(SkillRepository):
             status=status,
             created_at=now,
             updated_at=now,
+            user_id=user_id,
+            source=source,
+            suggestion_hash=suggestion_hash,
         )
         self._store[skill.id] = skill
         if source_type is not None:
@@ -608,15 +618,28 @@ class InMemorySkillRepository(SkillRepository):
         owner_user_id: UUID,
         *,
         status: SkillStatus | None = None,
+        scope: SkillScope | None = None,
     ) -> list[Skill]:
         rows = [
             s
             for s in self._store.values()
             if s.owner_user_id == owner_user_id
             and (status is None or s.status == status)
+            and (scope is None or s.scope == scope)
         ]
         rows.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
         return [self._hydrate(s) for s in rows]
+
+    async def list_personal_suggestion_hashes(
+        self, user_id: UUID
+    ) -> list[str]:
+        return [
+            s.suggestion_hash
+            for s in self._store.values()
+            if s.user_id == user_id
+            and s.scope == "user"
+            and s.suggestion_hash
+        ]
 
     async def update_status(
         self,
@@ -630,3 +653,51 @@ class InMemorySkillRepository(SkillRepository):
         s.status = new_status
         s.updated_at = datetime.now(timezone.utc)
         return self._hydrate(s)
+
+
+class InMemoryPersonalSkillReviewRepository(PersonalSkillReviewRepository):
+    """In-memory fake for PR-G route tests.
+
+    Append-only — same contract as the Postgres impl. Reject hashes are
+    deduped on read because callers concatenate with the active-skill
+    hash list (one user may legitimately reject + later accept different
+    proposals sharing a hash prefix).
+    """
+
+    def __init__(self) -> None:
+        self._rows: list[PersonalSkillReview] = []
+
+    async def record(
+        self,
+        *,
+        user_id: UUID,
+        suggestion_hash: str,
+        action: PersonalSkillReviewAction,
+        rejection_reason: str | None = None,
+    ) -> PersonalSkillReview:
+        row = PersonalSkillReview(
+            id=uuid4(),
+            user_id=user_id,
+            suggestion_hash=suggestion_hash,
+            action=action,
+            rejection_reason=rejection_reason,
+            created_at=datetime.now(timezone.utc),
+        )
+        self._rows.append(deepcopy(row))
+        return deepcopy(row)
+
+    async def list_rejected_hashes(self, user_id: UUID) -> list[str]:
+        return sorted(
+            {
+                r.suggestion_hash
+                for r in self._rows
+                if r.user_id == user_id and r.action == "reject"
+            }
+        )
+
+    async def list_by_user(
+        self, user_id: UUID
+    ) -> list[PersonalSkillReview]:
+        rows = [deepcopy(r) for r in self._rows if r.user_id == user_id]
+        rows.sort(key=lambda r: r.created_at or datetime.min, reverse=True)
+        return rows

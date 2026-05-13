@@ -36,6 +36,17 @@ SkillSourceType = Literal["document", "conversation", "observation"]
 
 # PLAN_14 / ADR-023 HITL Personalization
 WorkflowRevisionSource = Literal["ai_draft", "user_edit"]
+# Provenance of a skill row — separate from `skill_sources.source_type`
+# (document/conversation/observation, which audits a single extraction
+# event). `SkillProvenance` is the column on `skills` itself: which path
+# created the skill. PLAN_14 adds `hitl_edit` for HITL-personalization
+# candidates harvested from workflow-edit diffs.
+SkillProvenance = Literal["docs", "wizard", "hitl_edit"]
+# PR-G action recorded against a suggestion_hash. `accept` is implicit
+# in the matching `skills` row (we don't double-record); `reject` and
+# `edit` both flow into `personal_skill_reviews` so the dedup hash
+# guard works regardless of whether the user kept any of the proposal.
+PersonalSkillReviewAction = Literal["accept", "edit", "reject"]
 
 
 @dataclass
@@ -646,6 +657,11 @@ class Skill:
 
     `owner_user_id` mirrors the SQL — see schemas/005_skill_bootstrap.sql
     for the MVP-vs-workspace_id rationale.
+
+    PLAN_14 fields (`user_id`, `source`, `suggestion_hash`) are non-default
+    only on HITL-personalization candidates (`scope='user'`, `source=
+    'hitl_edit'`). The DB constraint `skills_user_scope_chk` enforces that
+    `user_id IS NOT NULL` iff `scope='user'`.
     """
 
     id: UUID
@@ -663,6 +679,30 @@ class Skill:
     # alongside the skill row so callers don't need a second round-trip
     # to surface provenance (e.g. wizard `source_kind` / `sources`).
     source_ref: dict | None = None
+    # PLAN_14 personalization fields. user_id is the personal owner when
+    # scope='user'; source distinguishes wizard/docs skills from HITL
+    # candidates; suggestion_hash dedupes candidate (re-)proposals.
+    user_id: UUID | None = None
+    source: SkillProvenance = "docs"
+    suggestion_hash: str | None = None
+
+
+@dataclass
+class PersonalSkillReview:
+    """One user decision against a suggestion_hash — PLAN_14 §4.3.
+
+    Stored separately from `skills` so rejected suggestions (which never
+    become skill rows) still leave an audit trail and a dedup record.
+    `list_rejected_hashes` is the hot path PR-G calls before invoking
+    the personalization agent — same-user re-proposal is suppressed.
+    """
+
+    id: UUID
+    user_id: UUID
+    suggestion_hash: str
+    action: PersonalSkillReviewAction
+    rejection_reason: str | None = None
+    created_at: datetime | None = None
 
 
 class SkillRepository(ABC):
@@ -686,12 +726,20 @@ class SkillRepository(ABC):
         status: SkillStatus = "pending_review",
         source_type: SkillSourceType | None = None,
         source_ref: dict | None = None,
+        user_id: UUID | None = None,
+        source: SkillProvenance = "docs",
+        suggestion_hash: str | None = None,
     ) -> Skill:
         """Insert a skill (and optionally a paired skill_sources row).
 
         When `source_type` is provided, `source_ref` MUST also be — the
         two are stored atomically with the skill so the audit trail can't
         drift. When neither is provided, only the `skills` row is written.
+
+        For `scope='user'` rows (PLAN_14 HITL candidates) the caller must
+        pass `user_id` — this is the personal owner. `source='hitl_edit'`
+        and a `suggestion_hash` accompany those rows so PR-G can dedup
+        re-proposals against accepted candidates by hash without a join.
         """
         ...
 
@@ -713,12 +761,29 @@ class SkillRepository(ABC):
         owner_user_id: UUID,
         *,
         status: SkillStatus | None = None,
+        scope: SkillScope | None = None,
     ) -> list[Skill]:
         """List the caller's skills, newest first.
 
         `status=None` returns all statuses. The review UI typically calls
         with `status='pending_review'`; the active-skills query for
-        compose-time retrieval calls with `status='active'`.
+        compose-time retrieval calls with `status='active'`. `scope` lets
+        PR-G's personal-candidate listing isolate `scope='user'` rows
+        from the workspace skill mix.
+        """
+        ...
+
+    @abstractmethod
+    async def list_personal_suggestion_hashes(
+        self, user_id: UUID
+    ) -> list[str]:
+        """Return suggestion_hashes already attached to this user's
+        scope='user' skills (any status).
+
+        PR-G concatenates these with `PersonalSkillReviewRepository.
+        list_rejected_hashes` before invoking the personalization agent,
+        so any prior proposal — accepted, pending, or archived — is
+        suppressed on a re-run.
         """
         ...
 
@@ -737,3 +802,38 @@ class SkillRepository(ABC):
         the repository accepts any allowed enum value.
         """
         ...
+
+
+class PersonalSkillReviewRepository(ABC):
+    """User-scoped review-decision log — PLAN_14 §4.3.
+
+    `record` is the only write; rows are immutable. `list_rejected_hashes`
+    is the hot path called before the personalization agent so a
+    previously-rejected hash short-circuits propose+judge.
+    """
+
+    @abstractmethod
+    async def record(
+        self,
+        *,
+        user_id: UUID,
+        suggestion_hash: str,
+        action: PersonalSkillReviewAction,
+        rejection_reason: str | None = None,
+    ) -> PersonalSkillReview: ...
+
+    @abstractmethod
+    async def list_rejected_hashes(self, user_id: UUID) -> list[str]:
+        """All suggestion_hashes this user has rejected (any time).
+
+        Order is implementation-defined; callers convert to a set. PR-G
+        also includes hashes from the user's existing scope='user' skills
+        (via `SkillRepository.list_personal_suggestion_hashes`) before
+        invoking the agent.
+        """
+        ...
+
+    @abstractmethod
+    async def list_by_user(
+        self, user_id: UUID
+    ) -> list[PersonalSkillReview]: ...

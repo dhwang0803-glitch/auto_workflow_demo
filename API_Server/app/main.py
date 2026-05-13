@@ -21,6 +21,7 @@ from app.routers.credentials import router as credentials_router
 from app.routers.executions import router as executions_router
 from app.routers.node_catalog import router as node_catalog_router
 from app.routers.oauth_google import router as oauth_google_router
+from app.routers.personalization import router as personalization_router
 from app.routers.skills import router as skills_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.workflows import router as workflows_router
@@ -71,7 +72,10 @@ def create_app(
         app.state.workflow_service = c.workflow_service
         app.state.ai_composer_service = c.ai_composer_service
         app.state.skill_repo = c.skill_repo
+        app.state.personal_skill_review_repo = c.personal_skill_review_repo
         app.state.skill_bootstrap_service = c.skill_bootstrap_service
+        app.state.personalization_service = c.personalization_service
+        app.state.workflow_revision_repo = c.workflow_revision_repo
         try:
             yield
         finally:
@@ -121,6 +125,11 @@ def create_app(
     )
     app.include_router(
         skills_router, prefix="/api/v1/skills", tags=["skills"]
+    )
+    app.include_router(
+        personalization_router,
+        prefix="/api/v1/personalization",
+        tags=["personalization"],
     )
 
     @app.get("/health")
