@@ -13,6 +13,14 @@ The tests below cover the four `user_id` paths (none / set with file /
 set without file / file disabled by config), and verify the
 `search_personal_skills` tool only appears in the system prompt when
 there's something to find.
+
+PLAN_14 PR-F closes the privacy guard at the route boundary: with two
+populated files in the same memory dir, a request scoped to one user
+must never expose the other's skill text in the search obs. Unit tests
+on `PersonalMemoryPool` already prove the loader picks the right file
+by path; the cross-user route test below proves the wiring all the way
+through the agent loop preserves that isolation, so a future regression
+that (say) caches a pool across requests would surface here.
 """
 from __future__ import annotations
 
@@ -604,6 +612,156 @@ async def test_personal_memory_dir_empty_disables_feature(
     assert resp.status_code == 200
     assert backend.agent_calls == 3
     assert backend.extract_calls == 1
+
+
+# --- PLAN_14 PR-F: cross-user isolation guard at the route boundary ----
+
+
+class _ObsCapturingBackend(_SequencedBackend):
+    """Sequenced backend that snapshots the user_message of every agent
+    turn after the first one.
+
+    The agent loop appends each tool obs back into the running transcript
+    that becomes the next call's `user_message`. So everything the model
+    "saw" from `search_personal_skills` is observable here — which is
+    exactly the surface the cross-user leak guard cares about.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.agent_user_messages: list[str] = []
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None = None,
+    ) -> str:
+        if system.startswith(_AGENT_PROMPT_PREFIX):
+            self.agent_user_messages.append(user_message)
+        return await super().complete(
+            system=system,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            images=images,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cross_user_memory_files_do_not_leak_via_route(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Alice and Bob both have populated memory files in the same dir.
+    The route is called twice — once as Alice, once as Bob — and each
+    request's `search_personal_skills` obs must only surface the
+    invoking user's pattern text.
+
+    Distinctive markers (`ALICE-MARKER-...` / `BOB-MARKER-...`) live in
+    `condition.text` so the assertion can be a simple substring check
+    on the transcript that flows into the agent's second turn.
+    """
+    monkeypatch.setenv("PERSONAL_MEMORY_DIR", str(tmp_path))
+
+    alice_marker = "ALICE-MARKER-refund-escalation"
+    bob_marker = "BOB-MARKER-shipping-cutoff"
+
+    alice_skill = {
+        "id": "alice-skill",
+        "condition": {"text": alice_marker},
+        "action": {"text": "Manager approval"},
+        "suggestion_hash": "alice-hash",
+        # Orthogonal unit vectors so each user's stored embedding is the
+        # nearest neighbour to itself and no other entry can outscore it.
+        "embedding": [1.0] + [0.0] * 1023,
+        "source": "hitl_edit",
+        "first_observed_at": "2026-05-01T00:00:00Z",
+        "active": True,
+    }
+    bob_skill = {
+        "id": "bob-skill",
+        "condition": {"text": bob_marker},
+        "action": {"text": "Hold shipment"},
+        "suggestion_hash": "bob-hash",
+        "embedding": [0.0, 1.0] + [0.0] * 1022,
+        "source": "hitl_edit",
+        "first_observed_at": "2026-05-02T00:00:00Z",
+        "active": True,
+    }
+
+    _write_user_memory(tmp_path, "alice", [alice_skill])
+    _write_user_memory(tmp_path, "bob", [bob_skill])
+
+    cand = _candidate()
+    # Same scripted shape works for both users — the script doesn't
+    # know whose memory it's searching, only that exactly one search
+    # call happens before extract → evaluate → finish.
+    def _build_backend() -> _ObsCapturingBackend:
+        return _ObsCapturingBackend(
+            agent=[
+                _agent_call(
+                    "search_personal_skills",
+                    {"query": "refund approvals", "k": 3},
+                ),
+                _agent_call(
+                    "extract_policies",
+                    {"hint": "from prior approval pattern"},
+                ),
+                _agent_call("evaluate_coverage"),
+                _agent_finish([cand]),
+            ],
+            extract=[_extract_payload(cand)],
+        )
+
+    # Fresh app per request — the route-level isolation guard would be
+    # uninteresting if a shared FastAPI app cached the pool between
+    # calls. Each app instance hits `PersonalMemoryPool.load()` exactly
+    # once, with the user_id from the request body.
+    alice_backend = _build_backend()
+    alice_app = create_app(backend_override=alice_backend)
+    async with AsyncClient(
+        transport=ASGITransport(app=alice_app), base_url="http://test"
+    ) as c:
+        alice_resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={
+                "chunk": "Refunds over $500 must be approved.",
+                "user_id": "alice",
+                "max_iter": 2,
+            },
+        )
+
+    bob_backend = _build_backend()
+    bob_app = create_app(backend_override=bob_backend)
+    async with AsyncClient(
+        transport=ASGITransport(app=bob_app), base_url="http://test"
+    ) as c:
+        bob_resp = await c.post(
+            "/v1/policy/extract_reflective",
+            json={
+                "chunk": "Refunds over $500 must be approved.",
+                "user_id": "bob",
+                "max_iter": 2,
+            },
+        )
+
+    assert alice_resp.status_code == 200
+    assert bob_resp.status_code == 200
+
+    # Each agent turn after the first contains the cumulative
+    # transcript, including every prior tool obs. Join them so the
+    # assertion is independent of which turn surfaces the search obs.
+    alice_transcript = "\n".join(alice_backend.agent_user_messages[1:])
+    bob_transcript = "\n".join(bob_backend.agent_user_messages[1:])
+
+    # Alice saw her own marker, never Bob's.
+    assert alice_marker in alice_transcript
+    assert bob_marker not in alice_transcript
+
+    # Bob saw his own marker, never Alice's.
+    assert bob_marker in bob_transcript
+    assert alice_marker not in bob_transcript
 
 
 @pytest.mark.asyncio
