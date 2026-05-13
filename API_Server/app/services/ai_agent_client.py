@@ -169,3 +169,31 @@ class AIAgentHTTPBackend:
             },
         )
         return ExtractResponse.model_validate(body)
+
+    # --- PLAN_14 PR-G HITL personalization -----------------------------
+
+    async def extract_personalization_from_diff(
+        self,
+        *,
+        v1: dict,
+        v2: dict,
+        rejected_hashes: list[str],
+        user_id: str | None,
+    ) -> dict:
+        """Proxy AI_Agent's /v1/personalization/extract_from_diff.
+
+        Returned as a raw dict (not a Pydantic model) because PR-G's
+        service layer re-validates through API_Server's own
+        `ExtractFromDiffResponse` after deriving the candidate_id from
+        the persistence step. Re-importing AI_Agent's Pydantic shapes
+        just to discard them on the next line buys nothing here.
+        """
+        return await self._post_json(
+            "/v1/personalization/extract_from_diff",
+            {
+                "v1": v1,
+                "v2": v2,
+                "rejected_hashes": rejected_hashes,
+                "user_id": user_id,
+            },
+        )

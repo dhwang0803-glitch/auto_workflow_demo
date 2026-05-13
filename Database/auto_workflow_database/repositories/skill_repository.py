@@ -10,6 +10,7 @@ from auto_workflow_database.models.skills import Skill as SkillORM
 from auto_workflow_database.models.skills import SkillSource as SkillSourceORM
 from auto_workflow_database.repositories.base import (
     Skill,
+    SkillProvenance,
     SkillRepository,
     SkillScope,
     SkillSourceType,
@@ -30,6 +31,9 @@ def _to_dto(row: SkillORM, source_ref: dict | None = None) -> Skill:
         created_at=row.created_at,
         updated_at=row.updated_at,
         source_ref=source_ref,
+        user_id=row.user_id,
+        source=row.source,  # type: ignore[arg-type]
+        suggestion_hash=row.suggestion_hash,
     )
 
 
@@ -68,6 +72,9 @@ class PostgresSkillRepository(SkillRepository):
         status: SkillStatus = "pending_review",
         source_type: SkillSourceType | None = None,
         source_ref: dict | None = None,
+        user_id: UUID | None = None,
+        source: SkillProvenance = "docs",
+        suggestion_hash: str | None = None,
     ) -> Skill:
         if (source_type is None) != (source_ref is None):
             raise ValueError(
@@ -83,6 +90,9 @@ class PostgresSkillRepository(SkillRepository):
                 action=action,
                 scope=scope,
                 status=status,
+                user_id=user_id,
+                source=source,
+                suggestion_hash=suggestion_hash,
             )
             s.add(row)
             # Need the server-side defaults (id, timestamps) before either
@@ -118,6 +128,7 @@ class PostgresSkillRepository(SkillRepository):
         owner_user_id: UUID,
         *,
         status: SkillStatus | None = None,
+        scope: SkillScope | None = None,
     ) -> list[Skill]:
         # Correlated subquery pulls the most-recent skill_sources.source_ref
         # per skill in the same round-trip — avoids N+1 across the list.
@@ -136,9 +147,24 @@ class PostgresSkillRepository(SkillRepository):
         )
         if status is not None:
             stmt = stmt.where(SkillORM.status == status)
+        if scope is not None:
+            stmt = stmt.where(SkillORM.scope == scope)
         async with self._sm() as s:
             result = await s.execute(stmt)
             return [_to_dto(row, src) for row, src in result.all()]
+
+    async def list_personal_suggestion_hashes(
+        self, user_id: UUID
+    ) -> list[str]:
+        stmt = (
+            select(SkillORM.suggestion_hash)
+            .where(SkillORM.user_id == user_id)
+            .where(SkillORM.scope == "user")
+            .where(SkillORM.suggestion_hash.isnot(None))
+        )
+        async with self._sm() as s:
+            result = await s.execute(stmt)
+            return [h for (h,) in result.all() if h]
 
     async def update_status(
         self,
