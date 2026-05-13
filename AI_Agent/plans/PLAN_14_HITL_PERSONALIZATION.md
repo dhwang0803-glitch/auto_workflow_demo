@@ -384,8 +384,8 @@ API_Server/tests/test_workflow_revisions.py      ← (신규)
 |---|---|---|
 | 5/11 (D4) | doc PR + ADR-023 + PR-A (DB 마이그레이션, PLAN_15 PR-γ #171 흡수) + PR-Ba (#176) + PR-B (#177) | ✅ |
 | 5/12 (D5) | PR-C (#178 semantic diff) + PR-D (#179 personalization agent) + PR-E (#180 extract_from_diff) + PR-F (#181 cross-user 격리 가드, scope 축소) | ✅ |
-| 5/13 (D6) | **PR-G (API_Server `/api/v1/personalization/*` 프록시 + DB write — extend SkillRepository + new PersonalSkillReviewRepository + 14 route tests)** | 진행 중 |
-| 5/14 (D7) | PR-H (Frontend "Suggested from your edits" UI) + PR-I (Modal smoke 라이브) | — |
+| 5/13 (D6) | PR-G (#182 API_Server `/api/v1/personalization/*` 프록시 + DB write — SkillRepository 확장 + PersonalSkillReviewRepository 신규 + 14 route tests) | ✅ |
+| 5/14 (D7) | **PR-H (Frontend "Suggested from your edits" UI + workflow save → revision_source + auto-trigger extract — 4 새 Playwright + tsc/lint/build green)** + PR-I (Modal smoke 라이브) | 진행 중 |
 | 5/15-17 | 영상 시연 캡처 + writeup | — |
 | 5/18 (D11) | 제출 (버퍼) | — |
 

@@ -72,6 +72,12 @@ export interface WorkflowPayload {
   name: string;
   settings: Record<string, unknown>;
   graph: WorkflowGraph;
+  // PLAN_14 §4.3 — tells API_Server's save hook which revision_source
+  // to record. `ai_draft` is set by the editor after a Composer Apply
+  // when no manual edits have happened on top; every other save lands
+  // as `user_edit`. Optional on the wire — backend defaults to
+  // `user_edit`.
+  revision_source?: "ai_draft" | "user_edit";
 }
 
 export interface WorkflowResponse {
