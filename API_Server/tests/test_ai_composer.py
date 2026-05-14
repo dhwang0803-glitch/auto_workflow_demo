@@ -591,3 +591,148 @@ async def test_stream_uses_streaming_prompt_variant(composer_client_factory):
         assert "streaming mode" in (backend.last_system or "")
 
         await _truncate(app)
+
+
+# --- PR-K: workspace skill inject -------------------------------------
+
+
+async def test_compose_injects_active_workspace_skills(
+    composer_client_factory,
+):
+    """PR-K — active workspace skills land in the system prompt under
+    `<skills>` so compose grounds DAGs in the team's policies."""
+    canned = _wrap_json(
+        {
+            "intent": "draft",
+            "clarify_questions": None,
+            "proposed_dag": {"nodes": [], "edges": []},
+            "diff": None,
+            "rationale": "x",
+        }
+    )
+    backend, app, client = await composer_client_factory(canned)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        # Seed a workspace skill via the repo on app.state — same surface
+        # the wizard uses, so the test exercises the real DB path.
+        # The verified test user's id is the only owner_id we know exists
+        # in the FK constraint; fetch it from the auth header by decoding
+        # the JWT 'sub' claim (cheap and dependency-free).
+        skill_repo = app.state.skill_repo
+        import base64, json as _json
+        token = client.headers["Authorization"].split(" ", 1)[1]
+        payload_b64 = token.split(".")[1] + "=="
+        owner_id_str = _json.loads(base64.urlsafe_b64decode(payload_b64))["sub"]
+        from uuid import UUID as _UUID
+        owner_id = _UUID(owner_id_str)
+        await skill_repo.create(
+            owner_user_id=owner_id,
+            name="Notify finance on invoices",
+            condition={"text": "invoice arrives in shared inbox"},
+            action={"text": "post a summary to slack #finance"},
+            status="active",
+        )
+
+        r = await client.post(
+            "/api/v1/ai/compose", json={"message": "draft something"}
+        )
+        assert r.status_code == 200, r.text
+
+        sys_prompt = backend.last_system or ""
+        assert "<skills>" in sys_prompt
+        assert "Notify finance on invoices" in sys_prompt
+        assert "invoice arrives in shared inbox" in sys_prompt
+        assert "post a summary to slack #finance" in sys_prompt
+
+        await _truncate(app)
+
+
+async def test_compose_omits_skills_section_when_pool_is_empty(
+    composer_client_factory,
+):
+    """Cold-start tenant — no active workspace skills means the prompt
+    looks identical to pre-PR-K. Locks in the regression-guard contract
+    that empty skill pools don't surprise the LLM with an empty XML
+    block."""
+    canned = _wrap_json(
+        {
+            "intent": "draft",
+            "clarify_questions": None,
+            "proposed_dag": {"nodes": [], "edges": []},
+            "diff": None,
+            "rationale": "x",
+        }
+    )
+    backend, app, client = await composer_client_factory(canned)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        r = await client.post(
+            "/api/v1/ai/compose", json={"message": "draft"}
+        )
+        assert r.status_code == 200, r.text
+        assert "<skills>" not in (backend.last_system or "")
+
+        await _truncate(app)
+
+
+async def test_compose_excludes_personal_skills_from_workspace_pool(
+    composer_client_factory,
+):
+    """PR-K boundary — personal skills (scope='user') must NOT land in
+    the workspace pool. PR-L will add per-user injection on top through
+    the same provider; PR-K alone keeps the file boundary tight."""
+    canned = _wrap_json(
+        {
+            "intent": "draft",
+            "clarify_questions": None,
+            "proposed_dag": {"nodes": [], "edges": []},
+            "diff": None,
+            "rationale": "x",
+        }
+    )
+    backend, app, client = await composer_client_factory(canned)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app)
+
+        skill_repo = app.state.skill_repo
+        import base64, json as _json
+        token = client.headers["Authorization"].split(" ", 1)[1]
+        payload_b64 = token.split(".")[1] + "=="
+        owner_id_str = _json.loads(base64.urlsafe_b64decode(payload_b64))["sub"]
+        from uuid import UUID as _UUID
+        owner_id = _UUID(owner_id_str)
+        await skill_repo.create(
+            owner_user_id=owner_id,
+            name="Workspace policy",
+            condition={"text": "workspace condition"},
+            action={"text": "workspace action"},
+            status="active",
+        )
+        await skill_repo.create(
+            owner_user_id=owner_id,
+            name="Personal pattern",
+            condition={"text": "personal condition"},
+            action={"text": "personal action"},
+            status="active",
+            scope="user",
+            user_id=owner_id,
+            source="hitl_edit",
+            suggestion_hash="h-personal-x",
+        )
+
+        r = await client.post(
+            "/api/v1/ai/compose", json={"message": "draft"}
+        )
+        assert r.status_code == 200, r.text
+
+        sys_prompt = backend.last_system or ""
+        assert "Workspace policy" in sys_prompt
+        assert "Personal pattern" not in sys_prompt
+        assert "personal condition" not in sys_prompt
+
+        await _truncate(app)

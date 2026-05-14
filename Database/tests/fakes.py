@@ -630,6 +630,17 @@ class InMemorySkillRepository(SkillRepository):
         rows.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
         return [self._hydrate(s) for s in rows]
 
+    async def list_workspace_active(
+        self, *, limit: int = 50
+    ) -> list[Skill]:
+        rows = [
+            s
+            for s in self._store.values()
+            if s.scope == "workspace" and s.status == "active"
+        ]
+        rows.sort(key=lambda s: s.created_at or datetime.min, reverse=True)
+        return [self._hydrate(s) for s in rows[:limit]]
+
     async def list_personal_suggestion_hashes(
         self, user_id: UUID
     ) -> list[str]:

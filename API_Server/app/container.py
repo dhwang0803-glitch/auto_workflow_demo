@@ -6,6 +6,8 @@ repo or service means editing this one file.
 """
 from __future__ import annotations
 
+from uuid import UUID
+
 from auto_workflow_database.repositories._session import build_engine, build_sessionmaker
 from auto_workflow_database.repositories.agent_repository import PostgresAgentRepository
 from auto_workflow_database.repositories.credential_store import FernetCredentialStore
@@ -28,6 +30,7 @@ from app.config import Settings
 from app.services.ai_agent_client import AIAgentHTTPBackend
 from app.services.ai_composer_service import (
     AIComposerService,
+    ComposeSkill,
     AnthropicBackend,
     LLMBackend,
     StubLLMBackend,
@@ -124,11 +127,32 @@ class AppContainer:
                     api_key=settings.anthropic_api_key,
                     model=settings.anthropic_model,
                 )
+        # PR-K — compose-time skill retrieval. Pulls active workspace
+        # skills (any owner) so every team member's natural-language
+        # request lands in a system prompt grounded in the team's
+        # codified policies. user_id is currently unused — PR-L extends
+        # the closure to also concatenate the caller's scope='user'
+        # skills, then the parameter starts mattering.
+        async def _compose_skills_provider(
+            user_id: UUID,
+        ) -> list[ComposeSkill]:
+            del user_id  # PR-L will use this; PR-K returns the same pool.
+            rows = await self.skill_repo.list_workspace_active()
+            return [
+                ComposeSkill(
+                    name=r.name,
+                    when=(r.condition or {}).get("text") or r.description or "",
+                    do=(r.action or {}).get("text") or "",
+                )
+                for r in rows
+            ]
+
         self.ai_composer_service = AIComposerService(
             backend=backend,
             catalog_provider=build_node_catalog_provider(),
             rate_per_minute=settings.ai_compose_rate_per_minute,
             max_tokens=settings.ai_compose_max_tokens,
+            skills_provider=_compose_skills_provider,
         )
 
 
