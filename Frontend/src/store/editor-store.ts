@@ -38,6 +38,12 @@ interface EditorState {
   lastError: string | null;
   // Current execution being polled by ResultDrawer. Null = drawer closed.
   activeExecutionId: string | null;
+  // PLAN_14 PR-H — tells the Toolbar save mutation which `revision_source`
+  // to send. `applyComposerDraft` sets this to `ai_draft`; any meaningful
+  // user mutation (node/edge change, config edit, name change) flips it
+  // back to `user_edit` so a save after manual touch-ups is recorded
+  // honestly. `markSaved` resets after each successful save.
+  revisionSourceForNextSave: "ai_draft" | "user_edit";
 
   setName: (name: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -71,6 +77,7 @@ const initialState = {
   lastSavedId: null,
   lastError: null,
   activeExecutionId: null,
+  revisionSourceForNextSave: "user_edit" as "ai_draft" | "user_edit",
 };
 
 let nodeCounter = 0;
@@ -81,7 +88,8 @@ export const useEditorStore = create<EditorState>()(
     (set, get) => ({
       ...initialState,
 
-      setName: (name) => set({ name, dirty: true }),
+      setName: (name) =>
+        set({ name, dirty: true, revisionSourceForNextSave: "user_edit" }),
 
       onNodesChange: (changes) => {
         // React Flow fires "dimensions" on mount (DOM measurement) and "select"
@@ -93,7 +101,9 @@ export const useEditorStore = create<EditorState>()(
         );
         set({
           nodes: applyNodeChanges(changes, get().nodes) as EditorNode[],
-          ...(meaningful ? { dirty: true } : {}),
+          ...(meaningful
+            ? { dirty: true, revisionSourceForNextSave: "user_edit" as const }
+            : {}),
         });
       },
 
@@ -101,7 +111,9 @@ export const useEditorStore = create<EditorState>()(
         const meaningful = changes.some((c) => c.type !== "select");
         set({
           edges: applyEdgeChanges(changes, get().edges),
-          ...(meaningful ? { dirty: true } : {}),
+          ...(meaningful
+            ? { dirty: true, revisionSourceForNextSave: "user_edit" as const }
+            : {}),
         });
       },
 
@@ -117,7 +129,12 @@ export const useEditorStore = create<EditorState>()(
           source: conn.source,
           target: conn.target,
         };
-        set({ edges: [...edges, newEdge], dirty: true, lastError: null });
+        set({
+          edges: [...edges, newEdge],
+          dirty: true,
+          lastError: null,
+          revisionSourceForNextSave: "user_edit",
+        });
       },
 
       addNode: (nodeType, displayName, position, configDefaults = {}) => {
@@ -127,7 +144,11 @@ export const useEditorStore = create<EditorState>()(
           position,
           data: { nodeType, displayName, config: configDefaults },
         };
-        set({ nodes: [...get().nodes, node], dirty: true });
+        set({
+          nodes: [...get().nodes, node],
+          dirty: true,
+          revisionSourceForNextSave: "user_edit",
+        });
       },
 
       updateNodeConfig: (id, config) =>
@@ -136,6 +157,7 @@ export const useEditorStore = create<EditorState>()(
             n.id === id ? { ...n, data: { ...n.data, config } } : n,
           ),
           dirty: true,
+          revisionSourceForNextSave: "user_edit",
         }),
 
       removeSelected: () => {
@@ -146,12 +168,14 @@ export const useEditorStore = create<EditorState>()(
           edges: get().edges.filter((e) => e.source !== id && e.target !== id),
           selectedNodeId: null,
           dirty: true,
+          revisionSourceForNextSave: "user_edit",
         });
       },
 
       selectNode: (id) => set({ selectedNodeId: id }),
 
-      replaceNodes: (nodes) => set({ nodes, dirty: true }),
+      replaceNodes: (nodes) =>
+        set({ nodes, dirty: true, revisionSourceForNextSave: "user_edit" }),
 
       loadFromWorkflow: (wf) => {
         const layout = (wf.settings?.layout ?? {}) as Record<
@@ -212,13 +236,17 @@ export const useEditorStore = create<EditorState>()(
           selectedNodeId: null,
           dirty: true,
           lastError: null,
+          // PLAN_14 PR-H — a Composer Apply produces an AI draft; the
+          // next save records that as the v1 ai_draft revision unless
+          // the user makes manual changes first.
+          revisionSourceForNextSave: "ai_draft",
         });
       },
 
       reset: () => set({ ...initialState }),
 
       toPayload: () => {
-        const { name, nodes, edges } = get();
+        const { name, nodes, edges, revisionSourceForNextSave } = get();
         const graph: WorkflowGraph = {
           nodes: nodes.map((n) => ({
             id: n.id,
@@ -229,12 +257,25 @@ export const useEditorStore = create<EditorState>()(
         };
         const layout: Record<string, { x: number; y: number }> = {};
         for (const n of nodes) layout[n.id] = n.position;
-        return { name, settings: { layout }, graph };
+        return {
+          name,
+          settings: { layout },
+          graph,
+          revision_source: revisionSourceForNextSave,
+        };
       },
 
       setError: (lastError) => set({ lastError }),
 
-      markSaved: (id) => set({ dirty: false, lastSavedId: id }),
+      markSaved: (id) =>
+        set({
+          dirty: false,
+          lastSavedId: id,
+          // After a successful save, any subsequent edits should record
+          // as user_edit until a fresh Composer Apply explicitly flips
+          // it back to ai_draft.
+          revisionSourceForNextSave: "user_edit",
+        }),
 
       setActiveExecutionId: (activeExecutionId) => set({ activeExecutionId }),
     }),

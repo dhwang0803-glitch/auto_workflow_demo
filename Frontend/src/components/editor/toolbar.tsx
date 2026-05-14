@@ -9,6 +9,7 @@ import {
   type ExecutionResponse,
   type WorkflowResponse,
 } from "@/lib/api";
+import { extractFromDiff } from "@/lib/personalization";
 import { useEditorStore, useEditorTemporal } from "@/store/editor-store";
 import { useComposerStore } from "@/store/composer-store";
 import { applyAutoLayout } from "@/lib/auto-layout";
@@ -40,15 +41,42 @@ export function Toolbar() {
   const queryClient = useQueryClient();
 
   const saveMutation = useMutation({
-    mutationFn: async (): Promise<WorkflowResponse> => {
+    mutationFn: async (): Promise<{
+      wf: WorkflowResponse;
+      isUpdate: boolean;
+    }> => {
       const payload = toPayload();
-      if (lastSavedId) return updateWorkflow(lastSavedId, payload);
-      return createWorkflow(payload);
+      const isUpdate = Boolean(lastSavedId);
+      const wf = isUpdate
+        ? await updateWorkflow(lastSavedId as string, payload)
+        : await createWorkflow(payload);
+      return { wf, isUpdate };
     },
-    onSuccess: (wf) => {
+    onSuccess: ({ wf, isUpdate }) => {
       markSaved(wf.id);
       setError(null);
-      if (!lastSavedId) router.replace(`/workflows/${wf.id}`);
+      if (!isUpdate) router.replace(`/workflows/${wf.id}`);
+      // PLAN_14 PR-H — fire-and-forget personalization extract on every
+      // update save. The backend short-circuits with 422 when there is
+      // no diff-eligible revision pair (e.g. first save was already a
+      // user_edit and there is no prior ai_draft), so spurious calls
+      // are cheap. On a successful candidate creation we invalidate
+      // the candidates query so the library section refreshes.
+      if (isUpdate) {
+        extractFromDiff(wf.id)
+          .then((res) => {
+            if (res.candidate_id) {
+              queryClient.invalidateQueries({
+                queryKey: ["personalization-candidates"],
+              });
+            }
+          })
+          .catch(() => {
+            // Silent — extract is best-effort. No diff pair / Modal
+            // down / agent rejected the proposal are all expected and
+            // already surface elsewhere (404 / 502 / drop_reason).
+          });
+      }
     },
     onError: (e) => setError(e instanceof Error ? e.message : String(e)),
   });

@@ -9,6 +9,7 @@ import {
   type SkillStatus,
 } from "@/lib/skills";
 import { SourceKindPill } from "./source-kind-pill";
+import { SuggestedFromEdits } from "./suggested-from-edits";
 
 // Skill library view (PLAN_12 W2-9 + source round-trip).
 //
@@ -64,6 +65,8 @@ export function SkillsLibrary({
           </Link>
         </div>
       </header>
+
+      <SuggestedFromEdits />
 
       <div
         className="mb-4 flex flex-wrap gap-2"

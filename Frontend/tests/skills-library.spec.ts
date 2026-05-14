@@ -56,9 +56,26 @@ const PENDING_SKILLS = [
   },
 ];
 
+// PLAN_14 PR-H — the library page now embeds the "Suggested from your
+// edits" panel which fetches /api/v1/personalization/candidates on
+// mount. Stub it empty across every test below so the panel renders
+// deterministically without affecting the workspace skill assertions.
+async function stubEmptyPersonalization(page: import("@playwright/test").Page) {
+  await page.route(
+    "**/api/v1/personalization/candidates",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ candidates: [] }),
+      }),
+  );
+}
+
 test("Skill library: lists active skills by default with markdown rendering", async ({
   page,
 }) => {
+  await stubEmptyPersonalization(page);
   await page.route("**/api/v1/skills*", async (route) => {
     const url = new URL(route.request().url());
     const status = url.searchParams.get("status");
@@ -109,6 +126,7 @@ test("Skill library: lists active skills by default with markdown rendering", as
 });
 
 test("Skill library: status tab switches the query", async ({ page }) => {
+  await stubEmptyPersonalization(page);
   await page.route("**/api/v1/skills*", async (route) => {
     const url = new URL(route.request().url());
     const status = url.searchParams.get("status");
@@ -133,6 +151,7 @@ test("Skill library: status tab switches the query", async ({ page }) => {
 });
 
 test("Skill library: empty state offers wizard link", async ({ page }) => {
+  await stubEmptyPersonalization(page);
   await page.route("**/api/v1/skills*", (route) =>
     route.fulfill({
       status: 200,
@@ -149,6 +168,7 @@ test("Skill library: empty state offers wizard link", async ({ page }) => {
 });
 
 test("Skill library: home → library nav link works", async ({ page }) => {
+  await stubEmptyPersonalization(page);
   await page.route("**/api/v1/workflows*", (route) =>
     route.fulfill({
       status: 200,
