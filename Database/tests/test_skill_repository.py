@@ -426,3 +426,141 @@ async def test_postgres_create_writes_skill_sources_atomically(
     assert len(rows) == 1
     assert rows[0].source_type == "conversation"
     assert "session_id" in rows[0].source_ref
+
+
+# --- share_to_workspace (PR-J) -----------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_share_to_workspace_flips_scope_and_clears_user_id(
+    repo_factory,
+) -> None:
+    """The DB constraint `skills_user_scope_chk` requires user_id NULL
+    when scope='workspace'; share must flip both atomically so the
+    workspace pool sees the row on the next read."""
+    repo, owner = repo_factory
+    personal = await repo.create(
+        owner_user_id=owner,
+        name="My pattern",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+        scope="user",
+        user_id=owner,
+        source="hitl_edit",
+        suggestion_hash="h-1",
+    )
+    assert personal.scope == "user"
+    assert personal.user_id == owner
+
+    shared = await repo.share_to_workspace(owner, personal.id)
+    assert shared is not None
+    assert shared.id == personal.id  # identity preserved
+    assert shared.scope == "workspace"
+    assert shared.user_id is None
+    # Other fields untouched
+    assert shared.name == "My pattern"
+    assert shared.suggestion_hash == "h-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_share_to_workspace_records_attribution_in_source_ref(
+    repo_factory,
+) -> None:
+    """source_ref on the shared row carries `shared_by_user_id` so the
+    workspace pool can render "shared by alice" attribution if the UI
+    wants — and so audit can trace any policy back to its first author."""
+    repo, owner = repo_factory
+    personal = await repo.create(
+        owner_user_id=owner,
+        name="My pattern",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+        scope="user",
+        user_id=owner,
+        source="hitl_edit",
+        suggestion_hash="h-1",
+    )
+
+    shared = await repo.share_to_workspace(owner, personal.id)
+    assert shared is not None
+    src = shared.source_ref or {}
+    assert src.get("shared_from_personal") is True
+    assert src.get("shared_by_user_id") == str(owner)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_share_to_workspace_returns_none_for_other_owner(
+    repo_factory,
+) -> None:
+    """alice can't share bob's personal skill — auth check at the repo
+    layer mirrors `update_status` / `get_owned`."""
+    repo, owner = repo_factory
+    personal = await repo.create(
+        owner_user_id=owner,
+        name="P",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+        scope="user",
+        user_id=owner,
+        source="hitl_edit",
+    )
+    other = uuid4()
+    assert await repo.share_to_workspace(other, personal.id) is None
+    # State unchanged.
+    still_owned = await repo.get_owned(owner, personal.id)
+    assert still_owned is not None
+    assert still_owned.scope == "user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_share_to_workspace_returns_none_when_already_workspace(
+    repo_factory,
+) -> None:
+    """No-op (None) rather than error so the API layer maps to a 409
+    with a "already shared" reason instead of a generic 500."""
+    repo, owner = repo_factory
+    workspace = await repo.create(
+        owner_user_id=owner,
+        name="W",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+    )
+    assert await repo.share_to_workspace(owner, workspace.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_shared_skill_appears_in_list_workspace_active(
+    repo_factory,
+) -> None:
+    """End-to-end on the read path: a shared skill must immediately be
+    pickable up by `list_workspace_active` — that's what makes it
+    visible to other users' compose calls (PR-K + PR-L surface)."""
+    repo, owner = repo_factory
+    personal = await repo.create(
+        owner_user_id=owner,
+        name="Shareable",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+        scope="user",
+        user_id=owner,
+        source="hitl_edit",
+    )
+    # Pre-share: not in the workspace pool.
+    workspace_pre = await repo.list_workspace_active()
+    assert personal.id not in {s.id for s in workspace_pre}
+
+    await repo.share_to_workspace(owner, personal.id)
+
+    # Post-share: visible.
+    workspace_post = await repo.list_workspace_active()
+    assert personal.id in {s.id for s in workspace_post}

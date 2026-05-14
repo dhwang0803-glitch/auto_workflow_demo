@@ -38,12 +38,14 @@ const EMPTY_SKILLS_BODY = { skills: [] };
 test("Suggested from your edits: empty state when no candidates", async ({
   page,
 }) => {
-  await page.route("**/api/v1/personalization/candidates", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ candidates: [] }),
-    }),
+  await page.route(
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ candidates: [] }),
+      }),
   );
   await page.route("**/api/v1/skills*", (route) =>
     route.fulfill({
@@ -64,12 +66,18 @@ test("Suggested from your edits: empty state when no candidates", async ({
 test("Suggested from your edits: lists pending candidates with hints", async ({
   page,
 }) => {
-  await page.route("**/api/v1/personalization/candidates", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ candidates: PENDING }),
-    }),
+  await page.route(
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
+    async (route) => {
+      const url = new URL(route.request().url());
+      const status = url.searchParams.get("status") ?? "pending_review";
+      const candidates = status === "active" ? [] : PENDING;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ candidates }),
+      });
+    },
   );
   await page.route("**/api/v1/skills*", (route) =>
     route.fulfill({
@@ -100,13 +108,21 @@ test("Suggested from your edits: lists pending candidates with hints", async ({
 test("Suggested from your edits: activate calls API and refreshes list", async ({
   page,
 }) => {
-  let listCalls = 0;
+  let pendingCalls = 0;
   await page.route(
-    "**/api/v1/personalization/candidates",
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
     async (route) => {
-      listCalls += 1;
-      // First call returns 1 pending; second call (after activate) is empty.
-      const candidates = listCalls === 1 ? [PENDING[0]] : [];
+      const url = new URL(route.request().url());
+      const status = url.searchParams.get("status") ?? "pending_review";
+      if (status === "active") {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ candidates: [] }),
+        });
+      }
+      pendingCalls += 1;
+      const candidates = pendingCalls === 1 ? [PENDING[0]] : [];
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -140,18 +156,27 @@ test("Suggested from your edits: activate calls API and refreshes list", async (
 
   // After activate, list refetches and the row disappears.
   await expect(page.getByTestId("suggested-empty")).toBeVisible();
-  expect(listCalls).toBeGreaterThanOrEqual(2);
+  expect(pendingCalls).toBeGreaterThanOrEqual(2);
 });
 
 test("Suggested from your edits: reject opens reason form and POSTs", async ({
   page,
 }) => {
-  let listCalls = 0;
+  let pendingCalls = 0;
   await page.route(
-    "**/api/v1/personalization/candidates",
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
     async (route) => {
-      listCalls += 1;
-      const candidates = listCalls === 1 ? [PENDING[0]] : [];
+      const url = new URL(route.request().url());
+      const status = url.searchParams.get("status") ?? "pending_review";
+      if (status === "active") {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ candidates: [] }),
+        });
+      }
+      pendingCalls += 1;
+      const candidates = pendingCalls === 1 ? [PENDING[0]] : [];
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -200,4 +225,123 @@ test("Suggested from your edits: reject opens reason form and POSTs", async ({
   // List refreshes and row disappears.
   await expect(page.getByTestId("suggested-empty")).toBeVisible();
   expect(rejectBody).toMatchObject({ reason: "not generalizable" });
+});
+
+
+// --- PR-J: active personal lane + share ----------------------------------
+
+
+const ACTIVE_PERSONAL = [
+  {
+    id: "33333333-3333-3333-3333-333333333333",
+    user_id: ALICE,
+    hint: "Always pin retry to 5min on http nodes",
+    diff_signature: "sig:active1",
+    suggestion_hash: "hash-active-1",
+    status: "active",
+    created_at: "2026-05-13T10:00:00Z",
+    updated_at: "2026-05-13T10:00:00Z",
+  },
+];
+
+test("Suggested from your edits: active lane shows learned patterns with Share button", async ({
+  page,
+}) => {
+  await page.route(
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
+    async (route) => {
+      const url = new URL(route.request().url());
+      const status = url.searchParams.get("status") ?? "pending_review";
+      const candidates = status === "active" ? ACTIVE_PERSONAL : [];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ candidates }),
+      });
+    },
+  );
+  await page.route("**/api/v1/skills*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(EMPTY_SKILLS_BODY),
+    }),
+  );
+
+  await page.goto("/skills");
+  await expect(
+    page.getByTestId("active-personal-section"),
+  ).toBeVisible();
+  await expect(page.getByTestId("active-personal-count")).toContainText(
+    "1 active",
+  );
+  await expect(
+    page.getByTestId(`active-personal-hint-${ACTIVE_PERSONAL[0].id}`),
+  ).toContainText("Always pin retry to 5min on http nodes");
+  await expect(
+    page.getByTestId(`active-personal-share-${ACTIVE_PERSONAL[0].id}`),
+  ).toBeVisible();
+});
+
+test("Suggested from your edits: Share with team POSTs to /share and refreshes lane", async ({
+  page,
+}) => {
+  let shareCalls = 0;
+  let activeCalls = 0;
+  await page.route(
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
+    async (route) => {
+      const url = new URL(route.request().url());
+      const status = url.searchParams.get("status") ?? "pending_review";
+      if (status === "active") {
+        activeCalls += 1;
+        // First fetch: 1 active. After share, refetch: empty.
+        const candidates = activeCalls === 1 ? ACTIVE_PERSONAL : [];
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ candidates }),
+        });
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ candidates: [] }),
+      });
+    },
+  );
+  await page.route(
+    `**/api/v1/personalization/candidates/${ACTIVE_PERSONAL[0].id}/share`,
+    async (route) => {
+      shareCalls += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...ACTIVE_PERSONAL[0], status: "active" }),
+      });
+    },
+  );
+  await page.route("**/api/v1/skills*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(EMPTY_SKILLS_BODY),
+    }),
+  );
+
+  await page.goto("/skills");
+  await expect(
+    page.getByTestId(`active-personal-row-${ACTIVE_PERSONAL[0].id}`),
+  ).toBeVisible();
+
+  await page
+    .getByTestId(`active-personal-share-${ACTIVE_PERSONAL[0].id}`)
+    .click();
+
+  // Section disappears after share (no active rows left).
+  await expect(
+    page.getByTestId("active-personal-section"),
+  ).not.toBeVisible();
+  expect(shareCalls).toBe(1);
+  expect(activeCalls).toBeGreaterThanOrEqual(2);
 });

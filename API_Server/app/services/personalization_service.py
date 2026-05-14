@@ -254,6 +254,130 @@ class PersonalizationService:
         )
         return [_to_candidate_response(r) for r in rows]
 
+    async def list_active_personal_candidates(
+        self,
+        owner_user_id: UUID,
+    ) -> list[PersonalCandidateResponse]:
+        """Return the caller's active personal skills.
+
+        PR-J needs this so the Frontend can render an "active" lane
+        next to the pending list — that lane is where the "Share with
+        team" button lives. Workspace skills sit in a different
+        surface (skills router) and never appear here.
+        """
+        rows = await self._skills.list_owned(
+            owner_user_id,
+            status="active",
+            scope="user",
+        )
+        return [_to_candidate_response(r) for r in rows]
+
+    async def share_candidate(
+        self,
+        *,
+        owner_user_id: UUID,
+        candidate_id: UUID,
+    ) -> PersonalCandidateResponse:
+        """Promote one of the caller's active personal skills to the
+        workspace pool — Track C of the demo narrative.
+
+        Two side effects beyond the DB scope flip:
+        1. Audit row in `skill_sources` records `shared_by_user_id` so
+           future readers can attribute the policy ("originally from
+           alice's editing pattern").
+        2. Best-effort sync to the per-user JSON memory file marking the
+           entry inactive — once the row is workspace, the workspace
+           pool covers retrieval and the per-user file would otherwise
+           double-inject the same skill.
+
+        Raises NotFoundError if the caller doesn't own the row;
+        PersonalCandidateNotActionableError (409) if the skill is
+        already workspace OR isn't active.
+        """
+        existing = await self._skills.get_owned(owner_user_id, candidate_id)
+        if existing is None or existing.scope != "user":
+            raise NotFoundError(f"candidate {candidate_id} not found")
+        if existing.status != "active":
+            raise PersonalCandidateNotActionableError(
+                candidate_id, existing.status
+            )
+
+        shared = await self._skills.share_to_workspace(
+            owner_user_id, candidate_id
+        )
+        if shared is None:
+            # Race: someone else flipped the scope between the get and
+            # the share. Surface the same 409 the caller would see if
+            # they had hit the active-status check first.
+            raise PersonalCandidateNotActionableError(
+                candidate_id, "workspace"
+            )
+
+        await self._deactivate_in_personal_memory(
+            owner_user_id=owner_user_id,
+            shared_skill_id=candidate_id,
+            existing=existing,
+        )
+
+        # _to_candidate_response asserts user_id is set, but a shared
+        # workspace row has user_id=NULL by DB constraint. Build the
+        # response by hand using the caller's id as `user_id` — that's
+        # the right surface for the Frontend's "you just shared this"
+        # confirmation, and matches the attribution that
+        # `source_ref.shared_by_user_id` records persistently.
+        assert shared.created_at is not None
+        assert shared.updated_at is not None
+        src = shared.source_ref or {}
+        hint = (shared.condition or {}).get("text") or shared.description or ""
+        return PersonalCandidateResponse(
+            id=shared.id,
+            user_id=owner_user_id,
+            hint=hint,
+            diff_signature=src.get("diff_signature") or "",
+            suggestion_hash=shared.suggestion_hash,
+            status=shared.status,  # type: ignore[arg-type]
+            created_at=shared.created_at,
+            updated_at=shared.updated_at,
+        )
+
+    async def _deactivate_in_personal_memory(
+        self,
+        *,
+        owner_user_id: UUID,
+        shared_skill_id: UUID,
+        existing: Skill,
+    ) -> None:
+        """Mark the just-shared skill inactive in the user's JSON file.
+
+        Re-uses the upsert endpoint with `active=False` so the next
+        reflective-extract for this user sees pool_size shrink by one
+        — the workspace pool now covers the policy. Best-effort: a
+        transient sync failure logs a warning, the DB transition stays.
+        """
+        try:
+            await self._ai.upsert_personal_memory(
+                user_id=str(owner_user_id),
+                skill={
+                    "id": str(shared_skill_id),
+                    "condition": existing.condition or {},
+                    "action": existing.action or {},
+                    "suggestion_hash": existing.suggestion_hash or "",
+                    "source": existing.source or "hitl_edit",
+                    "first_observed_at": (
+                        existing.created_at.isoformat()
+                        if existing.created_at is not None
+                        else ""
+                    ),
+                    "active": False,
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "personalization: memory deactivate failed for skill %s (%s)",
+                shared_skill_id,
+                exc,
+            )
+
     async def activate_candidate(
         self,
         *,

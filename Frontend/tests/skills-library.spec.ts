@@ -61,8 +61,10 @@ const PENDING_SKILLS = [
 // mount. Stub it empty across every test below so the panel renders
 // deterministically without affecting the workspace skill assertions.
 async function stubEmptyPersonalization(page: import("@playwright/test").Page) {
+  // PR-J — the panel now hits two query variants (?status=pending_review
+  // and ?status=active). Regex matcher catches both with one route.
   await page.route(
-    "**/api/v1/personalization/candidates",
+    /\/api\/v1\/personalization\/candidates(\?|$)/,
     (route) =>
       route.fulfill({
         status: 200,

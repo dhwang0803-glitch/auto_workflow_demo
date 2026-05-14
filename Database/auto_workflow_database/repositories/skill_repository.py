@@ -210,3 +210,46 @@ class PostgresSkillRepository(SkillRepository):
             await s.refresh(row)
             source_ref = await _fetch_latest_source_ref(s, skill_id)
             return _to_dto(row, source_ref)
+
+    async def share_to_workspace(
+        self,
+        owner_user_id: UUID,
+        skill_id: UUID,
+    ) -> Skill | None:
+        async with self._sm() as s, s.begin():
+            row = await s.get(SkillORM, skill_id)
+            if row is None or row.owner_user_id != owner_user_id:
+                return None
+            if row.scope == "workspace":
+                return None  # already shared — caller maps to 409
+
+            # Capture the original user_id before we null it so the audit
+            # row records who first wrote the pattern.
+            original_user_id = row.user_id
+
+            row.scope = "workspace"
+            # `skills_user_scope_chk` requires NULL user_id when scope='workspace'.
+            row.user_id = None
+            row.updated_at = func.now()
+
+            # Append a new SkillSource audit row capturing the share event.
+            # The append-only model means previous source rows (the
+            # `observation` row PR-G wrote at extract time) survive — the
+            # latest source_ref query just surfaces the most recent one.
+            s.add(
+                SkillSourceORM(
+                    skill_id=row.id,
+                    source_type="observation",
+                    source_ref={
+                        "shared_by_user_id": str(original_user_id)
+                        if original_user_id is not None
+                        else None,
+                        "shared_from_personal": True,
+                    },
+                )
+            )
+
+            await s.flush()
+            await s.refresh(row)
+            source_ref = await _fetch_latest_source_ref(s, skill_id)
+            return _to_dto(row, source_ref)
