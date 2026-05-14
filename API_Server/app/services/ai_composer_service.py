@@ -441,6 +441,26 @@ _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 CatalogProvider = Callable[[], Awaitable[list[dict[str, Any]]]]
+# (user_id) → list of skills to inject. PR-K supplies workspace skills
+# only; PR-L extends the implementation to also concatenate the caller's
+# scope='user' skills. The provider is keyed by user_id from the
+# request so the per-user mix can be computed without the service
+# needing to know about scope semantics.
+SkillsProvider = Callable[[UUID], Awaitable[list["ComposeSkill"]]]
+
+
+@dataclass(frozen=True)
+class ComposeSkill:
+    """Compose-time projection of a `Skill` row.
+
+    The DTO is intentionally narrower than `auto_workflow_database.Skill` —
+    the LLM doesn't need ids, timestamps, or audit fields. Keeping the
+    surface tight also keeps the system-prompt token cost predictable.
+    """
+
+    name: str
+    when: str
+    do: str
 
 
 class AIComposerService:
@@ -451,12 +471,17 @@ class AIComposerService:
         catalog_provider: CatalogProvider,
         rate_per_minute: int,
         max_tokens: int,
+        skills_provider: SkillsProvider | None = None,
     ) -> None:
         # `backend=None` means the service is wired but disabled (no API key).
         # We let it instantiate so the container/router don't have to special-case;
         # `compose()` raises ComposerDisabledError on call.
         self._backend = backend
         self._catalog_provider = catalog_provider
+        # `skills_provider=None` keeps behavior identical to pre-PR-K so
+        # tests/dev envs that haven't wired a provider yet still work —
+        # an empty skills list omits the prompt section entirely.
+        self._skills_provider = skills_provider
         self._max_tokens = max_tokens
         self._rate_limiter = _InMemoryRateLimiter(per_minute=rate_per_minute)
 
@@ -474,7 +499,10 @@ class AIComposerService:
         await self._rate_limiter.acquire(str(user_id))
 
         catalog = await self._catalog_provider()
-        system = self._build_system_prompt(catalog, for_streaming=False)
+        skills = await self._fetch_skills(user_id)
+        system = self._build_system_prompt(
+            catalog, skills, for_streaming=False
+        )
         user_payload = self._build_user_message(current_dag, message)
 
         raw = await self._backend.complete(
@@ -513,7 +541,10 @@ class AIComposerService:
             return
 
         catalog = await self._catalog_provider()
-        system = self._build_system_prompt(catalog, for_streaming=True)
+        skills = await self._fetch_skills(user_id)
+        system = self._build_system_prompt(
+            catalog, skills, for_streaming=True
+        )
         user_payload = self._build_user_message(current_dag, message)
 
         parser = _RationaleStreamParser()
@@ -546,8 +577,26 @@ class AIComposerService:
 
     # -------------------------------------------------------- prompt build
 
+    async def _fetch_skills(self, user_id: UUID) -> list[ComposeSkill]:
+        """Pull the per-request skill mix the system prompt will inject.
+
+        A provider failure is logged and treated as an empty pool — the
+        compose call must not 5xx because the skill DB had a hiccup.
+        """
+        if self._skills_provider is None:
+            return []
+        try:
+            return await self._skills_provider(user_id)
+        except Exception:  # noqa: BLE001 — provider may hit DB / network
+            logger.exception("composer_skills_provider_failed")
+            return []
+
     def _build_system_prompt(
-        self, catalog: list[dict[str, Any]], *, for_streaming: bool
+        self,
+        catalog: list[dict[str, Any]],
+        skills: list[ComposeSkill],
+        *,
+        for_streaming: bool,
     ) -> str:
         catalog_json = json.dumps(catalog, ensure_ascii=False)
         # In streaming mode the model MUST narrate first inside
@@ -584,6 +633,29 @@ class AIComposerService:
                 '  "rationale": string  // why this DAG, in the user language\n'
                 "}\n"
             )
+        # Skills section — empty pool collapses to the empty string so a
+        # cold-start tenant gets exactly the pre-PR-K prompt back. ADR-023
+        # narrative invisibility: workspace and personal skills land in
+        # the same section without a scope label so the user experiences
+        # "the system already knows my team's policies" rather than
+        # parsing a workspace/personal taxonomy.
+        skills_section = ""
+        if skills:
+            skills_json = json.dumps(
+                [{"name": s.name, "when": s.when, "do": s.do} for s in skills],
+                ensure_ascii=False,
+            )
+            skills_section = (
+                "\n"
+                "When a request matches one of these team skills, weave "
+                "the skill's `do` into the DAG you propose; do NOT enumerate "
+                "skills back to the user.\n"
+                "\n"
+                "<skills>\n"
+                f"{skills_json}\n"
+                "</skills>\n"
+            )
+
         return (
             "You are a workflow-automation agent. The user describes an "
             "intent in natural language and you produce a directed acyclic "
@@ -609,6 +681,7 @@ class AIComposerService:
             "<node_catalog>\n"
             f"{catalog_json}\n"
             "</node_catalog>\n"
+            f"{skills_section}"
         )
 
     def _build_user_message(self, current_dag: dict | None, message: str) -> str:

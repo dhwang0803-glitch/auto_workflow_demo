@@ -153,6 +153,30 @@ class PostgresSkillRepository(SkillRepository):
             result = await s.execute(stmt)
             return [_to_dto(row, src) for row, src in result.all()]
 
+    async def list_workspace_active(
+        self, *, limit: int = 50
+    ) -> list[Skill]:
+        # Mirrors list_owned's correlated subquery so each row carries its
+        # most recent source_ref without a second query.
+        src_subq = (
+            select(SkillSourceORM.source_ref)
+            .where(SkillSourceORM.skill_id == SkillORM.id)
+            .order_by(SkillSourceORM.extracted_at.desc())
+            .limit(1)
+            .correlate(SkillORM)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(SkillORM, src_subq.label("source_ref"))
+            .where(SkillORM.scope == "workspace")
+            .where(SkillORM.status == "active")
+            .order_by(SkillORM.created_at.desc())
+            .limit(limit)
+        )
+        async with self._sm() as s:
+            result = await s.execute(stmt)
+            return [_to_dto(row, src) for row, src in result.all()]
+
     async def list_personal_suggestion_hashes(
         self, user_id: UUID
     ) -> list[str]:

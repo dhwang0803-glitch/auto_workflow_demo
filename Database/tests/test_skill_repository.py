@@ -257,6 +257,102 @@ async def test_list_owned_isolates_owners(repo_factory) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_list_workspace_active_returns_all_active_workspace_skills_regardless_of_owner(
+    repo_factory,
+) -> None:
+    """PR-K — workspace skills are shared across the team. The owner
+    column is audit-only; compose-time retrieval must surface every
+    active workspace skill regardless of who first wrote it."""
+    repo, owner_a = repo_factory
+
+    # Two different users contribute workspace skills; both should
+    # appear in the shared retrieval pool.
+    a_active = await repo.create(
+        owner_user_id=owner_a,
+        name="A active",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+    )
+    a_pending = await repo.create(
+        owner_user_id=owner_a,
+        name="A pending",
+        condition={"text": "c"},
+        action={"text": "a"},
+    )
+
+    # `repo_factory` only seeds one owner; the postgres variant has FK
+    # constraints on owner_user_id, so we reuse `owner_a` to create the
+    # rejected/archived/personal rows that must NOT appear.
+    archived = await repo.create(
+        owner_user_id=owner_a,
+        name="archived",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+    )
+    await repo.update_status(owner_a, archived.id, "archived")
+
+    workspace = await repo.list_workspace_active()
+    ids = {s.id for s in workspace}
+    assert a_active.id in ids
+    # pending / archived are filtered out by status, regardless of owner
+    assert a_pending.id not in ids
+    assert archived.id not in ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_list_workspace_active_excludes_personal_scope(
+    repo_factory,
+) -> None:
+    """Personal-scope skills (PLAN_14 PR-G HITL candidates) must never
+    leak into the workspace pool — the per-user file boundary the
+    reflective extract honors mirrors here for compose-path retrieval."""
+    repo, owner = repo_factory
+    workspace_skill = await repo.create(
+        owner_user_id=owner,
+        name="W",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+    )
+    personal_skill = await repo.create(
+        owner_user_id=owner,
+        name="P",
+        condition={"text": "c"},
+        action={"text": "a"},
+        status="active",
+        scope="user",
+        user_id=owner,
+        source="hitl_edit",
+        suggestion_hash="h-personal",
+    )
+
+    workspace = await repo.list_workspace_active()
+    ids = {s.id for s in workspace}
+    assert workspace_skill.id in ids
+    assert personal_skill.id not in ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
+async def test_list_workspace_active_respects_limit(repo_factory) -> None:
+    repo, owner = repo_factory
+    for i in range(5):
+        await repo.create(
+            owner_user_id=owner,
+            name=f"S{i}",
+            condition={"text": "c"},
+            action={"text": "a"},
+            status="active",
+        )
+    rows = await repo.list_workspace_active(limit=3)
+    assert len(rows) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repo_factory", PARAMS, indirect=True)
 async def test_update_status_returns_updated_dto(repo_factory) -> None:
     repo, owner = repo_factory
     skill = await repo.create(

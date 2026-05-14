@@ -774,6 +774,25 @@ class SkillRepository(ABC):
         ...
 
     @abstractmethod
+    async def list_workspace_active(
+        self, *, limit: int = 50
+    ) -> list[Skill]:
+        """Return active workspace skills regardless of owner.
+
+        Compose-time retrieval (PLAN_12 W3 / PR-K) injects these into the
+        AI Composer's system prompt so any team member's natural-language
+        request is grounded in the team's codified policies. `owner_user_id`
+        is intentionally NOT a filter — workspace skills are shared, the
+        owner column on the row is audit-only ("who first wrote it").
+
+        `limit` caps the prompt token cost. Newest-first so the most
+        recently added policy lands first when truncated. PR-K ships with
+        no embedding-based filter; a follow-up swaps in BGE-M3 retrieval
+        keyed off the user message once the prompt budget bites.
+        """
+        ...
+
+    @abstractmethod
     async def list_personal_suggestion_hashes(
         self, user_id: UUID
     ) -> list[str]:
