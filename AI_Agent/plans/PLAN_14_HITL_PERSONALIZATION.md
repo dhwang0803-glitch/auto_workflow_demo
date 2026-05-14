@@ -345,7 +345,7 @@ API_Server/tests/test_workflow_revisions.py      ← (신규)
 | **PR-F** | AI_Agent — **scope 축소** (2026-05-12): retrieval 풀 inject 및 단일 `## Skills` 섹션 표시는 PLAN_15 PR-γ (#172 `search_personal_skills` tool) 로 흡수됨. 본 PR 은 잔여 — route-level cross-user 격리 통합 테스트 (alice/bob 둘 다 file 보유 시 누출 X) 만. 단위 가드 (path traversal / anonymous / cold-start) 는 PR-γ 단위 테스트로 보장 | PR-E | AI_Agent |
 | **PR-G** | API_Server — `/api/v1/personalization/*` (extract_from_diff + list/activate/reject candidates) + Database SkillRepository `user_id`/`source`/`suggestion_hash` 확장 + 신규 `PersonalSkillReviewRepository` | PR-E | API_Server + Database |
 | **PR-H** | Frontend — Library "Suggested from your edits" 섹션 + 활성/편집/거절 UI + 워크플로 저장 시 revision 자동 기록 클라이언트 보강 | PR-G | Frontend |
-| **PR-I** | Modal smoke (`plan_14_personalization_smoke.py`) + 라이브 fixture 시나리오 통과 + 본 doc 측정결과 갱신 | PR-F + PR-H | AI_Agent |
+| **PR-I** | (1) modal_app.py `personal_memory_volume` mount + `PERSONAL_MEMORY_DIR` env (PR-D/E/G 가 누락한 인프라) — (2) AI_Agent `POST /v1/personalization/memory/upsert` (file write + BGE-M3 embedding) — (3) API_Server `PersonalizationService.activate_candidate` 가 best-effort upsert 호출 (closes DB↔JSON sync gap) — (4) Modal smoke (`plan_14_personalization_smoke.py`) PLAN_14 §4.8 5단계 + 단위 테스트 (writer 8 + route 5 + activate sync 2) — (5) 본 doc 측정결과 갱신 | PR-F + PR-H | AI_Agent + API_Server |
 | **(W4)** | 영상 시연 캡처 + writeup 통합 — 본 PLAN 의 narrative ("시스템이 사용자를 학습한다") 를 30초 시퀀스로 | PR-I | docs |
 
 총 9 PR. 각 PR 평균 0.5-1일. 8일 안에 직렬로 끝나는 페이스. PR-C 와 PR-B 는 PR-A 머지 후 병렬 가능 (Database 결정만 공유).
@@ -385,7 +385,8 @@ API_Server/tests/test_workflow_revisions.py      ← (신규)
 | 5/11 (D4) | doc PR + ADR-023 + PR-A (DB 마이그레이션, PLAN_15 PR-γ #171 흡수) + PR-Ba (#176) + PR-B (#177) | ✅ |
 | 5/12 (D5) | PR-C (#178 semantic diff) + PR-D (#179 personalization agent) + PR-E (#180 extract_from_diff) + PR-F (#181 cross-user 격리 가드, scope 축소) | ✅ |
 | 5/13 (D6) | PR-G (#182 API_Server `/api/v1/personalization/*` 프록시 + DB write — SkillRepository 확장 + PersonalSkillReviewRepository 신규 + 14 route tests) | ✅ |
-| 5/14 (D7) | **PR-H (Frontend "Suggested from your edits" UI + workflow save → revision_source + auto-trigger extract — 4 새 Playwright + tsc/lint/build green)** + PR-I (Modal smoke 라이브) | 진행 중 |
+| 5/14 (D7) | PR-H (#183 Frontend "Suggested from your edits" UI + workflow save → revision_source + auto-trigger extract — 4 새 Playwright + tsc/lint/build green) | ✅ |
+| 5/14 (D7+) | **PR-I — modal_app personal_memory volume + `/v1/personalization/memory/upsert` + activate sync + smoke + ADR-023 갱신** (DB↔JSON write path gap 발견 → scope 폭발) | 진행 중 |
 | 5/15-17 | 영상 시연 캡처 + writeup | — |
 | 5/18 (D11) | 제출 (버퍼) | — |
 
