@@ -679,12 +679,13 @@ async def test_compose_omits_skills_section_when_pool_is_empty(
         await _truncate(app)
 
 
-async def test_compose_excludes_personal_skills_from_workspace_pool(
+async def test_compose_injects_callers_personal_skills(
     composer_client_factory,
 ):
-    """PR-K boundary — personal skills (scope='user') must NOT land in
-    the workspace pool. PR-L will add per-user injection on top through
-    the same provider; PR-K alone keeps the file boundary tight."""
+    """PR-L — the caller's active personal skills (scope='user',
+    user_id=caller) join the workspace pool in the same `<skills>`
+    block. ADR-023 narrative invisibility: no scope label, the LLM
+    sees one merged list."""
     canned = _wrap_json(
         {
             "intent": "draft",
@@ -706,6 +707,7 @@ async def test_compose_excludes_personal_skills_from_workspace_pool(
         owner_id_str = _json.loads(base64.urlsafe_b64decode(payload_b64))["sub"]
         from uuid import UUID as _UUID
         owner_id = _UUID(owner_id_str)
+
         await skill_repo.create(
             owner_user_id=owner_id,
             name="Workspace policy",
@@ -715,14 +717,14 @@ async def test_compose_excludes_personal_skills_from_workspace_pool(
         )
         await skill_repo.create(
             owner_user_id=owner_id,
-            name="Personal pattern",
+            name="My personal pattern",
             condition={"text": "personal condition"},
             action={"text": "personal action"},
             status="active",
             scope="user",
             user_id=owner_id,
             source="hitl_edit",
-            suggestion_hash="h-personal-x",
+            suggestion_hash="h-callers",
         )
 
         r = await client.post(
@@ -732,7 +734,165 @@ async def test_compose_excludes_personal_skills_from_workspace_pool(
 
         sys_prompt = backend.last_system or ""
         assert "Workspace policy" in sys_prompt
-        assert "Personal pattern" not in sys_prompt
-        assert "personal condition" not in sys_prompt
+        # PR-L: caller's own personal skill DOES surface
+        assert "My personal pattern" in sys_prompt
+        assert "personal condition" in sys_prompt
+        # Single section, no scope label leaking out (narrative invisibility)
+        assert "personal" not in sys_prompt.lower().split("<skills>")[0]
+
+        await _truncate(app)
+
+
+async def test_compose_does_not_leak_other_users_personal_skills(
+    composer_client_factory,
+):
+    """PR-L cross-user isolation guard — alice's personal skills must
+    NEVER appear in bob's compose system prompt. The per-user file
+    boundary the reflective extract honors mirrors here for compose
+    retrieval — broken isolation = privacy violation, blocks merge."""
+    canned = _wrap_json(
+        {
+            "intent": "draft",
+            "clarify_questions": None,
+            "proposed_dag": {"nodes": [], "edges": []},
+            "diff": None,
+            "rationale": "x",
+        }
+    )
+    backend, app, client = await composer_client_factory(canned)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        # Create alice via the auth flow so she exists in `users` (FK).
+        from urllib.parse import parse_qs, urlparse
+        alice_email = "alice-leak@example.com"
+        password = "correct-horse-8"
+        r = await client.post(
+            "/api/v1/auth/register",
+            json={"email": alice_email, "password": password},
+        )
+        assert r.status_code == 201
+        link = next(
+            l for (to, l) in app.state.email_sender.sent if to == alice_email
+        )
+        token = parse_qs(urlparse(link).query)["token"][0]
+        await client.get("/api/v1/auth/verify", params={"token": token})
+        login = await client.post(
+            "/api/v1/auth/login",
+            data={"username": alice_email, "password": password},
+        )
+        # Decode alice's id without a separate API surface.
+        import base64, json as _json
+        from uuid import UUID as _UUID
+        alice_token = login.json()["access_token"]
+        alice_payload = _json.loads(
+            base64.urlsafe_b64decode(alice_token.split(".")[1] + "==")
+        )
+        alice_id = _UUID(alice_payload["sub"])
+
+        # Seed alice's personal skill (must NOT leak to bob).
+        skill_repo = app.state.skill_repo
+        await skill_repo.create(
+            owner_user_id=alice_id,
+            name="Alice secret pattern",
+            condition={"text": "alice secret condition"},
+            action={"text": "alice secret action"},
+            status="active",
+            scope="user",
+            user_id=alice_id,
+            source="hitl_edit",
+            suggestion_hash="h-alice-secret",
+        )
+
+        # Now register bob and call compose AS bob.
+        await _register_and_login(client, app)
+        r = await client.post(
+            "/api/v1/ai/compose", json={"message": "draft"}
+        )
+        assert r.status_code == 200, r.text
+
+        sys_prompt = backend.last_system or ""
+        assert "Alice secret pattern" not in sys_prompt
+        assert "alice secret condition" not in sys_prompt
+        assert "alice secret action" not in sys_prompt
+
+        await _truncate(app)
+
+
+async def test_compose_excludes_other_users_personal_skills_even_with_workspace_pool(
+    composer_client_factory,
+):
+    """Belt-and-braces — even when the workspace pool is non-empty
+    (avoiding the empty-section short-circuit), the SQL-level user_id
+    filter on personal skills must hold for the cross-user case."""
+    canned = _wrap_json(
+        {
+            "intent": "draft",
+            "clarify_questions": None,
+            "proposed_dag": {"nodes": [], "edges": []},
+            "diff": None,
+            "rationale": "x",
+        }
+    )
+    backend, app, client = await composer_client_factory(canned)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        # alice
+        from urllib.parse import parse_qs, urlparse
+        alice_email = "alice-mixed@example.com"
+        password = "correct-horse-8"
+        await client.post(
+            "/api/v1/auth/register",
+            json={"email": alice_email, "password": password},
+        )
+        link = next(
+            l for (to, l) in app.state.email_sender.sent if to == alice_email
+        )
+        token = parse_qs(urlparse(link).query)["token"][0]
+        await client.get("/api/v1/auth/verify", params={"token": token})
+        login = await client.post(
+            "/api/v1/auth/login",
+            data={"username": alice_email, "password": password},
+        )
+        import base64, json as _json
+        from uuid import UUID as _UUID
+        alice_payload = _json.loads(
+            base64.urlsafe_b64decode(
+                login.json()["access_token"].split(".")[1] + "=="
+            )
+        )
+        alice_id = _UUID(alice_payload["sub"])
+
+        skill_repo = app.state.skill_repo
+        await skill_repo.create(
+            owner_user_id=alice_id,
+            name="Workspace shared",
+            condition={"text": "shared condition"},
+            action={"text": "shared action"},
+            status="active",
+        )
+        await skill_repo.create(
+            owner_user_id=alice_id,
+            name="Alice private",
+            condition={"text": "private cond"},
+            action={"text": "private act"},
+            status="active",
+            scope="user",
+            user_id=alice_id,
+            source="hitl_edit",
+            suggestion_hash="h-alice-private",
+        )
+
+        # bob compose
+        await _register_and_login(client, app)
+        r = await client.post(
+            "/api/v1/ai/compose", json={"message": "draft"}
+        )
+        assert r.status_code == 200, r.text
+
+        sys_prompt = backend.last_system or ""
+        assert "Workspace shared" in sys_prompt
+        assert "shared condition" in sys_prompt
+        assert "Alice private" not in sys_prompt
+        assert "private cond" not in sys_prompt
 
         await _truncate(app)

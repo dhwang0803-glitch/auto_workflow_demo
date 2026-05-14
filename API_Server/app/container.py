@@ -127,24 +127,32 @@ class AppContainer:
                     api_key=settings.anthropic_api_key,
                     model=settings.anthropic_model,
                 )
-        # PR-K — compose-time skill retrieval. Pulls active workspace
-        # skills (any owner) so every team member's natural-language
-        # request lands in a system prompt grounded in the team's
-        # codified policies. user_id is currently unused — PR-L extends
-        # the closure to also concatenate the caller's scope='user'
-        # skills, then the parameter starts mattering.
+        # PR-K + PR-L — compose-time skill retrieval. Concatenates active
+        # workspace skills (shared across the team) with the caller's
+        # active personal skills (scope='user', user_id=caller). Both
+        # land in a single system-prompt `<skills>` block without a
+        # scope label — ADR-023 narrative invisibility: the user
+        # experiences "the system already knows" rather than parsing a
+        # workspace/personal taxonomy.
+        #
+        # User-scoping is enforced on the personal call: `list_owned`
+        # filters by owner_user_id at the SQL level, so alice's request
+        # cannot surface bob's personal skills regardless of any race
+        # against the workspace pool.
         async def _compose_skills_provider(
             user_id: UUID,
         ) -> list[ComposeSkill]:
-            del user_id  # PR-L will use this; PR-K returns the same pool.
-            rows = await self.skill_repo.list_workspace_active()
+            workspace_rows = await self.skill_repo.list_workspace_active()
+            personal_rows = await self.skill_repo.list_owned(
+                user_id, status="active", scope="user"
+            )
             return [
                 ComposeSkill(
                     name=r.name,
                     when=(r.condition or {}).get("text") or r.description or "",
                     do=(r.action or {}).get("text") or "",
                 )
-                for r in rows
+                for r in workspace_rows + personal_rows
             ]
 
         self.ai_composer_service = AIComposerService(
