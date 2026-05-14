@@ -822,6 +822,28 @@ class SkillRepository(ABC):
         """
         ...
 
+    @abstractmethod
+    async def share_to_workspace(
+        self,
+        owner_user_id: UUID,
+        skill_id: UUID,
+    ) -> Skill | None:
+        """Promote one of the caller's personal skills to the workspace pool.
+
+        Flips `scope` from `'user'` to `'workspace'`, clears `user_id`
+        (the `skills_user_scope_chk` constraint requires NULL user_id
+        for workspace rows), and merges audit metadata into `source_ref`
+        so "who originally wrote this" survives the promotion. The skill
+        keeps its `id`, `suggestion_hash`, `name`, `condition`, and
+        `action`; only the scope/user_id/source_ref change. `updated_at`
+        bumps so the workspace pool sees the new row at the front.
+
+        Returns None if the skill is missing, not owned by the caller,
+        or already `scope='workspace'` (no-op rather than error so the
+        API layer can wrap it in a 409 with a specific reason).
+        """
+        ...
+
 
 class PersonalSkillReviewRepository(ABC):
     """User-scoped review-decision log — PLAN_14 §4.3.

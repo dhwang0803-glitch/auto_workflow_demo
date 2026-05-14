@@ -6,6 +6,7 @@ import {
   activatePersonalCandidate,
   listPersonalCandidates,
   rejectPersonalCandidate,
+  sharePersonalCandidate,
   type PersonalCandidate,
 } from "@/lib/personalization";
 
@@ -26,12 +27,17 @@ import {
 // text in English for Kaggle review).
 
 export function SuggestedFromEdits() {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["personalization-candidates"],
-    queryFn: listPersonalCandidates,
+  const pendingQuery = useQuery({
+    queryKey: ["personalization-candidates", "pending_review"],
+    queryFn: () => listPersonalCandidates("pending_review"),
+  });
+  const activeQuery = useQuery({
+    queryKey: ["personalization-candidates", "active"],
+    queryFn: () => listPersonalCandidates("active"),
   });
 
-  const candidates = data?.candidates ?? [];
+  const pending = pendingQuery.data?.candidates ?? [];
+  const active = activeQuery.data?.candidates ?? [];
 
   return (
     <section
@@ -45,18 +51,19 @@ export function SuggestedFromEdits() {
           </h2>
           <p className="mt-1 text-xs text-indigo-800/80">
             Patterns we noticed when you edited recent AI drafts. Activate
-            to teach the system; reject to silence the same hint.
+            to teach the system; reject to silence the same hint; share to
+            give the rest of the team the same lift.
           </p>
         </div>
         <span
           className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-indigo-700"
           data-testid="suggested-count"
         >
-          {candidates.length} pending
+          {pending.length} pending
         </span>
       </header>
 
-      {isLoading && (
+      {pendingQuery.isLoading && (
         <p
           className="text-sm text-indigo-700"
           data-testid="suggested-loading"
@@ -65,16 +72,18 @@ export function SuggestedFromEdits() {
         </p>
       )}
 
-      {error && (
+      {pendingQuery.error && (
         <pre
           className="whitespace-pre-wrap text-sm text-red-600"
           data-testid="suggested-error"
         >
-          {error instanceof Error ? error.message : String(error)}
+          {pendingQuery.error instanceof Error
+            ? pendingQuery.error.message
+            : String(pendingQuery.error)}
         </pre>
       )}
 
-      {data && candidates.length === 0 && (
+      {pendingQuery.data && pending.length === 0 && (
         <div
           className="text-sm text-indigo-800/70"
           data-testid="suggested-empty"
@@ -84,12 +93,40 @@ export function SuggestedFromEdits() {
         </div>
       )}
 
-      {candidates.length > 0 && (
+      {pending.length > 0 && (
         <ul className="space-y-2" data-testid="suggested-list">
-          {candidates.map((c) => (
+          {pending.map((c) => (
             <CandidateRow key={c.id} candidate={c} />
           ))}
         </ul>
+      )}
+
+      {/* PR-J — active personal-skill lane: share with the team */}
+      {active.length > 0 && (
+        <div className="mt-4" data-testid="active-personal-section">
+          <header className="mb-2 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-indigo-900">
+                Patterns the system learned from you
+              </h3>
+              <p className="mt-1 text-xs text-indigo-800/80">
+                Share with the team to add this to the workspace baseline —
+                anyone drafting a workflow will get the same lift.
+              </p>
+            </div>
+            <span
+              className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-indigo-700"
+              data-testid="active-personal-count"
+            >
+              {active.length} active
+            </span>
+          </header>
+          <ul className="space-y-2" data-testid="active-personal-list">
+            {active.map((c) => (
+              <ActivePersonalRow key={c.id} candidate={c} />
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );
@@ -100,9 +137,14 @@ function CandidateRow({ candidate }: { candidate: PersonalCandidate }) {
   const [rejectReason, setRejectReason] = useState("");
   const [showRejectForm, setShowRejectForm] = useState(false);
 
+  // Both lanes share the prefix so a single invalidate refreshes the
+  // pending query (which loses this row) AND the active query (which
+  // gains it on activate). React Query treats `["personalization-candidates"]`
+  // as a prefix when the predicate uses `exact: false`.
   const invalidate = () =>
     queryClient.invalidateQueries({
       queryKey: ["personalization-candidates"],
+      exact: false,
     });
 
   const activateMutation = useMutation({
@@ -216,6 +258,62 @@ function CandidateRow({ candidate }: { candidate: PersonalCandidate }) {
           </div>
         </div>
       )}
+    </li>
+  );
+}
+
+// PR-J — active personal-skill row with a single Share affordance.
+// Activate / Reject have already happened by the time a row reaches
+// here; the only remaining decision is whether to keep it private or
+// promote it to the workspace pool so the rest of the team gets the
+// same lift on their next compose request.
+function ActivePersonalRow({ candidate }: { candidate: PersonalCandidate }) {
+  const queryClient = useQueryClient();
+
+  const shareMutation = useMutation({
+    mutationFn: () => sharePersonalCandidate(candidate.id),
+    onSuccess: () => {
+      // Drops the row from the active personal lane (now workspace).
+      // Invalidate the workspace skill listing too so the library
+      // surface picks the new shared row up immediately.
+      queryClient.invalidateQueries({
+        queryKey: ["personalization-candidates"],
+        exact: false,
+      });
+      queryClient.invalidateQueries({ queryKey: ["skills"] });
+    },
+  });
+
+  return (
+    <li
+      className="rounded border border-indigo-200 bg-white p-3"
+      data-testid={`active-personal-row-${candidate.id}`}
+    >
+      <p
+        className="mb-2 text-sm text-gray-800"
+        data-testid={`active-personal-hint-${candidate.id}`}
+      >
+        {candidate.hint || "(empty hint)"}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={shareMutation.isPending}
+          onClick={() => shareMutation.mutate()}
+          className="rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-700 disabled:bg-gray-300"
+          data-testid={`active-personal-share-${candidate.id}`}
+        >
+          {shareMutation.isPending ? "Sharing…" : "Share with team"}
+        </button>
+        {shareMutation.error && (
+          <span
+            className="text-[11px] text-red-600"
+            data-testid={`active-personal-error-${candidate.id}`}
+          >
+            {(shareMutation.error as Error).message}
+          </span>
+        )}
+      </div>
     </li>
   );
 }

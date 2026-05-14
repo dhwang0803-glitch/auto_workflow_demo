@@ -665,6 +665,38 @@ class InMemorySkillRepository(SkillRepository):
         s.updated_at = datetime.now(timezone.utc)
         return self._hydrate(s)
 
+    async def share_to_workspace(
+        self,
+        owner_user_id: UUID,
+        skill_id: UUID,
+    ) -> Skill | None:
+        s = self._store.get(skill_id)
+        if s is None or s.owner_user_id != owner_user_id:
+            return None
+        if s.scope == "workspace":
+            return None
+        original_user_id = s.user_id
+        s.scope = "workspace"
+        s.user_id = None
+        s.updated_at = datetime.now(timezone.utc)
+        # Mirror the Postgres impl's append-only source row so the
+        # latest source_ref the hydrated DTO carries is the share
+        # attribution.
+        self._sources.append(
+            {
+                "skill_id": skill_id,
+                "source_type": "observation",
+                "source_ref": {
+                    "shared_by_user_id": str(original_user_id)
+                    if original_user_id is not None
+                    else None,
+                    "shared_from_personal": True,
+                },
+                "extracted_at": datetime.now(timezone.utc),
+            }
+        )
+        return self._hydrate(s)
+
 
 class InMemoryPersonalSkillReviewRepository(PersonalSkillReviewRepository):
     """In-memory fake for PR-G route tests.

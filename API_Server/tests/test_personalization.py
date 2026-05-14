@@ -777,3 +777,177 @@ async def test_workspace_skills_not_listed_as_candidates(pz_client_factory):
         assert listing.json()["candidates"] == []
 
         await _truncate(app)
+
+
+# --- share (PR-J) -----------------------------------------------------
+
+
+async def test_share_promotes_active_personal_skill_to_workspace(
+    pz_client_factory,
+):
+    """PR-J — POST /candidates/{id}/share flips an active personal
+    skill into the workspace pool. The DB scope changes; the AI_Agent
+    memory file is best-effort deactivated. Response has status=active
+    (the share doesn't change status, only scope) and the row no
+    longer appears in the active personal listing."""
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(
+            hint="post slack on invoice",
+            suggestion_hash="h-share-1",
+        ),
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="share@example.com")
+        wf_id = await _seed_workflow_with_diff_pair(client)
+
+        ex = await client.post(
+            "/api/v1/personalization/extract_from_diff",
+            json={"workflow_id": str(wf_id)},
+        )
+        cid = ex.json()["candidate_id"]
+        await client.post(
+            f"/api/v1/personalization/candidates/{cid}/activate"
+        )
+
+        active_pre = await client.get(
+            "/api/v1/personalization/candidates?status=active"
+        )
+        assert active_pre.status_code == 200
+        assert len(active_pre.json()["candidates"]) == 1
+
+        share = await client.post(
+            f"/api/v1/personalization/candidates/{cid}/share"
+        )
+        assert share.status_code == 200, share.text
+        assert share.json()["status"] == "active"
+
+        active_post = await client.get(
+            "/api/v1/personalization/candidates?status=active"
+        )
+        assert active_post.status_code == 200
+        assert active_post.json()["candidates"] == []
+
+        deactivate_calls = [
+            c
+            for c in fake.upsert_calls
+            if c["skill"]["id"] == cid and c["skill"]["active"] is False
+        ]
+        assert len(deactivate_calls) == 1
+
+        await _truncate(app)
+
+
+async def test_share_409_when_candidate_not_active(pz_client_factory):
+    """Pending or archived candidates can't be shared — only active."""
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(hint="x", suggestion_hash="h-pending"),
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="share-409@example.com")
+        wf_id = await _seed_workflow_with_diff_pair(client)
+        ex = await client.post(
+            "/api/v1/personalization/extract_from_diff",
+            json={"workflow_id": str(wf_id)},
+        )
+        cid = ex.json()["candidate_id"]
+
+        share = await client.post(
+            f"/api/v1/personalization/candidates/{cid}/share"
+        )
+        assert share.status_code == 409, share.text
+
+        await _truncate(app)
+
+
+async def test_share_404_for_other_user(pz_client_factory):
+    """alice's candidate can't be shared by bob — auth check at the
+    repo layer surfaces as 404 (privacy: don't even confirm the row
+    exists for unrelated users)."""
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(hint="x", suggestion_hash="h-share-404"),
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="alice-share@example.com")
+        wf_id = await _seed_workflow_with_diff_pair(client)
+        ex = await client.post(
+            "/api/v1/personalization/extract_from_diff",
+            json={"workflow_id": str(wf_id)},
+        )
+        cid = ex.json()["candidate_id"]
+        await client.post(
+            f"/api/v1/personalization/candidates/{cid}/activate"
+        )
+
+        client.headers.pop("Authorization", None)
+        await _register_and_login(client, app, email="bob-share@example.com")
+
+        share = await client.post(
+            f"/api/v1/personalization/candidates/{cid}/share"
+        )
+        assert share.status_code == 404
+        await _truncate(app)
+
+
+async def test_list_candidates_status_active_filter(pz_client_factory):
+    """The new ?status=active query parameter returns active personal
+    skills (used by the Frontend share lane)."""
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(hint="x", suggestion_hash="h-active-list"),
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="active-list@example.com")
+        wf_id = await _seed_workflow_with_diff_pair(client)
+        ex = await client.post(
+            "/api/v1/personalization/extract_from_diff",
+            json={"workflow_id": str(wf_id)},
+        )
+        cid = ex.json()["candidate_id"]
+
+        pending = await client.get(
+            "/api/v1/personalization/candidates?status=pending_review"
+        )
+        active_empty = await client.get(
+            "/api/v1/personalization/candidates?status=active"
+        )
+        assert len(pending.json()["candidates"]) == 1
+        assert active_empty.json()["candidates"] == []
+
+        await client.post(
+            f"/api/v1/personalization/candidates/{cid}/activate"
+        )
+
+        pending_post = await client.get(
+            "/api/v1/personalization/candidates?status=pending_review"
+        )
+        active_post = await client.get(
+            "/api/v1/personalization/candidates?status=active"
+        )
+        assert pending_post.json()["candidates"] == []
+        assert len(active_post.json()["candidates"]) == 1
+
+        await _truncate(app)
+
+
+async def test_list_candidates_rejects_unsupported_status(pz_client_factory):
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(hint="x", suggestion_hash="h"),
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="bad-status@example.com")
+
+        r = await client.get(
+            "/api/v1/personalization/candidates?status=archived"
+        )
+        assert r.status_code == 400
+
+        await _truncate(app)

@@ -54,9 +54,11 @@ export const extractFromDiff = (workflowId: string) =>
     jsonInit({ workflow_id: workflowId }),
   );
 
-export const listPersonalCandidates = () =>
+export const listPersonalCandidates = (
+  status: "pending_review" | "active" = "pending_review",
+) =>
   apiFetch<PersonalCandidateListResponse>(
-    "/api/v1/personalization/candidates",
+    `/api/v1/personalization/candidates?status=${status}`,
   );
 
 export const activatePersonalCandidate = (id: string) =>
@@ -69,4 +71,16 @@ export const rejectPersonalCandidate = (id: string, reason?: string) =>
   apiFetch<PersonalCandidate>(
     `/api/v1/personalization/candidates/${id}/reject`,
     jsonInit({ reason: reason ?? null }),
+  );
+
+// PR-J — promote one of the caller's active personal skills into the
+// shared workspace pool. The DB scope flips from 'user' to 'workspace';
+// AI_Agent's per-user memory file marks the entry inactive (best-effort);
+// the response carries `status='active'` (share doesn't change status,
+// only scope) and the row drops out of the active-personal listing on
+// the next `listPersonalCandidates('active')` fetch.
+export const sharePersonalCandidate = (id: string) =>
+  apiFetch<PersonalCandidate>(
+    `/api/v1/personalization/candidates/${id}/share`,
+    { method: "POST" },
   );
