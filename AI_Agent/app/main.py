@@ -57,6 +57,7 @@ from app.services.domain_classifier import (
     classify_domain,
 )
 from app.services.industry_baselines import IndustryBaselinePool
+from app.agents.tracing import traceable
 from app.services.personal_memory import (
     PersonalMemoryPool,
     PersonalMemoryWriteError,
@@ -124,12 +125,37 @@ def create_app(
                 return JSONResponse({"detail": "invalid bearer"}, status_code=403)
             return await call_next(request)
 
+    # PR-M — wrap the LLM call in a `@traceable` helper so LangSmith
+    # records the system + user_message + response per call. The
+    # decorator is a no-op when LangSmith is off (`tracing.py`), so the
+    # signature reads identically in tests; in production runs it
+    # surfaces the system prompt that PR-K/L now mix workspace +
+    # personal skills into, which is the only practical way to verify
+    # live "the system already knows" injection without a roundtrip
+    # through model output.
+    @traceable(run_type="llm", name="ai_complete")
+    async def _traced_complete(
+        *,
+        backend: LLMBackend,
+        system: str,
+        user_message: str,
+        max_tokens: int,
+        images: list[str] | None,
+    ) -> str:
+        return await backend.complete(
+            system=system,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            images=images,
+        )
+
     @app.post("/v1/complete", response_model=CompleteResponse)
     async def complete(
         payload: CompleteRequest,
         backend: LLMBackend = Depends(get_backend),
     ) -> CompleteResponse:
-        text = await backend.complete(
+        text = await _traced_complete(
+            backend=backend,
             system=payload.system,
             user_message=payload.user_message,
             max_tokens=payload.max_tokens,
@@ -142,6 +168,12 @@ def create_app(
         payload: CompleteRequest,
         backend: LLMBackend = Depends(get_backend),
     ) -> StreamingResponse:
+        # PR-M intentionally does NOT wrap the SSE path in @traceable
+        # — wrapping would force buffering (langsmith records the full
+        # output) and break the progressive token UX the Frontend chat
+        # panel renders. The system-prompt verification surface PR-M
+        # adds for the live demo lives on `/v1/complete`; scenarios
+        # call compose without `?stream=true`.
         async def _iter() -> AsyncIterator[bytes]:
             async for chunk in backend.stream(
                 system=payload.system,

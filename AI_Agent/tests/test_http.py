@@ -238,3 +238,35 @@ async def test_stream_yields_chunks_in_order() -> None:
                 if chunk:
                     collected.append(chunk)
     assert "".join(collected) == "onetwothree"
+
+
+# --- PR-M: traceable wrap on /v1/complete --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_routes_through_traced_helper() -> None:
+    """PR-M wrapped the LLM call in `_traced_complete` so LangSmith
+    records the system + user_message + response when tracing is on.
+    Tracing is off in tests (TRACING_ENABLED is computed at import
+    time), so the no-op `traceable` decorator is in place — but the
+    helper is still in the call chain. Asserting the route returns the
+    backend's response verbatim catches accidental signature drift on
+    the helper (e.g. forgetting an arg passes silently when the
+    decorator is a no-op)."""
+    backend = _FakeBackend(response="hello-pr-m")
+    app = create_app(backend_override=backend)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/v1/complete",
+            json={
+                "system": "you are a workflow agent",
+                "user_message": "draft an invoice flow",
+                "max_tokens": 64,
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"text": "hello-pr-m"}
+    # Backend received the same args the route + helper plumbed through.
+    assert backend.last_system == "you are a workflow agent"
+    assert backend.last_user == "draft an invoice flow"
