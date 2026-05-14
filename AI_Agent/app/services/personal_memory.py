@@ -19,6 +19,11 @@ short-circuit retrieval and feed the agent a `pool_size=0` observation
 the system prompt teaches it to interpret as "skip retrieval, go
 straight to extract_policies." Preserves the GitLab smoke baseline
 (+3 cand vs single-shot) for `user_id=None` requests.
+
+PR-I added the write side (`upsert_personal_skill`) — API_Server's
+`activate_candidate` calls into AI_Agent which lands here. The write
+path mirrors the read path's user_id sanitization so callers cannot
+escape the base directory regardless of which side originated the id.
 """
 from __future__ import annotations
 
@@ -26,10 +31,14 @@ import json
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+PERSONAL_MEMORY_VOLUME_NAME = "agent-personal-memory"
 
 
 # Restrict user_id characters that may appear in a filename. The route
@@ -198,3 +207,158 @@ def _entry_from_dict(item: Any) -> PersonalSkillEntry | None:
 
 def _dot(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
+
+
+# --- writer (PR-I) -------------------------------------------------------
+
+
+class PersonalMemoryWriteError(Exception):
+    """Raised when the per-user JSON file cannot be persisted.
+
+    Surfaces as 5xx at the route. Distinct from the load-side soft
+    failures because a write loss is not silently recoverable — the
+    caller (API_Server activate_candidate) needs to know.
+    """
+
+
+def _safe_user_path(base_dir: str, user_id: str) -> str:
+    """Return `{base_dir}/{user_id}.json`, raising on traversal.
+
+    Mirrors the load() guard so the write path can't be tricked into
+    overwriting (or creating) files outside the memory dir even when
+    the caller is a privileged API_Server.
+    """
+    if not base_dir:
+        raise PersonalMemoryWriteError("personal_memory_dir is not configured")
+    if not user_id or not _USER_ID_SAFE.match(user_id):
+        raise PersonalMemoryWriteError(f"unsafe user_id {user_id!r}")
+    return os.path.join(base_dir, f"{user_id}.json")
+
+
+def _read_existing(path: str, user_id: str) -> dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        data = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        # Quarantine the malformed file so the next read doesn't keep
+        # tripping the same warning. Then start fresh — losing the bad
+        # blob is preferable to refusing all future writes for the user.
+        logger.warning(
+            "personal_memory: file %s unreadable (%s) — quarantining and restarting",
+            path,
+            exc,
+        )
+        try:
+            os.replace(path, f"{path}.corrupt")
+        except OSError:
+            pass
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("user_id", user_id)
+    data.setdefault("version", "v1")
+    data.setdefault("skills", [])
+    data.setdefault("reviews", [])
+    if not isinstance(data["skills"], list):
+        data["skills"] = []
+    return data
+
+
+async def _commit_volume_best_effort() -> None:
+    """Push the just-written file to other Modal containers.
+
+    Modal Volumes only sync across containers on `commit()`; without
+    this the next reflective-extract request that lands on a different
+    warm container would still see the pre-write file and the personal
+    skill would not surface. No-op when the Modal SDK isn't installed
+    (pytest) or when the volume name isn't published yet (local dev).
+
+    Uses Modal's async `.aio()` shim when available so we don't block
+    the event loop for the network-bound commit; falls back to a
+    thread-offload of the sync API for older Modal versions.
+    """
+    try:
+        import modal  # type: ignore
+    except ImportError:
+        return
+    try:
+        vol = modal.Volume.from_name(PERSONAL_MEMORY_VOLUME_NAME)
+        commit_aio = getattr(vol.commit, "aio", None)
+        if commit_aio is not None:
+            await commit_aio()
+        else:
+            import asyncio
+
+            await asyncio.to_thread(vol.commit)
+    except Exception as exc:  # noqa: BLE001 — Modal raises a tree of errors
+        logger.warning(
+            "personal_memory: volume commit skipped (%s)", exc
+        )
+
+
+async def upsert_personal_skill(
+    *,
+    base_dir: str,
+    user_id: str,
+    entry: PersonalSkillEntry,
+) -> int:
+    """Append or update one skill entry in the user's JSON file.
+
+    Idempotent on `entry.id`: when the id already exists the row is
+    replaced (so re-activating after an edit produces one row, not two).
+    Returns the new active-skill count so the caller can include it in
+    the response without a follow-up read.
+
+    Persists via tmp-file + `os.replace`, atomic on both POSIX and
+    Windows (Python 3.3+). Commits the Modal Volume after rename so
+    other warm containers see the new row on their next request.
+    """
+    path = _safe_user_path(base_dir, user_id)
+    os.makedirs(base_dir, exist_ok=True)
+    data = _read_existing(path, user_id)
+
+    new_row = {
+        "id": entry.id,
+        "condition": entry.condition,
+        "action": entry.action,
+        "suggestion_hash": entry.suggestion_hash,
+        "embedding": entry.embedding,
+        "source": entry.source,
+        "first_observed_at": entry.first_observed_at,
+        "active": entry.active,
+    }
+    skills: list[dict[str, Any]] = data["skills"]
+    replaced = False
+    for i, existing in enumerate(skills):
+        if isinstance(existing, dict) and existing.get("id") == entry.id:
+            skills[i] = new_row
+            replaced = True
+            break
+    if not replaced:
+        skills.append(new_row)
+
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Write to a tmp file in the same directory so `os.replace` is on
+    # the same filesystem (rename across mounts isn't atomic).
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{user_id}.", suffix=".json.tmp", dir=base_dir
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise PersonalMemoryWriteError(
+            f"failed to persist {path}: {exc}"
+        ) from exc
+
+    await _commit_volume_best_effort()
+
+    return sum(1 for s in skills if isinstance(s, dict) and s.get("active"))

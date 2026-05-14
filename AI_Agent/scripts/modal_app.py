@@ -39,6 +39,12 @@ MMPROJ_FILE = "mmproj-F16.gguf"
 MODEL_DIR = "/vol"
 MODEL_PATH = f"{MODEL_DIR}/{MODEL_FILE}"
 MMPROJ_PATH = f"{MODEL_DIR}/{MMPROJ_FILE}"
+# Per-user personal-skill JSON files live on a separate Volume from the
+# 16 GiB model weights so the model Volume stays read-mostly. PR-γ
+# (memory `project_personalization_memory_pattern.md`) added the read
+# path; PR-I wires the Volume mount + write endpoint that the
+# `/v1/personalization/memory/upsert` route persists into.
+PERSONAL_MEMORY_DIR = "/personal_memory"
 LLAMA_SERVER_PORT = 8080
 FASTAPI_PORT = 8100
 
@@ -72,6 +78,12 @@ image = (
         "MODEL_PATH": MODEL_PATH,
         "LLAMA_SERVER_URL": f"http://127.0.0.1:{LLAMA_SERVER_PORT}",
         "PORT": str(FASTAPI_PORT),
+        # Activates the personal-skill memory pool the reflective agent
+        # consults via `search_personal_skills`. With this set, the route
+        # loader reads `{PERSONAL_MEMORY_DIR}/{user_id}.json`; cold-start
+        # (missing file / empty `user_id`) still resolves to an empty
+        # pool, preserving the GitLab smoke baseline.
+        "PERSONAL_MEMORY_DIR": PERSONAL_MEMORY_DIR,
         # PLAN_13 PR-D — LangSmith tracing on by default in Modal so
         # PLAN_13 demo runs surface in the LangSmith UI. The actual
         # API key is injected via the langsmith_secret below; without
@@ -89,6 +101,13 @@ image = (
 )
 
 model_volume = modal.Volume.from_name("agent-models", create_if_missing=True)
+# Separate Volume from `agent-models` so personal-skill writes don't
+# co-mingle with the read-mostly model weights and so the JSON files
+# survive model_volume rebuilds. The Volume is created lazily on first
+# deploy; PR-I's upsert endpoint commits to it after each write.
+personal_memory_volume = modal.Volume.from_name(
+    "agent-personal-memory", create_if_missing=True
+)
 bearer_secret = modal.Secret.from_name("agent-bearer-token")
 hf_secret = modal.Secret.from_name("huggingface-token")
 # PLAN_13 PR-D — LangSmith API key. The Secret is created once
@@ -143,7 +162,10 @@ def download_model() -> None:
 @app.cls(
     image=image,
     gpu="L4",
-    volumes={MODEL_DIR: model_volume},
+    volumes={
+        MODEL_DIR: model_volume,
+        PERSONAL_MEMORY_DIR: personal_memory_volume,
+    },
     secrets=[bearer_secret, hf_secret, langsmith_secret],
     timeout=600,
     scaledown_window=300,

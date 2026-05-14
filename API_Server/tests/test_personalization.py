@@ -58,10 +58,16 @@ class FakePersonalizationAI:
         *,
         response: dict | None = None,
         raise_status: int | None = None,
+        upsert_raise_status: int | None = None,
     ) -> None:
         self.response = response
         self.raise_status = raise_status
+        # PR-I: upsert is best-effort. Tests that need to exercise the
+        # failure path set `upsert_raise_status`; default is success so
+        # existing PR-G activate tests keep their semantics.
+        self.upsert_raise_status = upsert_raise_status
         self.last_call: dict | None = None
+        self.upsert_calls: list[dict] = []
 
     @staticmethod
     def _err(status: int) -> httpx.HTTPStatusError:
@@ -87,6 +93,22 @@ class FakePersonalizationAI:
             raise self._err(self.raise_status)
         assert self.response is not None, "fake AI response not configured"
         return self.response
+
+    async def upsert_personal_memory(
+        self,
+        *,
+        user_id: str,
+        skill: dict,
+    ) -> dict:
+        self.upsert_calls.append({"user_id": user_id, "skill": dict(skill)})
+        if self.upsert_raise_status is not None:
+            # The real client raises httpx.HTTPError subclasses; we mirror
+            # the broad surface so the service's `except httpx.HTTPError`
+            # catches every variant a transient Modal blip would produce.
+            raise httpx.ConnectError(
+                f"upstream unreachable ({self.upsert_raise_status})"
+            )
+        return {"ok": True, "pool_size": 1, "embedding_source": "server"}
 
 
 # --- helpers ----------------------------------------------------------
@@ -518,6 +540,83 @@ async def test_activate_pending_candidate(pz_client_factory):
         assert (
             await client.get("/api/v1/personalization/candidates")
         ).json()["candidates"] == []
+
+        await _truncate(app)
+
+
+async def test_activate_propagates_to_ai_agent_memory(pz_client_factory):
+    """PR-I — activate must call AI_Agent's upsert_personal_memory so
+    the next reflective extract for the same user finds the row in the
+    in-memory pool. We assert the wire shape (user_id is a string,
+    skill carries condition/action/hash/source) without leaking ORM
+    types across the boundary."""
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(
+            hint="Always add Slack notify after credentials",
+            suggestion_hash="hash-sync-1",
+        ),
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="sync@example.com")
+        wf_id = await _seed_workflow_with_diff_pair(client)
+
+        ex = await client.post(
+            "/api/v1/personalization/extract_from_diff",
+            json={"workflow_id": str(wf_id)},
+        )
+        cid = ex.json()["candidate_id"]
+
+        act = await client.post(
+            f"/api/v1/personalization/candidates/{cid}/activate"
+        )
+        assert act.status_code == 200, act.text
+
+        assert len(fake.upsert_calls) == 1
+        call = fake.upsert_calls[0]
+        # Stable string for the wire (UUID 객체 그대로 직렬화하면 JSON 호환성 깨짐).
+        UUID(call["user_id"])  # validates the shape rather than the value
+        skill = call["skill"]
+        assert skill["id"] == cid
+        assert skill["suggestion_hash"] == "hash-sync-1"
+        assert skill["source"] == "hitl_edit"
+        assert skill["active"] is True
+        assert skill["condition"]["text"] == (
+            "Always add Slack notify after credentials"
+        )
+
+        await _truncate(app)
+
+
+async def test_activate_succeeds_when_memory_sync_fails(pz_client_factory):
+    """The DB transition is the source of truth — a transient Modal
+    failure on the upsert must NOT roll back the activate or surface a
+    5xx. Operators see the failure in the warning log; the next
+    activate / extract retries the sync."""
+    fake = FakePersonalizationAI(
+        response=_accept_outcome(hint="x", suggestion_hash="hash-sync-fail"),
+        upsert_raise_status=503,
+    )
+    app, client = await pz_client_factory(fake_ai=fake)
+    async with client, app.router.lifespan_context(app):
+        await _truncate(app)
+        await _register_and_login(client, app, email="syncfail@example.com")
+        wf_id = await _seed_workflow_with_diff_pair(client)
+
+        ex = await client.post(
+            "/api/v1/personalization/extract_from_diff",
+            json={"workflow_id": str(wf_id)},
+        )
+        cid = ex.json()["candidate_id"]
+
+        act = await client.post(
+            f"/api/v1/personalization/candidates/{cid}/activate"
+        )
+        assert act.status_code == 200, act.text
+        assert act.json()["status"] == "active"
+        # Sync was attempted exactly once — no retry storm.
+        assert len(fake.upsert_calls) == 1
 
         await _truncate(app)
 

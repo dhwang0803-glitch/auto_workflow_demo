@@ -197,3 +197,22 @@ class AIAgentHTTPBackend:
                 "user_id": user_id,
             },
         )
+
+    # --- PLAN_14 PR-I personalization memory write ---------------------
+
+    async def upsert_personal_memory(
+        self,
+        *,
+        user_id: str,
+        skill: dict,
+    ) -> dict:
+        """Proxy AI_Agent's /v1/personalization/memory/upsert.
+
+        PR-G's `activate_candidate` calls this after the DB transition
+        so the per-user JSON file the reflective agent reads gets the
+        new row. Returned dict has `{ok, pool_size, embedding_source}`.
+        """
+        return await self._post_json(
+            "/v1/personalization/memory/upsert",
+            {"user_id": user_id, "skill": skill},
+        )

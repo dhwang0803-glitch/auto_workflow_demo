@@ -38,6 +38,8 @@ from app.models.agents import (
 from app.models.domain import DomainClassification, DomainClassifyRequest
 from app.models.http import CompleteRequest, CompleteResponse, HealthResponse
 from app.models.personalization import (
+    PersonalMemoryUpsertRequest,
+    PersonalMemoryUpsertResponse,
     PersonalizationExtractRequest,
     PersonalizationExtractResponse,
 )
@@ -55,7 +57,12 @@ from app.services.domain_classifier import (
     classify_domain,
 )
 from app.services.industry_baselines import IndustryBaselinePool
-from app.services.personal_memory import PersonalMemoryPool
+from app.services.personal_memory import (
+    PersonalMemoryPool,
+    PersonalMemoryWriteError,
+    PersonalSkillEntry,
+    upsert_personal_skill,
+)
 from app.services.personalization_service import (
     extract_personalization_from_diff,
 )
@@ -419,6 +426,93 @@ def create_app(
         if run_id is not None:
             response = response.model_copy(update={"langsmith_run_id": run_id})
         return response
+
+    @app.post(
+        "/v1/personalization/memory/upsert",
+        response_model=PersonalMemoryUpsertResponse,
+    )
+    async def personalization_memory_upsert(
+        payload: PersonalMemoryUpsertRequest,
+        embedding: EmbeddingBackend = Depends(get_embedding_backend),
+        settings: Settings = Depends(get_settings),
+    ) -> PersonalMemoryUpsertResponse:
+        """Persist one personal-skill row into the user's memory file
+        (PR-I write side, closing the PLAN_14 retrieval loop).
+
+        API_Server's `activate_candidate` hits this after the DB
+        transition so the next `/v1/policy/extract_reflective` request
+        for the same user finds the row in the in-memory pool. The
+        endpoint is server-side stateless beyond the file write — every
+        per-user signal arrives in the body.
+
+        503 when `personal_memory_dir` is unset (feature disabled in
+        this deployment); 422 when the user_id contains characters that
+        could escape the base directory; 500 when the file write fails.
+        """
+        if not settings.personal_memory_dir:
+            raise HTTPException(
+                status_code=503,
+                detail="personal_memory_dir is not configured",
+            )
+
+        skill = payload.skill
+        if skill.embedding is not None and len(skill.embedding) > 0:
+            vector = [float(x) for x in skill.embedding]
+            embedding_source = "caller"
+        else:
+            # The condition.text + action.text mirror the surface the
+            # reflective agent's `search_personal_skills` tool will
+            # match against — using the same string here keeps the
+            # cosine geometry consistent across read and write.
+            condition_text = (
+                (skill.condition.get("text") if isinstance(skill.condition, dict) else None)
+                or ""
+            )
+            action_text = (
+                (skill.action.get("text") if isinstance(skill.action, dict) else None)
+                or ""
+            )
+            text = (condition_text + " " + action_text).strip() or skill.id
+            vectors = await embedding.embed([text])
+            if not vectors or not vectors[0]:
+                raise HTTPException(
+                    status_code=502,
+                    detail="embedding backend returned empty vector",
+                )
+            vector = [float(x) for x in vectors[0]]
+            embedding_source = "server"
+
+        entry = PersonalSkillEntry(
+            id=skill.id,
+            condition=skill.condition,
+            action=skill.action,
+            suggestion_hash=skill.suggestion_hash,
+            embedding=vector,
+            source=skill.source,
+            first_observed_at=skill.first_observed_at,
+            active=skill.active,
+        )
+
+        try:
+            pool_size = await upsert_personal_skill(
+                base_dir=settings.personal_memory_dir,
+                user_id=payload.user_id,
+                entry=entry,
+            )
+        except PersonalMemoryWriteError as exc:
+            # `unsafe user_id` and `dir not configured` collapse into
+            # 422 — both are caller-side bugs the API_Server proxy can
+            # surface back to the operator without retry.
+            msg = str(exc).lower()
+            if "unsafe" in msg or "not configured" in msg:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return PersonalMemoryUpsertResponse(
+            ok=True,
+            pool_size=pool_size,
+            embedding_source=embedding_source,
+        )
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health(

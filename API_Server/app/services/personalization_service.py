@@ -34,6 +34,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
+import httpx
 from auto_workflow_database.repositories.base import (
     PersonalSkillReviewRepository,
     Skill,
@@ -273,7 +274,50 @@ class PersonalizationService:
                 suggestion_hash=existing.suggestion_hash,
                 action="accept",
             )
+        # PR-I — propagate the active row to the per-user JSON memory
+        # file so the next /v1/policy/extract_reflective request from
+        # the same user finds it in the in-memory pool. Best-effort: a
+        # transient AI_Agent failure must not poison the user's
+        # activate click. The next activate / extract retries the sync.
+        await self._sync_active_skill_to_memory(updated)
         return _to_candidate_response(updated)
+
+    async def _sync_active_skill_to_memory(self, skill: Skill) -> None:
+        """Write one active personal skill into AI_Agent's memory file.
+
+        Quiet on failure (warning log only); the DB row is the source of
+        truth, and a missed sync just means the next reflective-extract
+        request misses one entry until the user re-activates or a new
+        extract triggers `_persist_outcome` again. The blast radius is
+        bounded by the per-user file boundary.
+        """
+        # Only personal skills participate in retrieval; workspace
+        # skills go through a different surface (skills router).
+        if skill.scope != "user" or skill.user_id is None:
+            return
+        try:
+            await self._ai.upsert_personal_memory(
+                user_id=str(skill.user_id),
+                skill={
+                    "id": str(skill.id),
+                    "condition": skill.condition or {},
+                    "action": skill.action or {},
+                    "suggestion_hash": skill.suggestion_hash or "",
+                    "source": skill.source or "hitl_edit",
+                    "first_observed_at": (
+                        skill.created_at.isoformat()
+                        if skill.created_at is not None
+                        else ""
+                    ),
+                    "active": True,
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "personalization: memory sync failed for skill %s (%s)",
+                skill.id,
+                exc,
+            )
 
     async def reject_candidate(
         self,

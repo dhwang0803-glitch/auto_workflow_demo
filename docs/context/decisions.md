@@ -1526,7 +1526,22 @@ Google API 가 refresh_token 갱신 시 `invalid_grant` 를 리턴하는 3 대 �
 
 ## ADR-023 — HITL 편집 회수 → Personal Skill (사용자 수정 패턴 학습)
 
-**상태**: Proposed · **날짜**: 2026-05-07
+**상태**: Accepted · **날짜**: 2026-05-07 · **갱신**: 2026-05-14 (PR-I closed-loop sync)
+
+### 2026-05-14 amendment — DB↔JSON write path 분리
+
+PR-D/E/G 이후 PR-I 진입 시 발견: candidate persistence 가 DB 만 건드리고 reflective agent 가 read 하는 per-user JSON 메모리 파일에 write 하는 경로가 누락. 또 `modal_app.py` 에 `personal_memory_volume` mount 자체가 없어 production 도 retrieval 비활성. 본 ADR 의 결정 5 (격리) + 6 (시연 narrative) 가 실라이브에서 작동하려면 sync 가 필수 — PR-I 가 보강:
+
+- DB Skill row (`scope='user'`, `status='active'`) = source-of-truth (audit / activate UI / dedup hash)
+- JSON 메모리 파일 (`{personal_memory_dir}/{user_id}.json`, Modal Volume) = retrieval read-canonical
+- `PersonalizationService.activate_candidate` 가 status update 후 best-effort `POST /v1/personalization/memory/upsert` (실패 시 warning + 200 — 다음 activate/extract 가 sync 재시도)
+- AI_Agent 측 writer 는 atomic tmp+rename + Modal Volume `commit.aio()` (warm container 사이 가시성 보장) + USER_ID_SAFE 가드 mirror
+
+본 amendment 는 결정 4 (사용자 검토 게이트) 의 변경 X — 활성 시점이 sync trigger 라 narrative 그대로 유지.
+
+---
+
+**상태 (원안)**: Proposed · **날짜**: 2026-05-07
 
 **Context**
 
