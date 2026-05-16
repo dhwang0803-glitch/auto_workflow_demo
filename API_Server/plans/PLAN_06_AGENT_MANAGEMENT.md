@@ -1,40 +1,41 @@
-# PLAN_06 — Agent 관리 (API_Server)
+# PLAN_06 — Agent management (API_Server)
 
-> **브랜치**: `API_Server` · **작성일**: 2026-04-16 · **상태**: Draft
+> **Branch**: `API_Server` · **Drafted**: 2026-04-16 · **Status**: Draft
 >
-> Heavy 플랜 유저가 자체 VPC 의 Agent 를 등록하고, WebSocket 으로
-> 상시 연결하여 명령 수신 + heartbeat + 자격증명 수신을 할 수 있게 한다.
-> ADR-013 하이브리드 재암호화는 Database 의 `CredentialStore.retrieve_for_agent`
-> 가 이미 구현 — API_Server 는 WebSocket 프레임 핸들러로 연결만.
+> Lets a Heavy-plan user register their own Agent in their VPC and keep a
+> standing WebSocket connection for command delivery + heartbeat + credential
+> fetches. ADR-013 hybrid re-encryption is already implemented by
+> `CredentialStore.retrieve_for_agent` in Database — API_Server just hosts
+> the WebSocket frame handlers.
 
-## 1. 목표
+## 1. Goals
 
-1. `POST /api/v1/agents/register` — RSA 공개키 제출 → Agent JWT 발급
-2. `WS /api/v1/agents/ws` — WebSocket 상시 연결 (JWT 인증)
-3. WebSocket 프레임: `heartbeat`, `get_credential`
-4. `main.py` lifespan 에 `PostgresAgentRepository` 주입
+1. `POST /api/v1/agents/register` — submit an RSA public key → receive an Agent JWT
+2. `WS /api/v1/agents/ws` — long-lived WebSocket (JWT-authenticated)
+3. WebSocket frames: `heartbeat`, `get_credential`
+4. Inject `PostgresAgentRepository` in `main.py` lifespan
 
-## 2. 범위
+## 2. Scope
 
 **In**
-- `app/routers/agents.py` 신규 — 등록 REST + WebSocket
-- `app/models/agent.py` 신규 — `AgentRegisterRequest`, `AgentRegisterResponse`
-- `app/services/workflow_service.py` 확장 — `register_agent`
-- `app/main.py` 확장 — AgentRepository lifespan + 라우터 등록
-- `tests/test_agents.py` 신규
+- `app/routers/agents.py` (new) — registration REST + WebSocket
+- `app/models/agent.py` (new) — `AgentRegisterRequest`, `AgentRegisterResponse`
+- `app/services/workflow_service.py` extension — `register_agent`
+- `app/main.py` extension — AgentRepository lifespan + router registration
+- `tests/test_agents.py` (new)
 
 **Out**
-- Agent → API 방향 실행 결과 push — Execution_Engine 소관
-- Agent GPU 라우팅 (ADR-009) — Phase 2
-- Agent 해제/삭제 — Phase 2
-- 다중 Agent 로드밸런싱 — Phase 2
+- Agent → API direction execution-result push — Execution_Engine's concern
+- Agent GPU routing (ADR-009) — Phase 2
+- Agent unregister / delete — Phase 2
+- Multi-Agent load balancing — Phase 2
 
-## 3. 엔드포인트
+## 3. Endpoints
 
-| 메서드 | 경로 | 인증 | 설명 | 응답 |
-|--------|------|------|------|------|
-| `POST` | `/api/v1/agents/register` | User JWT | Agent 등록 | 201 `AgentRegisterResponse` |
-| `WS` | `/api/v1/agents/ws` | Agent JWT (query param) | 상시 연결 | WebSocket frames |
+| Method | Path | Auth | Description | Response |
+|--------|------|------|-------------|----------|
+| `POST` | `/api/v1/agents/register` | User JWT | Register an Agent | 201 `AgentRegisterResponse` |
+| `WS` | `/api/v1/agents/ws` | Agent JWT (query param) | Long-lived connection | WebSocket frames |
 
 ### AgentRegisterRequest
 ```python
@@ -47,48 +48,48 @@ class AgentRegisterRequest(BaseModel):
 ```python
 class AgentRegisterResponse(BaseModel):
     agent_id: UUID
-    agent_token: str      # Agent 전용 JWT (subject=agent_id)
+    agent_token: str      # Agent-only JWT (subject=agent_id)
 ```
 
 ## 4. Agent JWT
 
-User JWT 와 별도 — `sub` 에 `agent:{agent_id}` 형식 저장.
-WebSocket 연결 시 `?token=<agent_jwt>` 쿼리로 인증.
-만료: 24시간 (Settings 에서 override 가능).
+Separate from the User JWT — stored as `agent:{agent_id}` in `sub`.
+WebSocket connection authenticates via `?token=<agent_jwt>` query param.
+Expiry: 24 hours (overridable via Settings).
 
-## 5. WebSocket 프레임 프로토콜
+## 5. WebSocket frame protocol
 
-JSON 프레임, `{"type": "<action>", ...}` 형식:
+JSON frames in the form `{"type": "<action>", ...}`:
 
 **Client → Server:**
-- `{"type": "heartbeat"}` → heartbeat 갱신, 응답: `{"type": "heartbeat_ack"}`
-- `{"type": "get_credential", "credential_id": "<uuid>"}` → 재암호화된 자격증명 반환
+- `{"type": "heartbeat"}` → refresh heartbeat, response: `{"type": "heartbeat_ack"}`
+- `{"type": "get_credential", "credential_id": "<uuid>"}` → returns a re-encrypted credential
 
 **Server → Client:**
 - `{"type": "heartbeat_ack"}`
 - `{"type": "credential", "payload": {"wrapped_key": "...", "nonce": "...", "ciphertext": "..."}}` (base64)
 - `{"type": "error", "message": "..."}`
 
-## 6. 함수 증식 방지 가드레일
+## 6. Function-sprawl-prevention guardrails
 
-- `WorkflowService` 에 `register_agent` 1개만 추가
-- WebSocket 핸들러는 `agents.py` 라우터 안에서 인라인 처리 — 별도 `AgentManager` 클래스 금지
-- credential 재암호화는 `CredentialStore.retrieve_for_agent()` 직접 호출 — 래퍼 금지
-- 프레임 디스패치는 `if/elif` 2줄 — `_handle_heartbeat`, `_handle_credential` 헬퍼 금지
+- Add exactly one method `register_agent` to `WorkflowService`
+- Handle the WebSocket inline inside the `agents.py` router — no separate `AgentManager` class
+- Re-encryption calls `CredentialStore.retrieve_for_agent()` directly — no wrapper
+- Frame dispatch is a 2-line `if/elif` — no `_handle_heartbeat` / `_handle_credential` helpers
 
-## 7. 테스트
+## 7. Tests
 
 1. `test_register_agent_happy` — 201 + agent_id + agent_token
 2. `test_register_agent_invalid_key_422`
 3. `test_register_agent_not_authenticated_401`
-4. `test_ws_heartbeat` — WebSocket 연결 + heartbeat → ack
+4. `test_ws_heartbeat` — WebSocket connect + heartbeat → ack
 5. `test_ws_invalid_token_rejected`
-6. `test_ws_get_credential` — 재암호화 응답 확인
+6. `test_ws_get_credential` — confirms the re-encrypted response
 
-## 8. 수용 기준
+## 8. Acceptance criteria
 
-- [ ] 신규 6 테스트 통과
-- [ ] 기존 58 테스트 회귀 없음 (총 64+)
-- [ ] Agent JWT 가 User JWT 와 구분됨 (`sub` prefix)
-- [ ] WebSocket heartbeat 가 DB `last_heartbeat` 갱신
-- [ ] `retrieve_for_agent` 호출 시 RSA 재암호화 응답 반환
+- [ ] The 6 new tests pass
+- [ ] No regression in the existing 58 tests (total 64+)
+- [ ] Agent JWT is distinguishable from User JWT (`sub` prefix)
+- [ ] WebSocket heartbeat updates DB `last_heartbeat`
+- [ ] Calls to `retrieve_for_agent` return an RSA-re-encrypted response

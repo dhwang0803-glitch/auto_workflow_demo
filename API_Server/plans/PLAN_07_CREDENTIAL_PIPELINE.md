@@ -1,58 +1,62 @@
-# PLAN_07 — Credential Pipeline (API_Server 부분)
+# PLAN_07 — Credential pipeline (API_Server portion)
 
-> 청사진: [`docs/context/PLAN_credential_pipeline.md`](../../docs/context/PLAN_credential_pipeline.md)
-> 선행: Database PLAN_09 (머지됨 PR #47) — `CredentialStore.bulk_retrieve` + `type` 컬럼 준비됨
-> 후속: Execution_Engine PLAN_08 — Worker 가 credential_ref 를 실제로 해소하여 노드 config 에 평문 주입
+> Blueprint: [`docs/context/PLAN_credential_pipeline.md`](../../docs/context/PLAN_credential_pipeline.md)
+> Predecessor: Database PLAN_09 (merged PR #47) — `CredentialStore.bulk_retrieve` + `type` column ready
+> Follow-up: Execution_Engine PLAN_08 — Worker actually resolves credential_refs and injects plaintext into node configs
 
-## 목적
+## Purpose
 
-BYO 자격증명 CRUD API 제공 + workflow 실행 트리거 시 credential_ref **validation** 수행
-(ownership + 존재 확인). **평문 주입은 이 PR 범위 밖** — Worker/Agent 가 담당 (블루프린트
-§1.6 보안 불변식 "평문은 broker/DB 를 거치지 않는다" 준수).
+Provides the BYO credential CRUD API + performs credential_ref **validation**
+(ownership + existence) on workflow execution trigger. **Plaintext injection
+is out of scope for this PR** — Worker/Agent owns it (per blueprint §1.6
+security invariant: "plaintext does not pass through broker / DB").
 
-## 스코프 조정 (2026-04-17 결정)
+## Scope adjustment (decided 2026-04-17)
 
-블루프린트 §2 ② 은 "API_Server 가 execute_workflow 에서 credential_ref 해소" 로 기술했으나,
-실제 구조상 Celery args 에는 `execution_id` 만 전달되고 Worker 가 DB 에서 graph 를 재조회한다.
-API_Server 에서 평문을 주입해도 Worker 에 전달되지 않음. 또한 평문이 Redis broker 를 거치는
-것은 §1.6 보안 불변식 1번 위반.
+Blueprint §2 ② describes "API_Server resolves credential_ref in
+execute_workflow", but in practice only `execution_id` is passed in Celery
+args and the Worker re-fetches the graph from the DB. Even if API_Server
+injects plaintext, it never reaches the Worker. Worse, plaintext passing
+through the Redis broker violates §1.6 security invariant #1.
 
-**조정된 책임 분배:**
-- **API_Server (이 PR)**: credential CRUD + execute_workflow 에서 **validation only**.
-  `bulk_retrieve(ids, owner_id)` 로 ownership+존재 확인 후 반환값 즉시 폐기. 실제 평문 주입은 수행하지 않음.
-- **Execution_Engine PLAN_08 (다음 PR)**: WorkerContainer 에 CredentialStore 주입.
-  `_execute()` 가 노드 실행 직전에 credential_ref 해소 → 노드에 평문 config 전달.
+**Adjusted responsibility split:**
+- **API_Server (this PR)**: credential CRUD + execute_workflow **validation
+  only**. Uses `bulk_retrieve(ids, owner_id)` for ownership + existence
+  checks and discards the returned plaintext immediately. Does not perform
+  plaintext injection.
+- **Execution_Engine PLAN_08 (next PR)**: inject `CredentialStore` into
+  `WorkerContainer`. `_execute()` resolves credential_refs just before node
+  execution → passes plaintext config to the node.
 
-이 분배가 블루프린트 §2 ③ ("~10 LOC" 로 허용된 범위) 를 정식 PLAN 으로 승격시킨다.
-청사진 갱신은 별도 docs PR.
+This split formally promotes blueprint §2 ③ ("~10 LOC allowed") into a
+proper PLAN. Blueprint updates land in a separate docs PR.
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
 | `app/models/credential.py` | Pydantic — `CredentialCreate`, `CredentialResponse`, `CredentialType` Literal |
-| `app/services/credential_service.py` | `CredentialService` — create/delete + execute 시 validation |
+| `app/services/credential_service.py` | `CredentialService` — create/delete + validation on execute |
 | `app/routers/credentials.py` | `POST /api/v1/credentials`, `DELETE /api/v1/credentials/{id}` |
-| `tests/test_credentials.py` | 라우터 통합 테스트 |
-| `tests/test_credential_execute_validation.py` | execute_workflow credential_ref validation 테스트 |
+| `tests/test_credentials.py` | Router integration tests |
+| `tests/test_credential_execute_validation.py` | execute_workflow credential_ref validation tests |
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `app/config.py` | `credential_master_key: str` 추가 (Fernet base64) |
-| `app/container.py` | `FernetCredentialStore` 인스턴스화 + `CredentialService` 조립 |
-| `app/main.py` | `credentials_router` 등록 + `credential_service` 를 `app.state` 에 노출 |
-| `app/services/workflow_service.py` | `execute_workflow` 가 `CredentialStore` 받고 credential_ref validation 수행 |
-| `tests/conftest.py` | Settings fixture 에 `credential_master_key` 추가 |
-| `.env.example` | `CREDENTIAL_MASTER_KEY` 변수 안내 |
+### Modified
+| File | Change |
+|------|--------|
+| `app/config.py` | Add `credential_master_key: str` (Fernet base64) |
+| `app/container.py` | Instantiate `FernetCredentialStore` + assemble `CredentialService` |
+| `app/main.py` | Register `credentials_router` + expose `credential_service` on `app.state` |
+| `app/services/workflow_service.py` | `execute_workflow` now takes a `CredentialStore` and runs credential_ref validation |
+| `tests/conftest.py` | Add `credential_master_key` to the Settings fixture |
+| `.env.example` | Document the `CREDENTIAL_MASTER_KEY` variable |
 
-### 범위 밖 (명시적)
-- `GET /api/v1/credentials` (list) + `GET /api/v1/credentials/{id}` (metadata) — Database
-  `list_by_owner()` 메서드가 없어 `CredentialStore` ABC 확장 필요. 별도 Database PR 에서 추가 후 follow-up.
-- Worker 측 credential_ref → config 머지 (Execution_Engine PLAN_08 담당)
+### Out of scope (explicit)
+- `GET /api/v1/credentials` (list) + `GET /api/v1/credentials/{id}` (metadata) — needs a `list_by_owner()` method that the Database lacks; expand the `CredentialStore` ABC in a separate Database PR, then follow up.
+- Worker-side credential_ref → config merge (owned by Execution_Engine PLAN_08)
 
-## 구현 상세
+## Implementation details
 
 ### 1. `CredentialCreate` / `CredentialResponse` (`app/models/credential.py`)
 
@@ -62,7 +66,7 @@ CredentialType = Literal["smtp", "postgres_dsn", "slack_webhook", "http_bearer"]
 class CredentialCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     type: CredentialType
-    plaintext: dict  # type-specific validation 은 §1.2 카탈로그 기반 확장 여지
+    plaintext: dict  # type-specific validation can extend on top of the §1.2 catalog
 
 class CredentialResponse(BaseModel):
     id: UUID
@@ -70,9 +74,9 @@ class CredentialResponse(BaseModel):
     type: str
 ```
 
-- `plaintext` 는 요청 body 에만 존재, 응답에는 없음
-- `type` 은 `"unknown"` 을 포함하지 않음 — 공개 API 로 생성되는 것은 반드시 카탈로그 내 타입
-- 타입별 key 검증 (e.g. `smtp` 는 host/port/user/password 필수) 은 현재 PR 에서 skip — 엄격 검증 추가는 Phase 2 (frontend UX 결정 후)
+- `plaintext` only exists in the request body; never in the response
+- `type` does not include `"unknown"` — anything created via the public API must be in the catalog
+- Per-type key validation (e.g., `smtp` requires host/port/user/password) is skipped in this PR — strict validation lands in Phase 2 (after the Frontend UX is decided)
 
 ### 2. `CredentialService` (`app/services/credential_service.py`)
 
@@ -88,12 +92,12 @@ class CredentialService:
                 credential_type=body.type,
             )
         except IntegrityError as e:
-            # credentials_owner_name_uq 충돌
+            # credentials_owner_name_uq conflict
             raise DuplicateNameError("credential name already used") from e
 
     async def delete(self, user: User, credential_id: UUID) -> None:
-        # bulk_retrieve 로 ownership 검증 (존재+소유 둘 다 확인)
-        # 반환된 평문은 즉시 버림 (함수 지역 스코프)
+        # Use bulk_retrieve for ownership validation (checks both existence and ownership)
+        # Throw away the returned plaintext immediately (function-local scope)
         try:
             await self._store.bulk_retrieve([credential_id], owner_id=user.id)
         except KeyError:
@@ -103,8 +107,8 @@ class CredentialService:
     async def validate_refs(
         self, user: User, credential_ids: list[UUID]
     ) -> None:
-        """execute_workflow 용 — credential_ref validation. 평문 즉시 폐기.
-        누락된 id 가 하나라도 있으면 NotFoundError (enumeration 방지)."""
+        """For execute_workflow — credential_ref validation. Plaintext discarded immediately.
+        Raise NotFoundError if any id is missing (enumeration defense)."""
         if not credential_ids:
             return
         try:
@@ -113,7 +117,7 @@ class CredentialService:
             raise NotFoundError("credential not found")
 ```
 
-### 3. 라우터 (`app/routers/credentials.py`)
+### 3. Router (`app/routers/credentials.py`)
 
 ```python
 @router.post("", response_model=CredentialResponse, status_code=201)
@@ -129,7 +133,7 @@ async def delete_credential(credential_id, user, svc) -> Response:
 
 ### 4. `execute_workflow` credential_ref validation
 
-`workflow_service.execute_workflow` 시작부에 삽입:
+Insert at the start of `workflow_service.execute_workflow`:
 
 ```python
 # Collect credential_ref ids from graph nodes
@@ -145,12 +149,12 @@ if ids:
     # will resolve credential_refs just before node invocation.
 ```
 
-- 실패 시 `NotFoundError` → 404 (enumeration 방지, owner ≠ user 와 id 존재 안 함 구분 안 함)
-- execute 자체가 생성되지 않음 — validation 이 create(execution) 보다 먼저
+- On failure → `NotFoundError` → 404 (anti-enumeration; doesn't distinguish "owner ≠ user" from "id doesn't exist")
+- The execution itself isn't created — validation precedes `create(execution)`
 
-### 5. DuplicateNameError 에러 클래스
+### 5. DuplicateNameError error class
 
-`app/errors.py` 에 추가:
+Add to `app/errors.py`:
 
 ```python
 class DuplicateNameError(DomainError):
@@ -158,41 +162,41 @@ class DuplicateNameError(DomainError):
     http_status = 409
 ```
 
-## 테스트 전략
+## Test strategy
 
-### test_credentials.py (라우터 E2E, skipif DATABASE_URL)
+### test_credentials.py (router E2E, skipif DATABASE_URL)
 
-1. `test_create_credential_returns_201_with_id` — POST 성공, 응답에 plaintext 없음
-2. `test_create_credential_with_unknown_type_422` — Pydantic Literal 검증
-3. `test_create_duplicate_name_409` — UNIQUE (owner, name) 충돌
-4. `test_delete_credential_204` — DELETE 성공
-5. `test_delete_credential_not_owned_404` — 타 유저 credential → NotFoundError
+1. `test_create_credential_returns_201_with_id` — POST succeeds, response has no plaintext
+2. `test_create_credential_with_unknown_type_422` — Pydantic Literal validation
+3. `test_create_duplicate_name_409` — UNIQUE (owner, name) conflict
+4. `test_delete_credential_204` — DELETE succeeds
+5. `test_delete_credential_not_owned_404` — another user's credential → NotFoundError
 6. `test_delete_credential_nonexistent_404`
 
 ### test_credential_execute_validation.py (execute_workflow E2E)
 
-1. `test_execute_with_valid_credential_ref_queued` — credential 미리 등록 후 workflow 에 ref → 202
+1. `test_execute_with_valid_credential_ref_queued` — register credential first, then workflow with ref → 202
 2. `test_execute_with_nonexistent_credential_ref_404`
-3. `test_execute_with_other_users_credential_ref_404` — cross-tenant enumeration 방지
-4. `test_execute_with_no_credential_refs_works` — 기존 path 회귀 확인
+3. `test_execute_with_other_users_credential_ref_404` — cross-tenant enumeration defense
+4. `test_execute_with_no_credential_refs_works` — regression for the existing path
 
-## 체크리스트
+## Checklist
 
 - [ ] Settings `credential_master_key`
 - [ ] AppContainer `CredentialStore` + `CredentialService`
-- [ ] Pydantic credential 모델
+- [ ] Pydantic credential models
 - [ ] CredentialService (create + delete + validate_refs)
-- [ ] credentials 라우터 (POST + DELETE)
-- [ ] workflow_service.execute_workflow validation 삽입
-- [ ] DuplicateNameError 에러 클래스
-- [ ] main.py 라우터 등록 + app.state 노출
-- [ ] 테스트 10 pass (기존 62 + 10 = 72)
-- [ ] 커밋 → push → PR
+- [ ] credentials router (POST + DELETE)
+- [ ] workflow_service.execute_workflow validation insertion
+- [ ] DuplicateNameError error class
+- [ ] main.py router registration + app.state exposure
+- [ ] 10 tests pass (existing 62 + 10 = 72)
+- [ ] Commit → push → PR
 
 ## Out of scope
 
-- `GET /credentials` (list) — Database `list_by_owner()` 선행 필요
-- `GET /credentials/{id}` — 동일
-- Worker 측 credential_ref → 평문 주입 (Execution_Engine PLAN_08)
-- credential type 별 dict key 엄격 검증 (Phase 2)
-- credential rotation/만료
+- `GET /credentials` (list) — requires Database `list_by_owner()` first
+- `GET /credentials/{id}` — same
+- Worker-side credential_ref → plaintext injection (Execution_Engine PLAN_08)
+- Strict per-type credential dict-key validation (Phase 2)
+- Credential rotation / expiry
