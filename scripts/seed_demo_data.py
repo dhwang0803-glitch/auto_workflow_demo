@@ -160,6 +160,35 @@ async def _seed_workspace_skill(app, *, owner_id: UUID) -> None:
     )
 
 
+async def _seed_alice_personal_candidate(app, *, owner_id: UUID) -> None:
+    """Drop a pending-review personal skill into the DB so Scene 3 doesn't
+    depend on PR-G's LLM extract path being deterministic on every take.
+    The recorder mimics the "edit + save → extracted" narrative with a
+    cosmetic interaction; the card it activates is this row.
+
+    `hint` is `condition.text` (per `_to_candidate_response` in the
+    personalization service), so that's where the user-facing copy lives.
+    """
+    await app.state.skill_repo.create(
+        owner_user_id=owner_id,
+        user_id=owner_id,
+        scope="user",
+        status="pending_review",
+        source="hitl_edit",
+        suggestion_hash="seed_demo_summary_before_slack",
+        name="Summarize before posting to Slack",
+        condition={
+            "text": "the draft is about to post raw data to slack",
+        },
+        action={
+            "text": "insert an anthropic_chat node to summarize the payload "
+            "before slack_notify",
+        },
+        description="Personal pattern alice keeps reaching for when reviewing "
+        "ai_draft workflows that fan straight from fetch → notify.",
+    )
+
+
 async def _seed_alice_workflow_v1(app, *, owner_id: UUID) -> UUID:
     """Create the 'Invoice Pipeline' workflow at revision_source='ai_draft'.
 
@@ -239,7 +268,10 @@ async def _async_main() -> int:
         print("[3/4] workspace skill seeded — 'Notify finance on invoices'")
 
         wf_id = await _seed_alice_workflow_v1(app, owner_id=alice_id)
-        print(f"[4/4] alice workflow v1 seeded     ({wf_id})")
+        print(f"[4/5] alice workflow v1 seeded     ({wf_id})")
+
+        await _seed_alice_personal_candidate(app, owner_id=alice_id)
+        print("[5/5] alice personal candidate seeded (pending_review)")
 
     print()
     print("== ready to record ==")
