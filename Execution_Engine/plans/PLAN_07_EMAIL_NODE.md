@@ -1,30 +1,32 @@
 # PLAN_07 — EmailSendNode (SMTP via aiosmtplib)
 
-> 상태: DRAFT
-> 브랜치: `Execution_Engine`
-> 선행: PLAN_01 (BaseNode/Registry), PLAN_06 (Slack/Delay 패턴 참고)
+> Status: DRAFT
+> Branch: `Execution_Engine`
+> Predecessors: PLAN_01 (BaseNode/Registry), PLAN_06 (Slack/Delay pattern)
 
-## 목적
+## Purpose
 
-워크플로우에서 SMTP 서버를 통해 이메일 전송. 자격증명은 CLAUDE.md 방침대로
-**config 로 주입된 값을 1회 사용 후 지역 변수 범위에서 자동 폐기**.
+Send email via SMTP from a workflow. Per the CLAUDE.md policy, the
+credential value is **injected through config, used once, and dropped
+when the local variable scope ends**.
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `src/nodes/email_send.py` | EmailSendNode — aiosmtplib 기반 SMTP 전송 |
-| `tests/test_email_send_node.py` | EmailSendNode 테스트 |
+| `src/nodes/email_send.py` | EmailSendNode — SMTP send via aiosmtplib |
+| `tests/test_email_send_node.py` | EmailSendNode tests |
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `pyproject.toml` | `aiosmtplib>=3.0` 의존성 추가 |
+### Modified
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Add `aiosmtplib>=3.0` dependency |
 
-**파일명 `email.py` 금지** — stdlib `email` 패키지와 shadowing 위험. `email_send.py` 사용.
+**Do not name the file `email.py`** — risk of shadowing the stdlib
+`email` package. Use `email_send.py`.
 
-## 구현 상세
+## Implementation details
 
 ### EmailSendNode (`src/nodes/email_send.py`)
 
@@ -53,23 +55,24 @@ class EmailSendNode(BaseNode):
         return {"sent": True, "to": config["to"]}
 ```
 
-- **필수 config**: `smtp_host`, `smtp_port`, `smtp_user`, `smtp_password`, `from`, `to` (list), `subject`, `body`
-- **옵션 config**: `body_html`, `use_starttls` (default True), `timeout_seconds` (default 30)
-- **반환**: `{"sent": True, "to": [...]}` — 실패 시 `aiosmtplib.SMTPException` 전파 (executor 가 failed 로 기록)
-- `to` 는 리스트. `", ".join()` 으로 헤더 직렬화.
-- 자격증명은 함수 지역 변수로만 존재 → 호출 종료 시 GC 대상 (노드는 stateless).
+- **Required config**: `smtp_host`, `smtp_port`, `smtp_user`, `smtp_password`, `from`, `to` (list), `subject`, `body`
+- **Optional config**: `body_html`, `use_starttls` (default True), `timeout_seconds` (default 30)
+- **Returns**: `{"sent": True, "to": [...]}` — on failure `aiosmtplib.SMTPException` propagates (the executor records it as failed)
+- `to` is a list. Serialize the header with `", ".join()`.
+- The credential exists only as a function-local — eligible for GC at call end (the node is stateless).
 
-## 테스트 전략
+## Test strategy
 
-aiosmtplib.send 는 AsyncMock 으로 패치. 실제 SMTP 연결 없이 호출 인자 검증.
+Patch `aiosmtplib.send` with an AsyncMock. Verify call arguments without
+a real SMTP connection.
 
 ### test_email_send_node.py (4)
-1. `test_email_send_success` — 필수 config 만으로 전송, send() 호출 1회, 반환 sent=True
-2. `test_email_send_passes_credentials` — send() 호출 인자에 hostname/port/username/password 정확히 전달
-3. `test_email_send_with_html_body` — body_html 지정시 EmailMessage 가 multipart 로 구성됨
-4. `test_email_send_smtp_error_propagates` — aiosmtplib.SMTPException → 호출측으로 전파
+1. `test_email_send_success` — send with only required config, send() called once, return sent=True
+2. `test_email_send_passes_credentials` — send() call args carry hostname/port/username/password exactly
+3. `test_email_send_with_html_body` — when body_html is set, the EmailMessage is built as multipart
+4. `test_email_send_smtp_error_propagates` — aiosmtplib.SMTPException → propagates to the caller
 
-## 의존성 추가
+## Dependency addition
 
 ```toml
 dependencies = [
@@ -82,15 +85,15 @@ dependencies = [
 ]
 ```
 
-## 체크리스트
+## Checklist
 
-- [ ] `src/nodes/email_send.py` — EmailSendNode + registry 등록
-- [ ] `pyproject.toml` — aiosmtplib 추가
+- [ ] `src/nodes/email_send.py` — EmailSendNode + registry registration
+- [ ] `pyproject.toml` — add aiosmtplib
 - [ ] `tests/test_email_send_node.py` — 4 tests
-- [ ] 전체 33→37 테스트 유지
-- [ ] 커밋 → push → PR
+- [ ] Keep overall tests at 33→37
+- [ ] Commit → push → PR
 
-## 후속 작업
+## Follow-ups
 
-- DB Query 노드 — 별도 PLAN, 보안 결정 (SQL 인젝션 방지 정책) ADR 동반
-- 자격증명 주입 흐름 표준화 — 현재는 config 직접 주입, 향후 `credential_id` 참조 방식 검토
+- DB Query node — separate PLAN with an accompanying security ADR (SQL-injection prevention policy)
+- Standardize the credential-injection flow — currently injected directly via config; consider a `credential_id` reference scheme later

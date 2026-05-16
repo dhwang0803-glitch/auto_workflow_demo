@@ -1,16 +1,16 @@
 # PLAN_03 — Celery Dispatcher (Serverless Mode)
 
-> 상태: DRAFT  
-> 브랜치: `Execution_Engine`  
-> 선행: PLAN_01 (NodeRegistry), PLAN_02 (DAG executor)
+> Status: DRAFT
+> Branch: `Execution_Engine`
+> Predecessors: PLAN_01 (NodeRegistry), PLAN_02 (DAG executor)
 
-## 목적
+## Purpose
 
-`execution_mode=serverless` 워크플로우를 Celery + Redis 큐를 통해 비동기 실행.
-API_Server가 `queued` Execution을 생성한 뒤 Celery 태스크를 enqueue → 
-Execution_Engine 워커가 `run_workflow()`를 호출.
+Run `execution_mode=serverless` workflows asynchronously via a Celery +
+Redis queue. The API_Server creates a `queued` Execution and enqueues a
+Celery task → an Execution_Engine worker invokes `run_workflow()`.
 
-## 아키텍처
+## Architecture
 
 ```
 API_Server                          Execution_Engine
@@ -25,26 +25,26 @@ workflow_service                    Celery Worker (scripts/worker.py)
             args=[execution_id]          │
           )                              ├─ load workflow graph (DB)
                                          ├─ run_workflow(graph, execution, repo, registry)
-                                         └─ (status → success/failed by executor)
+                                         └─ (status → success/failed set by executor)
 ```
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `src/dispatcher/__init__.py` | 빈 패키지 |
-| `src/dispatcher/serverless.py` | Celery app + `run_workflow_task` 태스크 |
-| `scripts/worker.py` | `celery -A` 워커 진입점 |
-| `config/celery_config.py` | 브로커/백엔드 URL, 직렬화 설정 |
-| `tests/test_dispatcher.py` | 단위 테스트 (Celery eager mode) |
+| `src/dispatcher/__init__.py` | Empty package |
+| `src/dispatcher/serverless.py` | Celery app + `run_workflow_task` |
+| `scripts/worker.py` | `celery -A` worker entrypoint |
+| `config/celery_config.py` | broker/backend URLs, serializer settings |
+| `tests/test_dispatcher.py` | Unit tests (Celery eager mode) |
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `pyproject.toml` | `celery[redis]` 의존성 추가 |
+### Modified
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Add `celery[redis]` dependency |
 
-## 구현 상세
+## Implementation details
 
 ### 1. config/celery_config.py
 ```python
@@ -60,8 +60,8 @@ worker_prefetch_multiplier = 1
 
 ### 2. src/dispatcher/serverless.py
 
-Celery 앱 생성 + 태스크 정의. 태스크는 sync 함수 내부에서 `asyncio.run()`으로
-비동기 executor를 실행.
+Create the Celery app and define the task. The task is a sync function
+that runs the async executor inside `asyncio.run()`.
 
 ```python
 celery_app = Celery("execution_engine")
@@ -72,9 +72,9 @@ def run_workflow_task(self, execution_id: str):
     asyncio.run(_run(execution_id))
 
 async def _run(execution_id: str):
-    # 1. DB 세션으로 execution + workflow 조회
-    # 2. registry에 등록된 노드로 run_workflow() 호출
-    # 3. executor가 status 업데이트 담당 (success/failed)
+    # 1. Look up execution + workflow via a DB session
+    # 2. Call run_workflow() with the nodes registered in the registry
+    # 3. The executor owns status updates (success/failed)
 ```
 
 ### 3. scripts/worker.py
@@ -83,27 +83,27 @@ from src.dispatcher.serverless import celery_app
 celery_app.worker_main(["worker", "--loglevel=info", "--concurrency=4"])
 ```
 
-### 4. API_Server 연동 (API_Server 브랜치에서 처리)
-`workflow_service.py`의 TODO 자리에:
+### 4. API_Server integration (handled on the API_Server branch)
+In place of the TODO in `workflow_service.py`:
 ```python
 if execution.execution_mode == "serverless":
     from celery import Celery
     broker = Celery(broker=settings.celery_broker_url)
     broker.send_task("execute_workflow", args=[str(execution.id)])
 ```
-→ `send_task`는 태스크 정의 없이 브로커에 메시지만 보냄.
-이 변경은 **별도 PR** (API_Server 브랜치).
+→ `send_task` only emits a broker message — no task definition required.
+This change is a **separate PR** (API_Server branch).
 
-## 테스트 전략
+## Test strategy
 
-Celery eager mode (`task_always_eager=True`)로 동기 실행:
-1. `test_task_runs_workflow_to_success` — 정상 그래프 → status=success
-2. `test_task_handles_missing_execution` — 없는 execution_id → 에러 로깅, 예외 안 전파
-3. `test_task_handles_node_failure` — 실패 노드 → status=failed
+Run synchronously with Celery eager mode (`task_always_eager=True`):
+1. `test_task_runs_workflow_to_success` — happy graph → status=success
+2. `test_task_handles_missing_execution` — unknown execution_id → log error, do not propagate
+3. `test_task_handles_node_failure` — failing node → status=failed
 
-DB 의존성: InMemoryRepository 사용 (실 DB 불필요).
+DB dependency: use InMemoryRepository (no real DB required).
 
-## 의존성 추가
+## Dependency addition
 
 ```toml
 dependencies = [
@@ -113,16 +113,16 @@ dependencies = [
 ]
 ```
 
-## 체크리스트
+## Checklist
 
-- [ ] `config/celery_config.py` 작성
+- [ ] Write `config/celery_config.py`
 - [ ] `src/dispatcher/serverless.py` — Celery app + task
-- [ ] `scripts/worker.py` — 워커 진입점
-- [ ] `pyproject.toml` — celery[redis] 추가
-- [ ] 테스트 3개 작성 + pass
-- [ ] 커밋 → push → PR
+- [ ] `scripts/worker.py` — worker entrypoint
+- [ ] `pyproject.toml` — add celery[redis]
+- [ ] Write 3 tests + pass
+- [ ] Commit → push → PR
 
-## 후속 작업
+## Follow-ups
 
-- API_Server 브랜치: `send_task` 연동 (TODO 제거)
-- PLAN_04: Agent 데몬 (execution_mode=agent)
+- API_Server branch: wire up `send_task` (remove TODO)
+- PLAN_04: Agent daemon (execution_mode=agent)

@@ -1,32 +1,35 @@
-# PLAN_04 — Agent Daemon (고객 VPC 실행기)
+# PLAN_04 — Agent Daemon (customer-VPC executor)
 
-> 상태: DRAFT  
-> 브랜치: `Execution_Engine`  
-> 선행: PLAN_01 (NodeRegistry), PLAN_02 (DAG executor), PLAN_03 (Celery dispatcher)
+> Status: DRAFT
+> Branch: `Execution_Engine`
+> Predecessors: PLAN_01 (NodeRegistry), PLAN_02 (DAG executor), PLAN_03 (Celery dispatcher)
 
-## 목적
+## Purpose
 
-고객 VPC에 설치되는 경량 실행기. 중앙 서버와 WebSocket으로 연결하여
-`execute` 커맨드를 수신 → 로컬에서 워크플로우 실행 → 결과를 WS로 반환.
+A lightweight executor installed in the customer VPC. Opens a WebSocket
+to the central server, receives `execute` commands → runs the workflow
+locally → returns results over the WS.
 
-Agent는 **DB 직접 접근 없음** — 실행 상태 업데이트를 WS 메시지로 서버에 보고.
+The Agent has **no direct DB access** — execution state updates are
+reported to the server via WS messages.
 
-## 프로토콜 (CLAUDE.md 기준)
+## Protocol (per CLAUDE.md)
 
 ```
-Agent → Server:  heartbeat          (10~30초 주기)
+Agent → Server:  heartbeat          (every 10–30 s)
 Server → Agent:  execute            (workflow graph + encrypted creds)
-Agent → Server:  status_update      (노드별 실행 상태)
-Agent → Server:  execution_result   (최종 결과, 메타데이터만)
-Agent → Server:  get_credential     (자격증명 요청)
+Agent → Server:  status_update      (per-node execution state)
+Agent → Server:  execution_result   (final result, metadata only)
+Agent → Server:  get_credential     (credential request)
 Server → Agent:  heartbeat_ack
-Server → Agent:  credential         (RSA-AES 암호화 자격증명)
+Server → Agent:  credential         (RSA-AES encrypted credential)
 ```
 
-## 핵심 설계: WebSocketExecutionRepository
+## Core design: WebSocketExecutionRepository
 
-Agent는 DB가 없으므로, executor의 `ExecutionRepository` 인터페이스를
-WS 메시지 전송으로 구현. **기존 `run_workflow()` 코드 변경 없이** 동작.
+The Agent has no DB, so it implements the executor's
+`ExecutionRepository` interface as WS message sends. **The existing
+`run_workflow()` code keeps working unchanged.**
 
 ```
 run_workflow(graph, execution, ws_repo, registry)
@@ -37,28 +40,28 @@ run_workflow(graph, execution, ws_repo, registry)
                     - finalize → ws.send({"type": "execution_result", ...})
 ```
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `src/agent/__init__.py` | 빈 패키지 |
-| `src/agent/main.py` | WebSocket 클라이언트 루프 + heartbeat + 커맨드 디스패치 |
-| `src/agent/command_handler.py` | `execute` 커맨드 → `run_workflow()` 호출 |
-| `src/agent/ws_repo.py` | WebSocketExecutionRepository — WS로 상태 보고 |
-| `scripts/agent_run.py` | CLI 진입점 (`--server-url`, `--agent-token`) |
-| `tests/test_agent.py` | 단위 테스트 |
+| `src/agent/__init__.py` | Empty package |
+| `src/agent/main.py` | WebSocket client loop + heartbeat + command dispatch |
+| `src/agent/command_handler.py` | `execute` command → call `run_workflow()` |
+| `src/agent/ws_repo.py` | WebSocketExecutionRepository — report state over WS |
+| `scripts/agent_run.py` | CLI entrypoint (`--server-url`, `--agent-token`) |
+| `tests/test_agent.py` | Unit tests |
 
-### 미수정
-- `src/runtime/executor.py` — 변경 없음 (Repository ABC 덕분)
+### Unchanged
+- `src/runtime/executor.py` — no changes (Repository ABC makes this possible)
 
-## 구현 상세
+## Implementation details
 
 ### 1. src/agent/ws_repo.py — WebSocketExecutionRepository
 
 ```python
 class WebSocketExecutionRepository(ExecutionRepository):
-    """DB 없이 WS 메시지로 실행 상태를 서버에 보고."""
+    """Report execution state to the server via WS messages — no DB."""
 
     def __init__(self, ws, execution: Execution):
         self._ws = ws
@@ -91,10 +94,10 @@ class WebSocketExecutionRepository(ExecutionRepository):
             "node_results": self._execution.node_results,
         }))
 
-    # get / list / create — agent에서 미사용, NotImplementedError
+    # get / list / create — unused on the agent, raise NotImplementedError
 ```
 
-### 2. src/agent/main.py — 메인 루프
+### 2. src/agent/main.py — main loop
 
 ```python
 async def run_agent(server_url: str, token: str):
@@ -106,10 +109,10 @@ async def run_agent(server_url: str, token: str):
                 if msg["type"] == "heartbeat_ack":
                     continue
                 elif msg["type"] == "execute":
-                    # 별도 task로 실행 (동시 실행 지원)
+                    # Run in a separate task (supports concurrent executions)
                     asyncio.create_task(handle_execute(ws, msg, registry))
                 elif msg["type"] == "credential":
-                    # credential 응답 처리 (Future resolve)
+                    # Handle the credential response (resolve a Future)
                     ...
         finally:
             heartbeat_task.cancel()
@@ -120,7 +123,7 @@ async def _heartbeat_loop(ws, interval=15):
         await asyncio.sleep(interval)
 ```
 
-### 3. src/agent/command_handler.py — execute 처리
+### 3. src/agent/command_handler.py — handle execute
 
 ```python
 async def handle_execute(ws, msg: dict, node_registry: NodeRegistry):
@@ -144,16 +147,16 @@ args = parser.parse_args()
 asyncio.run(run_agent(args.server_url, args.agent_token))
 ```
 
-## 테스트 전략
+## Test strategy
 
-WebSocket을 asyncio.Queue 쌍으로 모킹:
-1. `test_heartbeat_sends_periodically` — heartbeat 메시지 N회 확인
-2. `test_execute_command_runs_workflow` — execute 커맨드 → success 보고
-3. `test_execute_failure_reports_error` — 실패 노드 → failed 보고
-4. `test_ws_repo_sends_status_updates` — update_status/append_node_result/finalize 메시지 검증
-5. `test_unknown_message_ignored` — 알 수 없는 메시지 타입 무시
+Mock the WebSocket with a pair of asyncio.Queues:
+1. `test_heartbeat_sends_periodically` — verify N heartbeat messages
+2. `test_execute_command_runs_workflow` — execute command → success reported
+3. `test_execute_failure_reports_error` — failing node → failed reported
+4. `test_ws_repo_sends_status_updates` — verify update_status / append_node_result / finalize messages
+5. `test_unknown_message_ignored` — unknown message types are ignored
 
-## 의존성 추가
+## Dependency addition
 
 ```toml
 dependencies = [
@@ -164,18 +167,18 @@ dependencies = [
 ]
 ```
 
-## 체크리스트
+## Checklist
 
 - [ ] `src/agent/ws_repo.py` — WebSocketExecutionRepository
-- [ ] `src/agent/main.py` — WS 클라이언트 + heartbeat
-- [ ] `src/agent/command_handler.py` — execute 커맨드 처리
-- [ ] `scripts/agent_run.py` — CLI 진입점
-- [ ] `pyproject.toml` — websockets 추가
-- [ ] 테스트 5개 작성 + pass
-- [ ] 커밋 → push → PR
+- [ ] `src/agent/main.py` — WS client + heartbeat
+- [ ] `src/agent/command_handler.py` — handle execute command
+- [ ] `scripts/agent_run.py` — CLI entrypoint
+- [ ] `pyproject.toml` — add websockets
+- [ ] Write 5 tests + pass
+- [ ] Commit → push → PR
 
-## 후속 작업 (API_Server 브랜치)
+## Follow-ups (API_Server branch)
 
-- 서버 WS에 `status_update` / `node_result` / `execution_result` 수신 핸들러 추가
-- `execute_workflow()`에서 `execution_mode=agent` 분기 → 해당 Agent WS로 execute 전송
-- 멱등성: execution_id 기반 중복 실행 방지
+- Add server-side WS handlers for `status_update` / `node_result` / `execution_result`
+- In `execute_workflow()`, branch on `execution_mode=agent` → send execute to the matching Agent WS
+- Idempotency: prevent duplicate execution by `execution_id`

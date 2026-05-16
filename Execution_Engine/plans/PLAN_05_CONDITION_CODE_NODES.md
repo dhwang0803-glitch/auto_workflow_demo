@@ -1,40 +1,41 @@
-# PLAN_05 — ConditionNode + CodeNode (RestrictedPython 샌드박스)
+# PLAN_05 — ConditionNode + CodeNode (RestrictedPython sandbox)
 
-> 상태: DRAFT  
-> 브랜치: `Execution_Engine`  
-> 선행: PLAN_01 (BaseNode/Registry), PLAN_02 (DAG executor)
+> Status: DRAFT
+> Branch: `Execution_Engine`
+> Predecessors: PLAN_01 (BaseNode/Registry), PLAN_02 (DAG executor)
 
-## 목적
+## Purpose
 
-워크플로우에서 분기 로직(ConditionNode)과 사용자 정의 코드 실행(CodeNode)을
-지원. CodeNode는 **절대 eval()/exec() 직접 사용 금지** — RestrictedPython
-AST 검사 + 내장 함수 화이트리스트로 안전한 실행 보장.
+Support workflow branching (ConditionNode) and user-defined code
+execution (CodeNode). For CodeNode, **never call eval()/exec() directly**
+— guarantee safe execution via RestrictedPython AST inspection + builtin
+allowlist.
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `src/nodes/condition.py` | ConditionNode — 조건 분기 |
-| `src/nodes/code.py` | CodeNode — RestrictedPython 샌드박스 실행 |
-| `src/runtime/sandbox.py` | RestrictedPython 컴파일 + 실행 헬퍼 |
-| `tests/test_condition_node.py` | ConditionNode 테스트 |
-| `tests/test_code_node.py` | CodeNode + 샌드박스 테스트 |
+| `src/nodes/condition.py` | ConditionNode — conditional branching |
+| `src/nodes/code.py` | CodeNode — sandboxed execution via RestrictedPython |
+| `src/runtime/sandbox.py` | RestrictedPython compile + execution helper |
+| `tests/test_condition_node.py` | ConditionNode tests |
+| `tests/test_code_node.py` | CodeNode + sandbox tests |
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `pyproject.toml` | `RestrictedPython` 의존성 추가 |
+### Modified
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Add `RestrictedPython` dependency |
 
-## 구현 상세
+## Implementation details
 
 ### 1. ConditionNode (`src/nodes/condition.py`)
 
-input_data에서 조건 평가 → `"result": true/false` 반환.
-executor의 edge 시스템이 output을 후속 노드에 전달하므로,
-후속 노드가 `input_data["result"]`로 분기 판단 가능.
+Evaluate the condition against input_data → return `"result": true/false`.
+The executor's edge system forwards the output to downstream nodes, so
+downstream nodes can branch on `input_data["result"]`.
 
-지원 연산자: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `contains`
+Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `contains`
 
 ```python
 class ConditionNode(BaseNode):
@@ -44,13 +45,13 @@ class ConditionNode(BaseNode):
         left = input_data.get(config["left_field"])
         op = config["operator"]
         right = config["right_value"]
-        # 연산자별 비교 → {"result": bool}
+        # Per-operator comparison → {"result": bool}
 ```
 
 ### 2. sandbox.py (`src/runtime/sandbox.py`)
 
-RestrictedPython으로 사용자 코드를 컴파일 + 실행하는 단일 함수.
-타임아웃은 `asyncio.wait_for`로 제한.
+A single function that compiles and runs user code with RestrictedPython.
+The timeout is bounded with `asyncio.wait_for`.
 
 ```python
 def run_restricted(code: str, inputs: dict, *, timeout_seconds: int = 30) -> dict:
@@ -66,8 +67,8 @@ def run_restricted(code: str, inputs: dict, *, timeout_seconds: int = 30) -> dic
     return safe_globals["result"]
 ```
 
-**허용**: 기본 연산, 반복, 조건, 문자열 조작, math  
-**차단**: import, open, eval, exec, __import__, os, sys, subprocess
+**Allowed**: basic operators, loops, conditionals, string manipulation, math
+**Blocked**: import, open, eval, exec, __import__, os, sys, subprocess
 
 ### 3. CodeNode (`src/nodes/code.py`)
 
@@ -84,26 +85,26 @@ class CodeNode(BaseNode):
         )
 ```
 
-`asyncio.to_thread`로 별도 스레드 실행 → 메인 이벤트루프 블로킹 방지.
-`asyncio.wait_for`로 전체 타임아웃 보장.
+Use `asyncio.to_thread` to run in a separate thread → avoids blocking
+the main event loop. `asyncio.wait_for` enforces the overall timeout.
 
-## 테스트 전략
+## Test strategy
 
 ### test_condition_node.py
-1. `test_eq_true` — 같은 값 → result=True
-2. `test_eq_false` — 다른 값 → result=False
-3. `test_gt_operator` — 숫자 비교
-4. `test_contains_operator` — 문자열 포함 검사
-5. `test_missing_field_returns_false` — input에 필드 없음 → False
+1. `test_eq_true` — equal values → result=True
+2. `test_eq_false` — different values → result=False
+3. `test_gt_operator` — numeric comparison
+4. `test_contains_operator` — substring check
+5. `test_missing_field_returns_false` — field absent from input → False
 
 ### test_code_node.py
 1. `test_simple_computation` — `result["sum"] = inputs["a"] + inputs["b"]`
-2. `test_loop_and_list` — 반복문 사용
+2. `test_loop_and_list` — uses a loop
 3. `test_import_blocked` — `import os` → CompileError
-4. `test_open_blocked` — `open("/etc/passwd")` → 차단
-5. `test_timeout_exceeded` — 무한루프 → TimeoutError
+4. `test_open_blocked` — `open("/etc/passwd")` → blocked
+5. `test_timeout_exceeded` — infinite loop → TimeoutError
 
-## 의존성 추가
+## Dependency addition
 
 ```toml
 dependencies = [
@@ -115,16 +116,16 @@ dependencies = [
 ]
 ```
 
-## 체크리스트
+## Checklist
 
-- [ ] `src/runtime/sandbox.py` — RestrictedPython 실행 함수
-- [ ] `src/nodes/condition.py` — ConditionNode + registry 등록
-- [ ] `src/nodes/code.py` — CodeNode + registry 등록
-- [ ] `pyproject.toml` — RestrictedPython 추가
-- [ ] 테스트 10개 작성 + pass
-- [ ] 커밋 → push → PR
+- [ ] `src/runtime/sandbox.py` — RestrictedPython execution function
+- [ ] `src/nodes/condition.py` — ConditionNode + registry registration
+- [ ] `src/nodes/code.py` — CodeNode + registry registration
+- [ ] `pyproject.toml` — add RestrictedPython
+- [ ] Write 10 tests + pass
+- [ ] Commit → push → PR
 
-## 후속 작업
+## Follow-ups
 
-- PLAN_05 완료 후 Container 리팩터링 (API_Server + Execution_Engine)
-- 추가 노드 타입 확장 (Slack, Email, DB Query 등)
+- After PLAN_05, refactor the Container (API_Server + Execution_Engine)
+- Expand additional node types (Slack, Email, DB Query, etc.)
