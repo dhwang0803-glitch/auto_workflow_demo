@@ -122,6 +122,7 @@ async function fullScreenBlack(page: Page, html: string) {
       position: "fixed",
       inset: "0",
       display: "flex",
+      flexDirection: "column",
       alignItems: "center",
       justifyContent: "center",
       color: "#fff",
@@ -165,14 +166,20 @@ test("record 30-second demo", async ({}, testInfo) => {
     markScene("alice", "scene1_hook", t0, elapsed("alice"));
   }
 
-  // ─── Scene 2 — Marketplace (5-12s) ───────────────────────────
-  // 2a: alice /skills, workspace card highlighted
+  // ─── Scene 2 — Marketplace (5-14s) ───────────────────────────
+  // 2a: alice /skills — explicit "Team marketplace" section dwell so the
+  // viewer sees the destination before bob's flow shows what it buys
+  // them. Active count chip is the focal point.
   {
     const t0 = elapsed("alice");
     await alice.goto(`${WEB}/skills`);
+    await alice.getByTestId("team-marketplace").waitFor({ timeout: 15_000 });
     await alice.waitForSelector("text=Notify finance on invoices", { timeout: 15_000 });
-    await showSubtitle(alice, "alice&rsquo;s policy &rarr;");
-    await alice.waitForTimeout(2000);
+    await showSubtitle(
+      alice,
+      "alice&rsquo;s team marketplace &mdash; one active policy &rarr;",
+    );
+    await alice.waitForTimeout(3200);
     await clearSubtitle(alice);
     markScene("alice", "scene2a_skills", t0, elapsed("alice"));
   }
@@ -268,7 +275,7 @@ test("record 30-second demo", async ({}, testInfo) => {
 
     const w0 = elapsed("alice");
     await alice.goto(`${WEB}/skills`);
-    await alice.getByTestId("suggested-from-edits").waitFor({ timeout: 30_000 });
+    await alice.getByTestId("your-patterns").waitFor({ timeout: 30_000 });
     await alice
       .locator('[data-testid^="suggested-row-"]')
       .first()
@@ -315,7 +322,16 @@ test("record 30-second demo", async ({}, testInfo) => {
     markScene("alice", "scene3e_dag", t4, elapsed("alice"));
   }
 
-  // ─── Scene 4 — Share (20-27s) ────────────────────────────────
+  // ─── Scene 4 — Share (alice → team marketplace) ──────────────
+  //
+  // The promotion is the most narratively loaded beat in the take. The
+  // refactored /skills page does the storytelling for us:
+  //   - card visually flies UP from "Your patterns" toward the
+  //     marketplace section (600ms CSS transform),
+  //   - marketplace count chip pulses (parent triggers via callback),
+  //   - a promotion banner replaces the row to name what happened.
+  // We wait on the banner before clearing the subtitle so the camera
+  // captures the whole cause→effect.
   {
     const t0 = elapsed("alice");
     await alice.goto(`${WEB}/skills`);
@@ -326,8 +342,20 @@ test("record 30-second demo", async ({}, testInfo) => {
       "",
     );
     await showSubtitle(alice, "share what you discovered &rarr;");
+    await alice.waitForTimeout(800);
     await alice.getByTestId(`active-personal-share-${activeId}`).click();
-    await alice.waitForTimeout(2000);
+    // Banner only renders after the flying animation finishes AND the
+    // share API succeeds (whichever is later). The Modal-backed share
+    // call can take ~3s warm, so give the banner generous headroom.
+    await alice
+      .getByTestId("promotion-banner")
+      .waitFor({ timeout: 15_000 })
+      .catch(() => {
+        // Banner is best-effort cosmetic; the marketplace count + new row
+        // already tell the story even if the banner missed its window.
+      });
+    await showSubtitle(alice, "&rarr; promoted to the team marketplace");
+    await alice.waitForTimeout(2500);
     await clearSubtitle(alice);
     markScene("alice", "scene4a_share", t0, elapsed("alice"));
 
