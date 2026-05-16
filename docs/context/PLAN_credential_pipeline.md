@@ -3,7 +3,7 @@
 > **Scope**: a cross-branch blueprint. The actual implementation
 > PLANs live in each branch's `plans/`.
 > **Source ADR**:
-> [ADR-016](./decisions.md#adr-016--노드-자격증명-주입-파이프라인-별도-plan--후속-adr-로-설계-분리)
+> [ADR-016](./decisions.md#adr-016--node-credential-injection-pipeline-separate-it-into-its-own-plan--follow-up-adr)
 > **Related storage / transport ADRs**: ADR-004 (Fernet at rest),
 > ADR-013 (Agent delivery)
 > **Status**: **COMPLETE (full end-to-end across Serverless + Agent
