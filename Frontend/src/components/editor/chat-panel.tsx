@@ -43,6 +43,7 @@ export function ChatPanel() {
 
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
   // Holds the in-flight stream so a new submit (or unmount) can cancel
   // tokens still on the wire — avoids the previous turn's tail leaking
   // into the next bubble.
@@ -54,10 +55,17 @@ export function ChatPanel() {
     return () => abortRef.current?.abort();
   }, []);
 
-  // Keep the scroll pinned to the bottom as messages arrive or stream.
+  // Pin the scroll to the bottom as messages arrive or stream. The
+  // bottom sentinel is scrolled into view on the next frame so the new
+  // bubble has actually mounted before the scroll runs — using a raw
+  // scrollTop = scrollHeight in useEffect races the layout pass when
+  // bubbles render conditionally (clarify_questions list, proposed_dag
+  // summary, etc.).
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    const id = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    });
+    return () => cancelAnimationFrame(id);
   }, [messages.length, pending, streamingRationale]);
 
   if (!open) return null;
@@ -169,6 +177,7 @@ export function ChatPanel() {
             {lastError}
           </pre>
         )}
+        <div ref={bottomRef} aria-hidden />
       </div>
 
       {pendingDraft && (
