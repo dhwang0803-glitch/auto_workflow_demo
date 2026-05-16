@@ -1,77 +1,77 @@
-## 📝 변경사항 요약
+## 📝 Summary of changes
 
-<!-- 무엇을, 왜 변경했는지 간략히 서술하세요 -->
+<!-- Briefly describe what changed and why -->
 
-### 변경 유형
-- [ ] 신규 기능 (New Feature)
-- [ ] 버그 수정 (Bug Fix)
-- [ ] 리팩터링 (Refactoring)
-- [ ] DB 스키마 변경 (Schema Change)
-- [ ] 문서/설정 업데이트
+### Change type
+- [ ] New feature
+- [ ] Bug fix
+- [ ] Refactor
+- [ ] DB schema change
+- [ ] Docs / config update
 
-### 주요 변경 내용
-<!-- 변경된 파일과 핵심 로직을 bullet로 기술 -->
+### Key changes
+<!-- Bullet the modified files and core logic -->
 -
 -
 
 ---
 
-## 📊 사후영향 평가 (Impact Assessment)
+## 📊 Impact Assessment
 
-<!-- IMPACT_ASSESSOR 에이전트 실행 결과를 붙여넣으세요 -->
-<!-- 브랜치 에이전트 위치: {브랜치명}/agents/IMPACT_ASSESSOR.md -->
+<!-- Paste the IMPACT_ASSESSOR agent output -->
+<!-- Branch agent location: {branch-name}/agents/IMPACT_ASSESSOR.md -->
 
-### 변경 범위
-- **레이어**: <!-- DB / API / ML / Frontend / 문서 -->
-- **변경 파일 수**:
-- **변경 유형**:
+### Scope
+- **Layer(s)**: <!-- DB / API / ML / Frontend / docs -->
+- **Files changed**:
+- **Change type**:
 
-### 레이어별 영향
+### Impact per layer
 
-| 항목 | 결과 | 상세 |
-|------|------|------|
-| 폴더 구조 규칙 | ✅ 준수 | |
-| DB 스키마 | ➖ 해당 없음 | |
-| API 계약 | ➖ 해당 없음 | |
-| ML 파이프라인 | ➖ 해당 없음 | |
-| 프론트엔드 | ➖ 해당 없음 | |
+| Item | Result | Details |
+|------|--------|---------|
+| Folder structure rules | ✅ Compliant | |
+| DB schema | ➖ N/A | |
+| API contract | ➖ N/A | |
+| ML pipeline | ➖ N/A | |
+| Frontend | ➖ N/A | |
 
-### 리스크 등급
+### Risk level
 <!-- 🔴 HIGH / 🟡 MEDIUM / 🟢 LOW -->
 
-**근거**:
+**Rationale**:
 
-### 롤백 계획
-- [ ] 마이그레이션 DOWN 스크립트 준비됨
-- [ ] 이전 버전 태그 존재
-- [ ] DB 스냅샷 불필요 (스키마 변경 없음)
+### Rollback plan
+- [ ] Migration DOWN script ready
+- [ ] Previous version tag exists
+- [ ] No DB snapshot needed (no schema change)
 
-### 추가 조치 필요
-- [ ] 없음
-
----
-
-## 🔒 보안 점검 보고서
-
-<!-- SECURITY_AUDITOR 에이전트 실행 결과를 붙여넣으세요 -->
-<!-- 브랜치 에이전트 위치: {브랜치명}/agents/SECURITY_AUDITOR.md -->
-
-| 항목 | 결과 |
-|------|------|
-| S01 하드코딩 자격증명 | ✅ 없음 |
-| S02 getenv 기본값 인프라 정보 | ✅ 없음 |
-| S03 .env 직접 참조 | ✅ 없음 |
-| S04 DB 접속 명령어 규칙 | ✅ 준수 |
-| S05 .gitignore 확인 | ✅ 확인됨 |
-
-**점검 범위**: <!-- 점검한 파일 목록 또는 경로 -->
+### Follow-ups required
+- [ ] None
 
 ---
 
-## ✅ 테스트 결과
+## 🔒 Security review
+
+<!-- Paste the SECURITY_AUDITOR agent output -->
+<!-- Branch agent location: {branch-name}/agents/SECURITY_AUDITOR.md -->
+
+| Item | Result |
+|------|--------|
+| S01 Hardcoded credentials | ✅ None |
+| S02 `getenv` defaults exposing infra info | ✅ None |
+| S03 Direct `.env` references | ✅ None |
+| S04 DB-connection command rules | ✅ Compliant |
+| S05 `.gitignore` verified | ✅ Verified |
+
+**Scope reviewed**: <!-- list of files or paths inspected -->
+
+---
+
+## ✅ Test results
 
 ```
-pytest {브랜치명}/tests/ -v
+pytest {branch-name}/tests/ -v
 
 PASSED  N
 FAILED  N
@@ -80,11 +80,11 @@ SKIPPED N
 
 ---
 
-## 📋 체크리스트
+## 📋 Checklist
 
-- [ ] `main`에 직접 push하지 않고 PR을 통해 병합 요청함
-- [ ] 사후영향 평가 완료 (IMPACT_ASSESSOR 실행)
-- [ ] 보안 점검 완료 (SECURITY_AUDITOR 실행)
-- [ ] 테스트 통과 확인
-- [ ] 관련 문서 업데이트 (필요 시)
-- [ ] 리뷰어 지정 완료
+- [ ] Merging via PR rather than pushing directly to `main`
+- [ ] Impact assessment completed (IMPACT_ASSESSOR run)
+- [ ] Security review completed (SECURITY_AUDITOR run)
+- [ ] Tests pass
+- [ ] Related docs updated (if applicable)
+- [ ] Reviewers assigned

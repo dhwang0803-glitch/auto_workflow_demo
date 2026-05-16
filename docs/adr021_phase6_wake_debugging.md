@@ -1,15 +1,19 @@
-# ADR-021 Phase 6 — Worker Pool Wake-up 실전 디버깅 기록
+# ADR-021 Phase 6 — Worker Pool Wake-up Live Debugging Log
 
-**날짜:** 2026-04-20
-**대상 환경:** staging (`autoworkflowdemo` / asia-northeast3)
-**목표:** Cloud Run Worker Pools 로 배포된 Execution_Engine 을 API_Server 가 `/execute` 호출 시 깨우는 live 파이프라인 검증 — PLAN_21 §6.1 (3 회 실행 + wake throttle 확인)
-**결과:** 3/3 executions `status=success`, `woken_log_count=1` (30초 throttle 검증됨). **3-layer 근본 원인이 순차적으로 드러남.**
+**Date:** 2026-04-20
+**Environment:** staging (`autoworkflowdemo` / asia-northeast3)
+**Goal:** Verify the live pipeline where API_Server wakes the
+Execution_Engine deployed as Cloud Run Worker Pools when `/execute` is
+called — PLAN_21 §6.1 (3 runs + wake-throttle check)
+**Result:** 3/3 executions `status=success`,
+`woken_log_count=1` (the 30 s throttle worked). **The three layered
+root causes only surfaced one after another.**
 
 ---
 
-## 1. 기대했던 흐름 vs 실제 경험
+## 1. Expected flow vs. actual experience
 
-### 기대
+### Expected
 
 ```
 docker build + push  →  terraform apply  →  API redeploy
@@ -21,118 +25,195 @@ docker build + push  →  terraform apply  →  API redeploy
     3 executions all success, 1 wake log, done.
 ```
 
-실행 스크립트는 이전 Phase 6 prep (commit `462ac9e`) 에서 이미 작성돼 있었고, Terraform IaC 도 이미 `cloud_run.tf`/`worker.tf`/`memorystore.tf` 에 선언돼 있었다. "코드 레벨" 로는 끝난 상태.
+The runner script had already been written during the Phase 6 prep
+(commit `462ac9e`), and the Terraform IaC for it was already declared
+in `cloud_run.tf` / `worker.tf` / `memorystore.tf`. Code-wise we were
+"done".
 
-### 실제
+### Actual
 
-첫 실행에서 `timeout` 으로 실패. 워커 풀 스케일은 0 에서 움직이지 않음. 로그는 uvicorn access 로그만 있고 앱 로거 출력이 Cloud Logging 에 전혀 안 보임. 이 지점부터 **표면 증상이 근본 원인을 감추는 3 개 레이어가 한꺼번에 겹쳐 있었음**.
-
----
-
-## 2. 병목이 생긴 세 지점 (표면 → 깊이 순)
-
-| # | 레이어 | 표면 증상 | 실제 원인 |
-|---|--------|-----------|-----------|
-| 1 | **Runtime state** | Worker pool 이 scale 안 됨 (`manual_instance_count=0` 유지) | API 서버가 수면 유발 코드를 가지고 있지 않음 — Cloud Run Admin API `workerPools.patch` 호출이 실행되지 않음 |
-| 2 | **Config surface** | (1) 해결 후에도 여전히 wake 로그 없음 | `wake_worker._configured()` 가 세 env var 중 2 개가 없어서 조용히 early-return |
-| 3 | **GCP IAM** | (2) 해결 후 wake 가 시도되지만 `PermissionDenied` | Cloud Run Admin API 가 `update_mask` 가 scaling 만이어도 proto3 기본값 때문에 compute default SA 에 actAs 검증 |
-
-각 레이어가 이전 레이어를 해결해야 드러나는 구조라 **한 번에 파악 불가능**. 순차 디버깅만 가능했음.
+The first run timed out. The worker pool didn't scale up from 0. The
+only logs were uvicorn access logs — no app-logger output reached
+Cloud Logging at all. From here, **three layers of root causes were
+stacked on top of each other, each one masking the next**.
 
 ---
 
-## 3. 기술 스택 적용에서 실제로 겪은 어려움
+## 2. The three bottleneck layers (surface → depth)
+
+| # | Layer | Surface symptom | Actual cause |
+|---|-------|------------------|--------------|
+| 1 | **Runtime state** | Worker pool refused to scale (`manual_instance_count=0` stuck) | The API server simply had no wake-triggering code — the Cloud Run Admin API `workerPools.patch` call was never being made |
+| 2 | **Config surface** | After (1), still no wake logs | `wake_worker._configured()` silently returned early because two of the three env vars were missing |
+| 3 | **GCP IAM** | After (2), wake was firing but got `PermissionDenied` | The Cloud Run Admin API validates actAs on the compute-default SA even when the `update_mask` only touches scaling — a proto3-default-init quirk |
+
+Each layer can only be observed after fixing the previous one, so
+**it was impossible to see them all at once** — sequential debugging
+was the only way.
+
+---
+
+## 3. Specific tech-stack pain we hit
 
 ### 3-1. Cloud Run Worker Pools (ADR-021 §4)
 
-- **`cpu < 1` 거부**: `ee_worker_resources.cpu = "0.5"` 로 설정했더니 apply 가 `Invalid value specified for cpu. Total cpu < 1 is not supported with gen2` 로 거부됨. Worker Pools 는 Cloud Run v2 gen2 실행 환경 + always-allocated CPU 를 강제하므로 최소 shape 는 `cpu=1`. Cloud Run **Service** (v1/v2) 는 0.5 이하도 허용되는 것과 대비되는 차이. → `variables.tf` 에 `cpu = "1"` 로 고정.
-- **AUTOMATIC scaling 불가**: `google-cloud-run` Python SDK 0.16.0 의 `WorkerPoolScaling` 에는 `manual_instance_count` 만 writable. `min_instance_count`/`max_instance_count` 는 generated proto 에 아직 없음. 그래서 scaling_mode 를 MANUAL 로 고정하고 wake 는 "count=1 로 patch" 로 구현. Scale-down back to 0 은 자동 안 됨 — Phase 6 현재 상태에서는 `terraform destroy` 나 명시적 patch 가 유일한 방법. 별도 idle watchdog 은 post-Phase-6 TODO.
-- **`template.service_account=""` 의 서버측 해석**: proto3 는 unset string 을 ""로 직렬화. Cloud Run Admin API 서버는 이걸 "compute default SA 를 사용하라" 로 해석하고 actAs 검증 대상에 넣음. `update_mask` 가 scaling 에만 걸려 있어도 서버측 validation 은 full proto 를 봄. **결과적으로 API SA 는 compute default SA 에도 `iam.serviceAccountUser` 가 필요**. 공식 문서에 명시 없음 — 실전에서 403 먹어야 발견.
+- **`cpu < 1` rejected**: I set
+  `ee_worker_resources.cpu = "0.5"` and `apply` failed with
+  `Invalid value specified for cpu. Total cpu < 1 is not supported
+  with gen2`. Worker Pools force the Cloud Run v2 gen2 runtime with
+  always-allocated CPU, so the minimum shape is `cpu=1`. Cloud Run
+  **Service** (v1/v2) allows ≤0.5 — a real divergence. → Pinned to
+  `cpu = "1"` in `variables.tf`.
+- **AUTOMATIC scaling not available**: In
+  `google-cloud-run` Python SDK 0.16.0, the only writable field on
+  `WorkerPoolScaling` is `manual_instance_count`. `min_instance_count`
+  / `max_instance_count` aren't in the generated proto yet. So
+  scaling_mode is pinned to MANUAL and wake is implemented as "patch
+  count=1". Scale-down back to 0 isn't automatic — in Phase 6 today
+  the only options are `terraform destroy` or an explicit patch. A
+  separate idle watchdog is a post-Phase-6 TODO.
+- **Server-side interpretation of `template.service_account=""`**:
+  proto3 serializes an unset string as `""`. The Cloud Run Admin API
+  server reads that as "use the compute-default SA" and includes that
+  SA in actAs validation. Even when `update_mask` only covers
+  scaling, the server validates the full proto. **Net effect**: the
+  API SA needs `iam.serviceAccountUser` on the compute-default SA
+  too. Not documented officially — you only find it after a 403.
 
 ### 3-2. Celery + Memorystore Redis broker
 
-- **VPC peering latency**: Memorystore BASIC 인스턴스 생성에 5분 13초. `terraform apply` 중 가장 긴 단일 작업. 재시도 불가 (같은 이름 재생성엔 쿨다운).
-- **Broker URL composition**: `redis://${google_redis_instance.broker.host}:${google_redis_instance.broker.port}/0`. `host` 는 apply 후에만 known. 즉 Memorystore 가 먼저 만들어진 뒤 Worker Pool + API env 를 렌더링하는 의존성이 있음. `depends_on = [google_redis_instance.broker]` 로 강제.
-- **Queue 분리 누락**: Worker 는 `workflow_tasks` 큐만 구독하는데, API 가 `send_task` 할 때 `queue=` 명시 안 하면 기본 `celery` 큐로 들어가서 영원히 대기. `fb220de` 에서 이미 수정된 이슈지만 재현 가능성 인지 필요.
+- **VPC peering latency**: Creating a Memorystore BASIC instance took
+  5 min 13 s. It was the longest single action in `terraform apply`.
+  Retries aren't free (recreating the same name has a cooldown).
+- **Broker URL composition**:
+  `redis://${google_redis_instance.broker.host}:${google_redis_instance.broker.port}/0`.
+  `host` is only known after apply, so Memorystore must be created
+  before the Worker Pool + API env render. Enforced with
+  `depends_on = [google_redis_instance.broker]`.
+- **Missing queue routing**: The worker subscribes only to the
+  `workflow_tasks` queue, but if the API's `send_task` doesn't pass
+  `queue=`, the task goes to the default `celery` queue and waits
+  forever. That was already fixed in `fb220de`, but the regression
+  potential is worth being aware of.
 
 ### 3-3. Cloud SQL Auth Proxy sidecar
 
-- **Worker 에 빠진 sidecar**: `cloud_run.tf` 의 API 서비스에는 cloudsql-proxy sidecar 가 있지만 `worker.tf` 에는 없었음. `DATABASE_URL` 이 `localhost:5432` 로 구성된 시크릿 값이라 worker 컨테이너가 그대로 사용 → `ConnectionRefusedError: ('127.0.0.1', 5432)` 가 모든 Celery 태스크에서 발생. Worker container 와 proxy container 는 같은 Cloud Run 인스턴스의 pod-like 네트워크 네임스페이스를 공유하므로 localhost 로 proxy 를 부를 수 있다 — 대신 **두 컨테이너가 한 `template` 안에 명시돼 있어야 함**. 해결: `worker.tf` 의 `template` 블록에 `containers { name = "cloudsql-proxy" ... }` 추가.
-- **Port 충돌 오해**: 사용자가 "내 PC 에서 5432/5433 이미 사용 중이라 5435 로 통일하자" 제안. 그런데 Cloud Run 컨테이너 내부의 localhost 는 호스트 PC 와 완전히 격리된 네트워크 네임스페이스 — 포트 충돌이 발생할 수 없음. 결국 기본 5432 유지.
+- **Sidecar missing on the worker**: The API service in
+  `cloud_run.tf` has a `cloudsql-proxy` sidecar, but `worker.tf`
+  didn't. The `DATABASE_URL` secret was composed against
+  `localhost:5432`, so the worker container called localhost
+  directly → `ConnectionRefusedError: ('127.0.0.1', 5432)` on every
+  Celery task. The worker container and the proxy container share
+  the same Cloud Run instance's pod-like network namespace, so
+  localhost-to-proxy works **only if both are declared in the same
+  `template` block**. Fix: add
+  `containers { name = "cloudsql-proxy" ... }` to `worker.tf`'s
+  `template`.
+- **Port-clash false alarm**: The user suggested "since my PC has
+  5432/5433 in use, let's standardize on 5435". But the Cloud Run
+  container's localhost is a completely isolated network namespace
+  from the host PC — there can be no port collision. We kept the
+  default 5432.
 
-### 3-4. Git Bash on Windows — E2E 러너의 호스트 환경 이슈
+### 3-4. Git Bash on Windows — host environment issues for the E2E runner
 
-| 증상 | 원인 | 해결 |
-|------|------|------|
-| `gcloud: exec: python: not found` | gcloud 의 bash wrapper 가 `python` 을 PATH 에서 찾지만 Windows 에는 `python.exe` 만 있음 | `export CLOUDSDK_PYTHON="/c/Users/user/AppData/Local/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe"` |
-| `bash: !2026: event not found` | bash history expansion 이 `!` 뒤 토큰을 이전 커맨드로 치환하려 함 (비밀번호에 `!` 포함) | 단일 따옴표로 감싸거나 `set +H` |
-| `VERIFY_TOKEN=` 이 빈 문자열 | 한 줄에 `VAR=$(...) curl ...` 로 쓰면 bash 는 환경변수로만 해석하고 다음 줄에서 expand 안 함 | 두 줄로 분리 |
-| `WF_ID=tail` | sed greedy match 가 graph body 의 중첩된 `"id":"..."` 를 잡음 | UUID 정규식으로 직접 추출: `grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-...'` |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `gcloud: exec: python: not found` | gcloud's bash wrapper looks for `python` on PATH, but Windows only has `python.exe` | `export CLOUDSDK_PYTHON="/c/Users/user/AppData/Local/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe"` |
+| `bash: !2026: event not found` | bash history expansion treats `!2026` (in a password) as a history reference | Single-quote the value or `set +H` |
+| `VERIFY_TOKEN=` ends up empty | Writing `VAR=$(...) curl ...` on one line tells bash "this is an env-only assignment for the following command" — the next line never sees it | Split into two lines |
+| `WF_ID=tail` | sed's greedy match scoops up a nested `"id":"..."` from the graph body | Extract by UUID regex: `grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-...'` |
 
 ### 3-5. GCLB 411 on empty POST
 
-`POST /api/v1/workflows/{id}/execute` 는 body 가 실제로 필요 없지만, GCLB 가 Cloud Run 앞단에서 `Content-Length` 없는 POST 를 411 로 reject. 해결: `-d '{}'` 로 빈 JSON 바디 강제. 스크립트에 주석으로 이유 남김.
+`POST /api/v1/workflows/{id}/execute` doesn't actually need a body,
+but GCLB sits in front of Cloud Run and rejects bodyless POSTs
+without `Content-Length` with 411. Fix: force an empty JSON body with
+`-d '{}'`. The script keeps a comment explaining why.
 
-### 3-6. 배포 이미지 SHA 와 코드 commit SHA 의 정합성
+### 3-6. Deployed image SHA vs. code commit SHA
 
-가장 교활했던 문제. 배포돼 있던 API 이미지 태그 `logging-fix-632d8f8` 의 SHA 는 commit `632d8f8` (`fix(ee): Sheets node resolves first-sheet name ...`) 에서 빌드된 것. 그런데 wake_worker 코드는 `f9ecbda` (ADR-021 Phase 5) 에서 추가됨. `git merge-base --is-ancestor 632d8f8 f9ecbda` 결과 True — **즉 배포된 이미지는 wake 코드 이전 시점의 빌드**. 저장소의 현재 코드를 보면 wake 로직이 있는데, 실제 런타임에는 없음.
+The most insidious one. The deployed API image tag
+`logging-fix-632d8f8` had been built from commit `632d8f8`
+(`fix(ee): Sheets node resolves first-sheet name ...`). But the
+wake_worker code only landed in `f9ecbda` (ADR-021 Phase 5).
+`git merge-base --is-ancestor 632d8f8 f9ecbda` returned True —
+meaning **the deployed image predated the wake code**. The repo
+showed the wake logic, but the running container didn't have it.
 
-이걸 발견한 단서:
-- `_configured()` 체크 + env var 주입 후에도 wake 로그 전무
-- Admin API 에러 로그도 없음 (wake 자체가 호출되지 않으면 except 도 안 탐)
-- 결정적 증거: `gcloud run services describe ... --format='value(...image)'` 로 이미지 태그 확인 → git 히스토리와 대조
+The clues that surfaced it:
+- After fixing `_configured()` and injecting env vars, still zero
+  wake logs
+- No Admin API error logs either (if wake is never called, the
+  `except` never fires)
+- Decisive evidence:
+  `gcloud run services describe ... --format='value(...image)'`
+  showed the image tag → cross-reference with git history.
 
-해결: 현재 HEAD 에서 rebuild → 태그 `phase6-wake-462ac9e` 로 push → `gcloud run deploy --image=...` → revision `00010-hlv` 생성.
+Fix: rebuild from current HEAD → push as
+`phase6-wake-462ac9e` → `gcloud run deploy --image=...` →
+revision `00010-hlv`.
 
-rebuild 하다가 파생 문제:
+A derived issue uncovered during the rebuild:
 
-- **Dockerfile 에 Execution_Engine 설치 누락**: `API_Server/pyproject.toml` 은 `auto-workflow-execution-engine` 을 inline-mode 스톱갭 dep 으로 선언 (ADR-021 §5) 하는데, `API_Server/Dockerfile` 은 `./Database` + `./API_Server` 만 pip install 함. PyPI 에는 당연히 이 패키지가 없으므로 빌드 중 `No matching distribution found for auto-workflow-execution-engine` 로 실패. 이전 배포된 이미지 `logging-fix-632d8f8` 는 이 dep 이 `pyproject.toml` 에 추가되기 전 빌드된 거라서 이 gap 이 프로덕션에는 안 드러났음 — **rebuild 를 해야만 드러나는 잠복 버그**. 해결: `COPY Execution_Engine/` + `pip install ./Execution_Engine` 을 Database 와 API_Server 사이에 추가 (PR #98).
+- **Dockerfile missed installing Execution_Engine**:
+  `API_Server/pyproject.toml` declares
+  `auto-workflow-execution-engine` as an inline-mode stopgap dep
+  (ADR-021 §5), but `API_Server/Dockerfile` only `pip install`s
+  `./Database` + `./API_Server`. PyPI has no such package, so the
+  build failed with `No matching distribution found for
+  auto-workflow-execution-engine`. The previously deployed image
+  `logging-fix-632d8f8` predated the addition of that dep to
+  `pyproject.toml`, so production never tripped it — **a latent bug
+  that only surfaces on rebuild**. Fix: add
+  `COPY Execution_Engine/` + `pip install ./Execution_Engine`
+  between the Database and API_Server steps (PR #98).
 
 ---
 
-## 4. 디버깅 로그 (시간순 요약)
+## 4. Debugging log (chronological)
 
 ```
 t+0    docker build (EE) + push → OK
        terraform apply → Memorystore 5m13s, Worker Pool fail: cpu<1
-       → variables.tf cpu="1" 로 수정, 재적용 OK
-t+15   API 에 env 주입 (CELERY_BROKER_URL, WORKER_POOL_NAME)
-       → /execute 호출, status=queued 유지, 워커 풀 scale 0
-t+20   gcloud alpha run worker-pools update --instances=1 로 수동 깨움
-       → 태스크 즉시 픽업, 그러나 'left_field' KeyError (condition 노드 스키마 불일치)
-t+25   WF 재생성 (left_field/right_value/operator 스키마)
-       → 3/3 success! 하지만 woken_log_count=0
-t+30   [의문] "3회 성공인데 wake 로그 없음" 조사 시작
-       → 로그는 수동 scale 덕분에 원래부터 wake 없이 동작했던 것
-t+35   Compaction 이후 세션 재개
-       API 이미지 SHA (632d8f8) vs f9ecbda 대조 → 이미지가 오래됨 발견
-       Dockerfile rebuild 시도 → auto-workflow-execution-engine 없음 에러
-       → COPY Execution_Engine + install 추가, rebuild + push (phase6-wake-462ac9e)
-t+50   새 이미지 배포 (revision 00010-hlv), 풀 scale→0, E2E 재실행
-       여전히 wake 로그 없음. Status=queued 유지
-t+55   API env var 덤프 → GCP_PROJECT_ID / GCP_REGION 누락 확인
-       → 두 env 주입, redeploy
-t+60   E2E 재실행 → 여전히 status=queued, 풀 0 그대로
-       로그 필터를 severity>=ERROR 로 넓힘
+       → fix variables.tf cpu="1", reapply OK
+t+15   inject env into the API (CELERY_BROKER_URL, WORKER_POOL_NAME)
+       → /execute returns, status=queued forever, worker pool stays at 0
+t+20   manually wake via gcloud alpha run worker-pools update --instances=1
+       → task picks up immediately, but 'left_field' KeyError (condition node schema mismatch)
+t+25   recreate workflow with the correct (left_field/right_value/operator) schema
+       → 3/3 success! but woken_log_count=0
+t+30   [question] "3 successes but no wake log" — start investigating
+       → because of the manual scale, the pool was already up, so wake never had to fire
+t+35   resume session after compaction
+       compare API image SHA (632d8f8) vs f9ecbda → discover the image is stale
+       attempt Dockerfile rebuild → auto-workflow-execution-engine missing error
+       → add COPY Execution_Engine + install, rebuild + push (phase6-wake-462ac9e)
+t+50   deploy new image (revision 00010-hlv), scale pool→0, rerun E2E
+       still no wake logs. status=queued.
+t+55   dump API env → GCP_PROJECT_ID / GCP_REGION missing
+       → inject both, redeploy
+t+60   rerun E2E → still status=queued, pool stays at 0
+       widen the log filter to severity>=ERROR
        → PermissionDenied: iam.serviceaccounts.actAs on
           1038450396751-compute@developer.gserviceaccount.com
-       Wake 는 firing, Admin API 단에서 거부당하는 중
-t+65   API SA 에 roles/iam.serviceAccountUser 두 개 부여
-         - on EE SA
-         - on compute default SA
-       풀 scale→0, E2E 재실행
-       → 3/3 success, woken_log_count=1 (exact), throttle 검증 완료
-t+70   IaC 에 인코딩:
+       Wake is firing; the Admin API is the one rejecting.
+t+65   grant API SA roles/iam.serviceAccountUser twice
+         - on the EE SA
+         - on the compute-default SA
+       scale pool→0, rerun E2E
+       → 3/3 success, woken_log_count=1 (exact), throttle confirmed
+t+70   encode into IaC:
          - cloud_run.tf: GCP_PROJECT_ID + GCP_REGION env
          - worker.tf: actAs IAM × 2, cloudsql-proxy sidecar
          - variables.tf: cpu=1
-       terraform plan 확인 후 apply → 0 add / 2 change / 0 destroy
-       (2 change 는 provider cosmetic drift, 기능 영향 없음)
+       terraform plan → 0 add / 2 change / 0 destroy
+       (the 2 changes are cosmetic provider drift, no behavior impact)
 ```
 
 ---
 
-## 5. 최종 해결 방법 (IaC 에 인코딩)
+## 5. Final resolution (encoded in IaC)
 
 ### `infra/terraform/cloud_run.tf`
 
@@ -147,12 +228,13 @@ env {
 }
 ```
 
-세 wake env var (`WORKER_POOL_NAME` 은 이미 있었음) 가 전부 있어야 `wake_worker._configured()` 가 True 반환.
+All three wake env vars (`WORKER_POOL_NAME` was already there) must
+be present before `wake_worker._configured()` returns True.
 
 ### `infra/terraform/worker.tf`
 
 ```hcl
-# cloudsql-proxy sidecar 추가 (worker container 옆에)
+# Add the cloudsql-proxy sidecar next to the worker container
 containers {
   name  = "cloudsql-proxy"
   image = var.cloudsql_proxy_image
@@ -181,63 +263,95 @@ resource "google_service_account_iam_member" "api_actas_compute_default" {
 
 ```dockerfile
 COPY Database/ ./Database/
-COPY Execution_Engine/ ./Execution_Engine/    # 추가
+COPY Execution_Engine/ ./Execution_Engine/    # added
 COPY API_Server/ ./API_Server/
 
 RUN pip install --no-cache-dir ./Database \
-    && pip install --no-cache-dir ./Execution_Engine \   # 추가
+    && pip install --no-cache-dir ./Execution_Engine \   # added
     && pip install --no-cache-dir ./API_Server
 ```
 
 ### `infra/scripts/run_e2e_phase21.sh`
 
-- `-d '{}'` 로 empty POST 시 GCLB 411 회피
-- Python 미의존 파싱 (UUID regex + sed)
-- execution_id 가 graph body 내 다른 `"id"` 필드와 충돌하지 않도록 grep-first-UUID 전략
+- `-d '{}'` to dodge GCLB 411 on empty POST
+- Python-free parsing (UUID regex + sed)
+- Avoid catching the graph body's other `"id"` fields when extracting
+  `execution_id` — use the first-UUID-match strategy
 
 ---
 
-## 6. 회고 — 다음에 같은 문제 재발 방지
+## 6. Postmortem — how to prevent the same problem next time
 
-### 6-1. Silent no-op 패턴은 디버깅 지옥
+### 6-1. Silent no-ops are debugging hell
 
-`wake_worker._configured()` 는 "환경변수 없으면 조용히 return" — 로컬/CI 에서는 옳은 동작. 하지만 **배포 환경에서 이 체크가 실패하면 로그가 전혀 없어서 "왜 안 돎?" 을 답할 수 없다**. 같은 패턴이 다른 곳에도 있으면 최소한 DEBUG 레벨로는 "X 가 없어서 스킵" 이라도 찍어야 한다.
+`wake_worker._configured()` was "return silently if env vars are
+missing" — that's correct behavior for local / CI runs. But **when
+this check fails in deployment, there are zero logs to answer "why
+isn't it running?"** If the same pattern appears elsewhere, at least
+log a DEBUG line like "skipping because X is missing".
 
-### 6-2. 코드와 이미지의 SHA 정합성을 전제로 두지 말 것
+### 6-2. Don't assume the deployed image matches the repo's current
+code
 
-저장소의 현재 코드 상태와 배포된 이미지의 빌드 시점은 **완전히 독립적**. Phase N 의 코드가 머지됐다고 해서 배포된 이미지에 그 코드가 있는 건 아니다. 배포 이미지 태그에 git sha 를 포함하는 컨벤션 (`<feature>-<sha7>`) 은 바로 이걸 감사할 수 있게 해주는 유일한 실용 메커니즘 — `gcloud run services describe | grep image` 로 SHA 뽑아서 `git log` 로 비교하면 10초면 검증 가능.
+What's in the repo and what was built into the deployed image are
+**completely independent**. Merging Phase N's code doesn't mean the
+running image has Phase N. The convention of putting the git SHA in
+the image tag (`<feature>-<sha7>`) is the one practical mechanism
+for auditing this — extract the SHA via
+`gcloud run services describe | grep image` and compare with
+`git log`. Takes 10 seconds.
 
-### 6-3. GCP proto3 quirk 는 문서로 안 남아 있음
+### 6-3. GCP proto3 quirks are not in the docs
 
-`workerPools.patch` 의 compute-default SA actAs 검증은 공식 문서에 없다. Python SDK 가 partial WorkerPool 을 serialize 할 때 proto3 기본값 때문에 생기는 **서버측 해석 이슈**. 같은 함정이 다른 Cloud Run Admin API 호출에도 있을 가능성이 크므로, 다음에 "update_mask 가 좁은데 왜 unrelated SA 에 PermissionDenied 가?" 라는 증상을 보면 이 패턴부터 의심.
+The compute-default-SA actAs check inside `workerPools.patch` is
+nowhere in the official docs. It comes from how the Python SDK
+serializes a partial WorkerPool — proto3 default values lead to a
+server-side interpretation issue. The same trap probably exists in
+other Cloud Run Admin API calls, so any future symptom of
+"update_mask is narrow but I'm getting PermissionDenied on an
+unrelated SA" should suspect this pattern first.
 
-### 6-4. 3-layer 를 한 번에 못 보는 구조
+### 6-4. The 3-layer structure precludes seeing it all at once
 
-레이어가 외부에서 안쪽으로 순차적으로만 드러남 — 이미지를 고쳐야 env var 문제가 드러나고, env var 를 고쳐야 IAM 문제가 드러남. 각 레이어에서 "이제 다 됐다" 로 보이다가 다음 레이어로 막힘. **Phase 6 의 교훈**: "E2E 는 한 번 돌려보는 게 아니라, 각 레이어 해결 후마다 돌려보는 것" — 이게 빨리 수렴하는 길.
+Each layer surfaces sequentially from the outside in — fix the
+image, then the env-var issue appears; fix the env vars, then the
+IAM issue appears. Each layer looks like "OK, done now" until the
+next one blocks. **Phase 6 lesson**: "E2E is not run once at the
+end; it is run after every layer is resolved." That is the only path
+to fast convergence.
 
-### 6-5. IaC 에 반영된 것들의 검증 방법
+### 6-5. How to verify IaC encoded the fix
 
-최종 상태는:
+Final state:
 ```
 terraform plan -var-file=environments/staging.tfvars
 → 0 to add, 2 to change (provider cosmetic), 0 to destroy
 ```
 
-즉 **어떤 클린 환경에서 apply 해도 같은 결과가 재현**. 이전에는 apply 후에 3 개의 수동 gcloud 명령이 필요했음 (env 주입, IAM 부여 × 2). 지금은 한 번의 apply 로 완결.
+That means **a clean-environment apply reproduces the same result**.
+Previously, apply required three manual gcloud commands afterwards
+(env injection, IAM × 2). Now one apply is enough.
 
 ---
 
-## 7. 관련 PR / 커밋
+## 7. Related PRs / commits
 
-| 이슈 | PR | 커밋 |
-|------|----|----|
-| infra IaC 완결 (env vars, IAM × 2, sidecar, cpu=1, runner fixes) | [#97](https://github.com/dhwang0803-glitch/auto_workflow_demo/pull/97) | `30bf307` |
-| Dockerfile Execution_Engine 설치 | [#98](https://github.com/dhwang0803-glitch/auto_workflow_demo/pull/98) | `778f998` |
-| (예정) ADR-021 `Update (2026-04-20)` — actAs 의존성 | docs 브랜치 | — |
+| Issue | PR | Commit |
+|-------|----|--------|
+| Encode infra IaC fully (env vars, IAM × 2, sidecar, cpu=1, runner fixes) | [#97](https://github.com/dhwang0803-glitch/auto_workflow_demo/pull/97) | `30bf307` |
+| Dockerfile: install Execution_Engine | [#98](https://github.com/dhwang0803-glitch/auto_workflow_demo/pull/98) | `778f998` |
+| (planned) ADR-021 `Update (2026-04-20)` — actAs dependency | docs branch | — |
 
-## 8. Follow-up 항목
+## 8. Follow-ups
 
-- [ ] `wake_worker.py` 가 full `template.service_account` 를 명시적으로 보내도록 수정 → compute default SA 의 actAs 바인딩 제거 가능 (blast radius 축소)
-- [ ] Idle scale-down watchdog (Cloud Scheduler + Cloud Functions, 또는 컨테이너측 self-terminate) — 현재는 MANUAL scaling 특성상 자동 0 복귀 없음
-- [ ] ADR-021 `Update (2026-04-20)` 섹션 — 3-layer wake path 요구사항 + actAs quirk
-- [ ] `.github/workflows/` 의 release 파이프라인에서 이미지 태그 - git sha 정합성 체크 (이미지가 빌드된 commit SHA 를 revision label 에 심기)
+- [ ] Have `wake_worker.py` send the full `template.service_account`
+      explicitly → can drop the compute-default-SA actAs binding
+      (smaller blast radius)
+- [ ] Add an idle scale-down watchdog (Cloud Scheduler + Cloud
+      Functions, or container-side self-terminate) — MANUAL scaling
+      doesn't auto-return to 0
+- [ ] Write the ADR-021 `Update (2026-04-20)` section — 3-layer wake
+      path requirements + the actAs quirk
+- [ ] In `.github/workflows/`'s release pipeline, validate image-tag
+      ↔ git-sha consistency (stamp the build SHA into a revision
+      label)

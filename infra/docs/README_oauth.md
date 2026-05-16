@@ -1,91 +1,135 @@
 # Google OAuth2 Deploy Runbook — ADR-019 Phase 6
 
-> ADR-019 의 구현을 실제 GCP 프로젝트에 세팅하는 작업 절차. Terraform 이 시크릿 3종 + IAM + Cloud Run env 주입을 찍어주지만, **OAuth Client ID / Secret / redirect URI 의 실값은 GCP Console 의 수동 등록 후에만 얻을 수 있다**. 본 문서는 그 수동 단계와 Secret Manager 주입을 안전하게 연결하는 절차를 다룬다.
+> Procedure for wiring the ADR-019 implementation into a real GCP
+> project. Terraform creates the three secrets, IAM bindings, and
+> Cloud Run env injection, but **the actual values for OAuth Client
+> ID / Secret / redirect URI can only be obtained after a manual
+> registration in the GCP Console**. This document covers those
+> manual steps and how to inject them into Secret Manager safely.
 >
-> 선행 ADR: ADR-018 (Secret Manager) · ADR-019 (OAuth 설계) · ADR-020 (Cloud Run 배포). 시크릿 R/W 규칙 일반론은 [`README.md` 의 "시크릿 R/W 패턴"](README.md#시크릿-rw-패턴) 참조.
+> Predecessor ADRs: ADR-018 (Secret Manager) · ADR-019 (OAuth design)
+> · ADR-020 (Cloud Run deployment). For the general secret R/W rules
+> see [the "Secret R/W patterns" section of
+> `README.md`](README.md#secret-rw-patterns).
 
-## 0. 전제
+## 0. Prerequisites
 
-- `terraform apply` 가 최소 1회 완료되어 시크릿 placeholder 3종이 이미 생성돼 있을 것.
+- `terraform apply` has run at least once, so the three placeholder
+  secrets already exist:
   - `google-oauth-client-id-<env>`
   - `google-oauth-client-secret-<env>`
   - `google-oauth-redirect-uri-<env>`
-- Cloud Run 서비스 `auto-workflow-api-<env>` 가 배포돼 `/health` 200 을 반환 중일 것 (redirect URI 확정에 서비스 URL 이 필요).
-- ADR-019 §7: **testing mode 유지**. verification submission 은 수요 발생 시 별도로.
+- The Cloud Run service `auto-workflow-api-<env>` is deployed and
+  returning 200 from `/health` (we need its URL to pin the redirect
+  URI).
+- ADR-019 §7: **stay in testing mode**. Verification submission is
+  deferred until there's demand.
 
-## 1. GCP Console — OAuth consent screen (1회, 프로젝트 단위)
+## 1. GCP Console — OAuth consent screen (one-time, per project)
 
-콘솔: **APIs & Services → OAuth consent screen**
+Console: **APIs & Services → OAuth consent screen**
 
-1. **User Type = External**, **Publishing status = Testing** 으로 둔다. ADR-019 §7 에서 결정한 대로 verification 생략. testing mode 는 test user 목록에 등록된 계정만 동의 가능.
-2. App name 은 식별 가능한 값 (`auto-workflow-<env>`), support email 은 본인 gmail.
-3. **Test users** 에 시연/개발용 Google 계정을 등록. 최대 100명. prod 전환 전까지는 개발자 + 시연 대상자 정도.
-4. **Scopes** 단계에서 다음을 선택 (ADR-019 §3, 최소 권한):
-   - `https://www.googleapis.com/auth/gmail.send` — `gmail_send` 노드
-   - `https://www.googleapis.com/auth/drive.file` — `google_drive_upload_file` 노드 (앱이 생성/업로드한 파일만 접근)
-   - `https://www.googleapis.com/auth/spreadsheets` — `google_sheets_append_row` 노드
-   - `https://www.googleapis.com/auth/documents` — `google_docs_append_text` 노드
-   - `https://www.googleapis.com/auth/presentations` — `google_slides_create_presentation` 노드
-   - `https://www.googleapis.com/auth/calendar.events` — `google_calendar_create_event` 노드
+1. **User Type = External**, **Publishing status = Testing**.
+   Per ADR-019 §7 we skip verification. In testing mode only the
+   accounts listed under Test users can complete consent.
+2. App name should be recognizable (`auto-workflow-<env>`); support
+   email is your gmail.
+3. Add the demo/dev Google accounts to **Test users**. Cap is 100.
+   Until prod, that's developers + people who watch the demo.
+4. In **Scopes**, pick the following (ADR-019 §3, least privilege):
+   - `https://www.googleapis.com/auth/gmail.send` — `gmail_send` node
+   - `https://www.googleapis.com/auth/drive.file` —
+     `google_drive_upload_file` node (only files the app creates /
+     uploads)
+   - `https://www.googleapis.com/auth/spreadsheets` —
+     `google_sheets_append_row` node
+   - `https://www.googleapis.com/auth/documents` —
+     `google_docs_append_text` node
+   - `https://www.googleapis.com/auth/presentations` —
+     `google_slides_create_presentation` node
+   - `https://www.googleapis.com/auth/calendar.events` —
+     `google_calendar_create_event` node
 
-   `drive` 나 `gmail.readonly` 같은 광범위 scope 는 **의도적으로 제외** — testing mode 를 벗어나 verification 이 필요해지는 시점을 늦추기 위함.
+   Broad scopes like `drive` or `gmail.readonly` are **deliberately
+   excluded** — that pushes back the moment we have to leave testing
+   mode and submit for verification.
 
-## 2. GCP Console — OAuth 2.0 Client ID 발급
+## 2. GCP Console — issue an OAuth 2.0 Client ID
 
-콘솔: **APIs & Services → Credentials → + CREATE CREDENTIALS → OAuth client ID**
+Console: **APIs & Services → Credentials → + CREATE CREDENTIALS →
+OAuth client ID**
 
 1. **Application type = Web application**.
-2. **Authorized redirect URIs** 에 Cloud Run URL 기반 callback 1개만 추가:
+2. Under **Authorized redirect URIs**, add exactly one callback
+   based on the Cloud Run URL:
    ```
    https://auto-workflow-api-<env>-<hash>-an.a.run.app/api/v1/oauth/google/callback
    ```
-   Cloud Run 이 발급한 `run.app` URL 을 `gcloud run services describe` 로 확인:
+   Look up the Cloud Run-issued `run.app` URL via
+   `gcloud run services describe`:
    ```bash
    BASE_URL=$(gcloud run services describe auto-workflow-api-<env> \
      --region=asia-northeast3 --format='value(status.url)')
    echo "${BASE_URL}/api/v1/oauth/google/callback"
    ```
-   **정확한 문자열이 아니면 Google 은 `redirect_uri_mismatch` 로 거부한다** — trailing slash, 대소문자, path 까지 Cloud Run URL 과 1글자도 달라선 안 됨.
+   **If the string isn't exact, Google rejects with
+   `redirect_uri_mismatch`** — trailing slash, casing, and path must
+   all match the Cloud Run URL down to the character.
 
-   ADR-019 §7: 커스텀 도메인 전환 시에는 이 목록에 **새 URI 를 추가** (기존 제거 X) → Frontend 트래픽 스위치 → 구 URI 제거. 동시 등록이 허용되므로 downtime 0.
-3. Create 를 누르면 **Client ID** 와 **Client Secret** 이 1회 노출되는 다이얼로그가 뜬다. **닫는 순간 Client Secret 재조회 불가 → rotate 만 가능**. 아래 3단계 (Secret Manager 주입) 를 같은 터미널에서 바로 이어 진행한다.
+   ADR-019 §7: when switching to a custom domain, **add a new URI**
+   to this list (don't remove the old one) → swap Frontend traffic →
+   then remove the old URI. Simultaneous registration is allowed, so
+   downtime stays at zero.
+3. Pressing Create surfaces a dialog that shows **Client ID** and
+   **Client Secret** once. **The moment that dialog closes you can
+   no longer read Client Secret — only rotate** it. Run step 3 below
+   (Secret Manager injection) in the same terminal session to chain
+   straight through.
 
-## 3. Secret Manager 주입 — stdin pipe 필수
+## 3. Inject into Secret Manager — stdin pipe required
 
-**규칙**: OAuth Client Secret 은 **클립보드 경유도, echo 도 금지**. Console 다이얼로그에서 값을 선택→복사→터미널 붙여넣기 하는 과정에서 복사 버퍼·스크롤백·셸 히스토리에 잔존한다. `gcloud` 의 `--data-file=-` stdin pipe 로 **눈에 보이지 않게** 주입한다.
+**Rule**: never let the OAuth Client Secret pass through the
+clipboard or `echo`. Copying the value from the Console dialog into
+the terminal already leaves traces in the clipboard buffer,
+scrollback, and shell history. Use `gcloud`'s `--data-file=-` stdin
+pipe so the value never becomes visible.
 
-### 3-1. Client ID (준-공개, 하지만 관례상 시크릿과 같은 파이프로)
+### 3-1. Client ID (semi-public, but use the same pipe by convention)
 
 ```bash
-ENV=staging    # 또는 prod
+ENV=staging    # or prod
 PROJECT=$(gcloud config get-value project)
 
-# Console 다이얼로그에서 "Client ID" 를 복사 → 아래 한 줄의 인자 로 넘긴다.
-# heredoc 방식이 가장 안전 (argv 에 안 남음, shell history 에만 남음 → 주의)
+# Copy "Client ID" from the dialog → pass it via the single-line arg.
+# A heredoc is the safest approach (the value never lands in argv;
+# only in shell history — be aware).
 gcloud secrets versions add "google-oauth-client-id-${ENV}" \
   --project="$PROJECT" --data-file=- <<< "PASTE_CLIENT_ID_HERE"
 ```
 
-### 3-2. Client Secret — 절대 echo/print 금지
+### 3-2. Client Secret — never echo / print
 
-터미널에서 **`read -s`** 로 입력을 받아 변수에만 담고 바로 파이프한다. 이 방식은 입력 중 화면 표시 0, argv 에 값이 안 실리고, 변수는 다음 `unset` 에서 즉시 파기된다.
+In the terminal, read input with **`read -s`** into a variable and
+pipe it straight in. Nothing shows on screen, the value never lands
+in argv, and the variable is destroyed by the trailing `unset`.
 
 ```bash
-# ❌ 나쁜 패턴 — stdout / argv / history 에 평문 잔존
+# ❌ Bad — leaves plaintext in stdout / argv / history
 echo "GOCSPX-abc123..." | gcloud secrets versions add "google-oauth-client-secret-${ENV}" --data-file=-
 
-# ✅ 좋은 패턴 — tty 입력만 받고 바로 소비
+# ✅ Good — tty input only, consumed immediately
 read -rs -p "Paste Google OAuth Client Secret: " CSEC; echo
 printf '%s' "$CSEC" | gcloud secrets versions add "google-oauth-client-secret-${ENV}" \
   --project="$PROJECT" --data-file=-
 unset CSEC
 ```
 
-입력 후 Console 다이얼로그를 닫고 **클립보드를 덮어쓰기** (다른 아무 텍스트나 복사) 할 것.
+After this, close the Console dialog and **overwrite your
+clipboard** (copy any other text).
 
 ### 3-3. Redirect URI
 
-값이 공개 URL 이지만 일관성을 위해 동일 파이프로:
+The value is a public URL, but use the same pipe for consistency:
 
 ```bash
 BASE_URL=$(gcloud run services describe "auto-workflow-api-${ENV}" \
@@ -96,63 +140,76 @@ printf '%s' "$REDIRECT" | gcloud secrets versions add "google-oauth-redirect-uri
   --project="$PROJECT" --data-file=-
 ```
 
-## 4. Cloud Run 재배포 — 새 시크릿 버전 픽업
+## 4. Redeploy Cloud Run — pick up the new secret version
 
-Terraform 이 작성한 Cloud Run env 는 `secret_key_ref.version = "latest"` 이지만, **이미 실행 중인 revision 은 기동 시점의 값을 캐시한다**. 새 placeholder→실값 전환을 반영하려면 새 revision 을 찍어야 한다.
+The Cloud Run env Terraform wrote uses `secret_key_ref.version =
+"latest"`, but **a running revision caches the value from the moment
+it booted**. To pick up the placeholder → real-value flip, a new
+revision must be created.
 
 ```bash
-# 방법 1: 배포 파이프라인을 다시 돌린다 (release 브랜치 push)
-#   .github/workflows/deploy-prod.yml 이 새 revision 배포
+# Option 1: re-run the deploy pipeline (push to the release branch)
+#   .github/workflows/deploy-prod.yml deploys a new revision
 
-# 방법 2: 이미지 갱신 없이 "update" 만 쳐서 revision 강제 생성
+# Option 2: don't change the image, force a new revision via "update"
 gcloud run services update "auto-workflow-api-${ENV}" \
   --project="$PROJECT" --region=asia-northeast3 \
   --update-env-vars=_OAUTH_REFRESH=$(date +%s)
 ```
 
-`_OAUTH_REFRESH` 는 애플리케이션이 무시하는 더미 키. Cloud Run 이 env 변화를 감지해 새 revision 을 띄우는 역할만 한다.
+`_OAUTH_REFRESH` is a dummy key the app ignores; it exists only so
+Cloud Run notices an env-var change and rolls a new revision.
 
-## 5. 검증
+## 5. Verification
 
-### 5-1. 시크릿이 placeholder 가 아닌지 확인
+### 5-1. Confirm the secrets are no longer placeholders
 
-placeholder 문자열 프리픽스 (`PLACEHOLDER_GOOGLE_OAUTH_`) 가 남아있지 않은지만 1-bit 체크. **값 자체를 stdout 으로 뿌리지 않는다**.
+Single-bit check that the placeholder prefix
+(`PLACEHOLDER_GOOGLE_OAUTH_`) is gone. **Never dump the value to
+stdout.**
 
 ```bash
 for NAME in google-oauth-client-id google-oauth-client-secret google-oauth-redirect-uri; do
   VAL=$(gcloud secrets versions access latest \
     --secret="${NAME}-${ENV}" --project="$PROJECT")
   case "$VAL" in
-    PLACEHOLDER_*) echo "$NAME = ⚠  PLACEHOLDER (주입 안 됨)";;
-    *)             echo "$NAME = ✅ 실값 (길이 ${#VAL})";;
+    PLACEHOLDER_*) echo "$NAME = ⚠  PLACEHOLDER (not injected)";;
+    *)             echo "$NAME = ✅ real value (length ${#VAL})";;
   esac
   unset VAL
 done
 ```
 
-### 5-2. authorize 엔드포인트 호출
+### 5-2. Call the authorize endpoint
 
-API_Server 가 시크릿 3종을 제대로 로드했는지는 `/api/v1/oauth/google/authorize` 로 확인. 로그인 상태의 JWT 가 필요하므로 기존 유저 계정으로 먼저 토큰을 받는다.
+Verify that API_Server loaded the three secrets by hitting
+`/api/v1/oauth/google/authorize`. A logged-in JWT is required, so
+first obtain a token using an existing user account.
 
 ```bash
-TOKEN="<기존 JWT>"
+TOKEN="<existing JWT>"
 curl -sS -X POST "${BASE_URL}/api/v1/oauth/google/authorize" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"credential_name":"gmail-test","scopes":["https://www.googleapis.com/auth/gmail.send"]}' | jq .
 ```
 
-기대 응답:
+Expected response:
 ```json
 { "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=...&state=..." }
 ```
 
-- `503` 응답이 오면 `GoogleOAuthClient` 가 `None` 이라는 뜻 → 시크릿 placeholder 또는 revision 미갱신. §4 로 돌아가 재배포.
-- `authorize_url` 을 브라우저에 붙여넣고 test user 로 로그인 → consent 승인 → Cloud Run 서비스의 `/api/v1/oauth/google/callback` 으로 리다이렉션 → credential row 가 `credentials` 테이블에 생성돼야 함.
+- A `503` means `GoogleOAuthClient` is `None` → secret is still a
+  placeholder or the revision wasn't refreshed. Loop back to §4.
+- Paste the `authorize_url` into a browser, log in as a test user,
+  approve consent → Google redirects to the Cloud Run service's
+  `/api/v1/oauth/google/callback` → a row should appear in the
+  `credentials` table.
 
-### 5-3. 노드 실행 드라이 테스트
+### 5-3. Dry-test a node run
 
-consent 완료 후 생성된 `credential_id` 로 `gmail_send` 를 실행해 refresh gate 가 제대로 도는지 확인. Workflow JSON 예:
+After consent, use the resulting `credential_id` to run `gmail_send`
+and confirm the refresh gate works. Workflow JSON example:
 
 ```json
 {
@@ -167,44 +224,59 @@ consent 완료 후 생성된 `credential_id` 로 `gmail_send` 를 실행해 refr
 }
 ```
 
-Cloud Run 로그에 `POST https://oauth2.googleapis.com/token` (refresh) + `POST gmail.googleapis.com/gmail/v1/users/me/messages/send` 가 보이면 성공.
+Cloud Run logs should show
+`POST https://oauth2.googleapis.com/token` (refresh) followed by
+`POST gmail.googleapis.com/gmail/v1/users/me/messages/send`.
 
-## 6. 트러블슈팅
+## 6. Troubleshooting
 
-| 증상 | 원인 | 조치 |
-|---|---|---|
-| `invalid_grant` (refresh 시) | testing mode 에서 refresh_token 이 6개월 미사용으로 만료됨 / 유저가 Google 계정에서 권한 해제 | `credential.status = needs_reauth` 으로 마킹되므로 UI / API 로 재동의 유도. 해당 credential 로 `/oauth/google/authorize` 재호출 |
-| `redirect_uri_mismatch` | Console 의 Authorized redirect URIs 와 Secret Manager 의 `google-oauth-redirect-uri-<env>` 값이 1글자라도 불일치 | 양쪽을 diff. 대개 trailing slash / `run.app` hash 차이. §2-2 재확인 |
-| `invalid_scope` | consent screen 의 Scopes 단계에서 해당 scope 가 등록 안 됨 | §1-4 돌아가서 scope 추가 후 재저장. 이후 기존 credential 은 scope 확장이 적용 안 되므로 **재동의 필요** |
-| `/authorize` 가 503 | `GOOGLE_OAUTH_CLIENT_ID` env 가 비었거나 placeholder — Settings 에서 `GoogleOAuthClient = None` | §3 시크릿 주입 + §4 revision 재배포 |
-| `access_denied` (consent 화면) | test user 목록에 없는 Google 계정으로 로그인 시도 | §1-3 test users 에 해당 계정 추가 (최대 100) |
-| Cloud Run 로그에 `Permission 'secretmanager.versions.access' denied` | Terraform IAM 바인딩 (`google_secret_manager_secret_iam_member.api_google_oauth_*`) 이 아직 propagate 안 됨 — 첫 apply 직후 수 분 race | `gcloud run services update` 로 revision 재생성하면 재시도 붙음. 여전하면 IAM 상태 확인 |
+| Symptom | Cause | Action |
+|---------|-------|--------|
+| `invalid_grant` (on refresh) | In testing mode the refresh_token expires after 6 months of inactivity / the user revoked access from their Google account | The credential is marked `status = needs_reauth`; surface re-consent in UI / API. Re-call `/oauth/google/authorize` for that credential |
+| `redirect_uri_mismatch` | Even a single-character mismatch between the Console's Authorized redirect URIs and `google-oauth-redirect-uri-<env>` in Secret Manager | Diff both. Usually trailing slash / `run.app` hash. Re-check §2-2 |
+| `invalid_scope` | The scope isn't listed on the consent screen's Scopes step | Go back to §1-4, add the scope, save. Existing credentials don't pick up new scopes — **re-consent required** |
+| `/authorize` returns 503 | `GOOGLE_OAUTH_CLIENT_ID` env is empty or a placeholder — `GoogleOAuthClient = None` in Settings | Inject in §3 + redeploy revision per §4 |
+| `access_denied` on the consent screen | Logging in as a Google account that isn't on the test-users list | Add the account in §1-3 (max 100 users) |
+| Cloud Run logs show `Permission 'secretmanager.versions.access' denied` | The Terraform IAM bindings (`google_secret_manager_secret_iam_member.api_google_oauth_*`) haven't propagated yet — a few-minute race right after the first apply | Re-roll a revision with `gcloud run services update` to retry. If it persists, check IAM state |
 
-## 7. Rotate (Client Secret 교체)
+## 7. Rotate (replace the Client Secret)
 
-의심이 갈 때 / 주기 rotate:
+When you suspect compromise, or for periodic rotation:
 
-1. Console: **Credentials → 해당 Client ID → RESET SECRET** — 새 Client Secret 발급, 다이얼로그 1회 노출.
-2. §3-2 방식으로 `google-oauth-client-secret-<env>` 에 새 버전 추가.
-3. §4 revision 재배포.
-4. Console 에서 **old secret 을 DISABLE** (Google 에 기록되는 grace period 동안 inflight 요청 보호).
-5. 모니터링 후 DISABLE → DELETE.
+1. Console: **Credentials → that Client ID → RESET SECRET** —
+   issues a new Client Secret in a one-time dialog.
+2. Use §3-2 to add a new version to
+   `google-oauth-client-secret-<env>`.
+3. Redeploy a revision per §4.
+4. In the Console, **DISABLE the old secret** (protects in-flight
+   requests during the grace period Google honors).
+5. Monitor, then go DISABLE → DELETE.
 
-Client ID 자체를 교체하려는 경우는 사실상 새 OAuth client 발급에 해당 → credential row 재발급 필요. 실행 중인 workflow 수명 고려해서 계획.
+Rotating the Client ID itself is effectively issuing a new OAuth
+client → credential rows must be re-issued. Plan around the lifetime
+of any running workflows.
 
 ## 8. Teardown
 
-시연 종료 후 환경 제거 순서:
+After the demo, tear down in this order:
 
-1. API_Server revision drain (Cloud Run 트래픽 0%).
-2. Secret Manager 의 OAuth 시크릿 3종은 `terraform destroy` 가 함께 제거 — 별도 `gcloud secrets delete` 불필요.
-3. GCP Console → Credentials → 해당 OAuth Client ID **DELETE** (Terraform 관리 밖이라 수동). test user 목록은 함께 사라짐.
-4. `terraform destroy` — 나머지 GCP 리소스 정리. destroy 소요 시간 주의는 [`README.md` 의 "Destroy 소요 시간 예산"](README.md#destroy-소요-시간-예산).
+1. Drain the API_Server revision (Cloud Run traffic = 0%).
+2. The three OAuth secrets in Secret Manager are removed by
+   `terraform destroy` — no separate `gcloud secrets delete` needed.
+3. GCP Console → Credentials → **DELETE** the OAuth Client ID (it's
+   outside Terraform's management, so manual). The test-users list
+   disappears with it.
+4. `terraform destroy` — cleans up the rest of GCP. See [`README.md`
+   "Destroy time budget"](README.md#destroy-time-budget) for timing
+   warnings.
 
-## 관련 문서
+## Related docs
 
-- `docs/context/decisions.md` ADR-019 §3 (scope) · §7 (testing mode) · §9 (Client secret 관리) · §10 (테스트)
-- `docs/context/decisions.md` ADR-018 — Secret Manager 기반 설계
-- `infra/docs/README.md` — Cloud SQL + 일반 시크릿 R/W 규칙
-- `infra/terraform/main.tf` — OAuth 시크릿 3종 + placeholder
-- `infra/terraform/cloud_run.tf` — IAM accessor + `secret_key_ref` env 주입
+- `docs/context/decisions.md` ADR-019 §3 (scopes) · §7 (testing
+  mode) · §9 (Client Secret management) · §10 (testing)
+- `docs/context/decisions.md` ADR-018 — Secret Manager-based design
+- `infra/docs/README.md` — Cloud SQL + general secret R/W rules
+- `infra/terraform/main.tf` — the three OAuth secrets +
+  placeholders
+- `infra/terraform/cloud_run.tf` — IAM accessor + `secret_key_ref`
+  env injection

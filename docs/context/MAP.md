@@ -1,27 +1,37 @@
-# Project MAP — 디렉토리/파일 역할 맵
+# Project MAP — directory & file role map
 
-> "이 파일은 뭐하는 애야?"에 답하는 단일 출처. 새 최상위 폴더/파일 추가 시 함께 갱신.
+> The single source of truth for "what is this file for?". Update whenever a
+> new top-level folder or file is introduced.
 
-## 최상위 구조 (main 브랜치)
+## Top-level layout (main branch)
 
 ```
 auto_workflow_demo/
-├── _claude_templates/   ← 브랜치별 CLAUDE.md 템플릿 (post-checkout 훅이 복사)
-├── _agent_templates/    ← 에이전트 지시 문서 (TDD/보안/리팩터 역할별)
-├── .claude/commands/    ← 슬래시 커맨드 정의 (예: /PR-report)
-├── .githooks/           ← post-checkout 훅 (브랜치 전환 시 폴더 자동 스캐폴딩)
-├── .github/             ← PR 템플릿 등
-├── docs/context/        ← 본 문서군. 아키텍처/결정/맵
+├── _claude_templates/   ← per-branch CLAUDE.md templates (copied by the post-checkout hook)
+├── _agent_templates/    ← agent instruction docs (per role: TDD / security / refactor)
+├── .claude/commands/    ← slash-command definitions (e.g. /PR-report)
+├── .githooks/           ← post-checkout hook (auto-scaffolds the branch folder on switch)
+├── .github/             ← PR template, etc.
+├── docs/context/        ← these docs: architecture / decisions / map
 └── README.md
 ```
 
-`main`에는 **공통 설정만** 있고, 실제 소스는 각 브랜치(`API_Server` / `Database` / `Execution_Engine` / `Frontend`)에 격리된다.
+`main` contains **shared configuration only**. The actual source lives in
+isolated branches: `API_Server` / `Database` / `Execution_Engine` / `Frontend`.
 
-`docs` 브랜치는 **위키 전용**: `docs/context/*` 편집만 허용되며, 코드 브랜치는 이 위키를 읽기 전용으로 참조한다. 자세한 규칙은 [`_claude_templates/CLAUDE_docs.md`](../../_claude_templates/CLAUDE_docs.md) 참고.
+The `docs` branch is **wiki-only**: only `docs/context/*` edits are allowed,
+and code branches reference this wiki read-only. See
+[`_claude_templates/CLAUDE_docs.md`](../../_claude_templates/CLAUDE_docs.md)
+for the full rules.
 
-`infra` 브랜치는 **인프라 전용** (2026-04-20 신설, 장기 유지): Terraform HCL, 배포/runbook 스크립트, GCP IAM, CI/CD workflow 등 크로스 모듈 operational 파일을 전담. 모듈 1개에만 속한 operational 파일(예: 단일 브랜치 Dockerfile)은 해당 모듈 브랜치에 둔다. 임시 `feat/xxx`, `fix/xxx` 브랜치 양산 금지 — 인프라 변경은 `infra` 브랜치에서 직접 PR.
+The `infra` branch is **infra-only** (created 2026-04-20, long-lived). It
+owns cross-module operational files — Terraform HCL, deploy / runbook
+scripts, GCP IAM, CI/CD workflows. Operational files that belong to a single
+module (e.g. a branch's Dockerfile) stay in that module's branch. Do **not**
+spin up disposable `feat/xxx` or `fix/xxx` branches for infra changes —
+they go straight to PRs against `infra`.
 
-## 브랜치별 구조
+## Per-branch layout
 
 ### `API_Server` (Core Layer — FastAPI)
 ```
@@ -29,71 +39,74 @@ API_Server/
 ├── app/
 │   ├── routers/         workflows.py / executions.py / agents.py / webhooks.py
 │   ├── services/        workflow_service / dag_scheduler / trigger_manager / agent_manager
-│   ├── models/          Pydantic 스키마 (WorkflowSchema, NodeConfig …)
-│   └── main.py          FastAPI 앱 + DI 조립
+│   ├── models/          Pydantic schemas (WorkflowSchema, NodeConfig …)
+│   └── main.py          FastAPI app + DI wiring
 ├── tests/               pytest + httpx TestClient
-├── config/              환경별 yaml
-└── agents/              _agent_templates 복사본
+├── config/              per-environment YAML
+└── agents/              copies of _agent_templates
 ```
-세부: [`_claude_templates/CLAUDE_API_Server.md`](../../_claude_templates/CLAUDE_API_Server.md)
+Details: [`_claude_templates/CLAUDE_API_Server.md`](../../_claude_templates/CLAUDE_API_Server.md)
 
 ### `Database` (Data Layer — PostgreSQL)
 ```
 Database/
-├── schemas/             CREATE TABLE/INDEX DDL
-├── migrations/          YYYYMMDD_*.sql 이력
+├── schemas/             CREATE TABLE / INDEX DDL
+├── migrations/          YYYYMMDD_*.sql history
 ├── src/
 │   ├── repositories/    Postgres{Workflow,Execution}Repository + CredentialStore
 │   └── models/          SQLAlchemy ORM
 ├── scripts/             migrate.py / seed.py / validate.py
-├── tests/               pytest + 실제 테스트 DB
-└── docs/                ERD, 설계
+├── tests/               pytest against a real test DB
+└── docs/                ERD, design notes
 ```
-세부: [`_claude_templates/CLAUDE_Database.md`](../../_claude_templates/CLAUDE_Database.md)
+Details: [`_claude_templates/CLAUDE_Database.md`](../../_claude_templates/CLAUDE_Database.md)
 
 ### `Execution_Engine` (Execution Layer — Celery + Agent)
 ```
 Execution_Engine/
 ├── src/
-│   ├── nodes/           BaseNode + HTTP/Condition/Code + NodeRegistry
+│   ├── nodes/           BaseNode + HTTP / Condition / Code + NodeRegistry
 │   ├── dispatcher/      serverless.py (Celery) / agent_client.py (WS)
-│   ├── runtime/         executor.py (DAG) / sandbox.py (RestrictedPython+Docker)
-│   └── agent/           main / heartbeat / command_handler (고객 VPC 데몬)
+│   ├── runtime/         executor.py (DAG) / sandbox.py (RestrictedPython + Docker)
+│   └── agent/           main / heartbeat / command_handler (customer-VPC daemon)
 ├── scripts/             worker.py / agent_run.py
-├── tests/               pytest (노드 단위 + 통합)
-├── config/              Celery 설정 등
-└── docs/                노드 가이드, 샌드박스 설계
+├── tests/               pytest (per-node + integration)
+├── config/              Celery config, etc.
+└── docs/                node guide, sandbox design
 ```
-세부: [`_claude_templates/CLAUDE_Execution_Engine.md`](../../_claude_templates/CLAUDE_Execution_Engine.md)
+Details: [`_claude_templates/CLAUDE_Execution_Engine.md`](../../_claude_templates/CLAUDE_Execution_Engine.md)
 
-### `Inference_Service` *(신설 예정 — ADR-008)*
+### `Inference_Service` *(planned — ADR-008)*
 ```
 Inference_Service/
-├── serving/             vLLM 엔트리포인트, OpenAI 호환 API 래퍼
-├── models/              Gemma 4 가중치 관리 (다운로드 스크립트, 체크섬)
-├── config/              vLLM 실행 옵션, 양자화, 토크나이저 프리셋
+├── serving/             vLLM entrypoint, OpenAI-compatible API wrapper
+├── models/              Gemma 4 weight management (download scripts, checksums)
+├── config/              vLLM runtime options, quantization, tokenizer presets
 ├── scripts/             start_vllm.sh, warmup.py, canary_check.py
-└── tests/               서빙 헬스체크, structured output 검증
+└── tests/               serving health checks, structured-output validation
 ```
-세부 템플릿(`_claude_templates/CLAUDE_Inference_Service.md`)과 post-checkout 훅 case 분기는 **후속 작업**. 현재는 ADR-008 초안 기반 예상 구조.
+The matching template (`_claude_templates/CLAUDE_Inference_Service.md`) and
+post-checkout hook case branch are **follow-up work**. Today's structure is
+the projection from the ADR-008 draft.
 
 ### `infra` (Infrastructure Layer — Terraform + GCP)
 ```
 infra/
 ├── terraform/          Cloud SQL / Cloud Run / Secret Manager / VPC / IAM HCL
 │   ├── main.tf         cloud sql + secret manager
-│   ├── cloud_run.tf    Cloud Run v2 + AR + SA + IAM + Auth Proxy 사이드카
-│   ├── network.tf      VPC + 서비스 네트워킹 피어링
+│   ├── cloud_run.tf    Cloud Run v2 + AR + SA + IAM + Auth Proxy sidecar
+│   ├── network.tf      VPC + service-networking peering
 │   ├── variables.tf    outputs.tf / versions.tf
-│   └── environments/   staging.tfvars.example / prod.tfvars.example (실값은 gitignore)
+│   └── environments/   staging.tfvars.example / prod.tfvars.example (real values are gitignored)
 ├── scripts/            inject_oauth_secrets.sh / migrate_via_proxy.sh / run_e2e_workspace_node.sh
-├── docs/               README.md (Cloud Run 배포 runbook) / README_oauth.md (OAuth runbook)
-├── agents/             infra TDD 역할 에이전트 (ORCHESTRATOR/DEVELOPER/TESTER/...)
-├── plans/              ADR Phase 별 실행 PLAN
-├── reports/            Phase 완료 결과 보고서
-└── tests/              bats 단위 테스트 (정적 + plan 검증)
+├── docs/               README.md (Cloud Run deploy runbook) / README_oauth.md (OAuth runbook)
+├── agents/             infra TDD role agents (ORCHESTRATOR / DEVELOPER / TESTER / …)
+├── plans/              per-phase ADR execution PLANs
+├── reports/            per-phase completion reports
+└── tests/              bats unit tests (static + plan validation)
 ```
-관련 ADR: ADR-018 (Cloud SQL), ADR-019 (Google OAuth), ADR-020 (Cloud Run 배포). 세부: [`infra/CLAUDE.md`](../../infra/CLAUDE.md)
+Related ADRs: ADR-018 (Cloud SQL), ADR-019 (Google OAuth), ADR-020 (Cloud
+Run deployment). Details: [`infra/CLAUDE.md`](../../infra/CLAUDE.md)
 
 ### `Frontend` (Frontend Layer — Next.js)
 ```
@@ -105,21 +118,21 @@ Frontend/
 ├── public/
 └── tests/               Jest + Playwright
 ```
-세부: [`_claude_templates/CLAUDE_Frontend.md`](../../_claude_templates/CLAUDE_Frontend.md)
+Details: [`_claude_templates/CLAUDE_Frontend.md`](../../_claude_templates/CLAUDE_Frontend.md)
 
-## 핵심 파일 인덱스
+## Key file index
 
-| 파일 | 역할 |
+| File | Role |
 |------|------|
-| `.githooks/post-checkout` | 브랜치 전환 시 해당 브랜치 폴더 구조를 자동 생성하고 CLAUDE.md를 복사 |
-| `.claude/commands/PR-report.md` | `/PR-report` 슬래시 커맨드: 보안 스캔 → 브랜치 폴더만 스테이징 → PR 생성 |
-| `_claude_templates/CLAUDE_DEFAULT.md` | 루트 공통 가이드라인 (보안 규칙 등) |
-| `_agent_templates/DEVELOPER.md` | TDD Green 단계 구현 에이전트 |
-| `_agent_templates/TEST_WRITER.md` | TDD Red 단계 테스트 작성 에이전트 |
-| `_agent_templates/SECURITY_AUDITOR.md` | S01-S08 보안 점검 |
-| `_agent_templates/IMPACT_ASSESSOR.md` | 4-layer 영향도 분석 |
+| `.githooks/post-checkout` | On branch switch, scaffolds the branch's folder and copies CLAUDE.md |
+| `.claude/commands/PR-report.md` | `/PR-report` slash command: security scan → stage only the branch folder → open PR |
+| `_claude_templates/CLAUDE_DEFAULT.md` | Root-level shared guidelines (security rules, etc.) |
+| `_agent_templates/DEVELOPER.md` | TDD Green-stage implementation agent |
+| `_agent_templates/TEST_WRITER.md` | TDD Red-stage test-authoring agent |
+| `_agent_templates/SECURITY_AUDITOR.md` | S01–S08 security review |
+| `_agent_templates/IMPACT_ASSESSOR.md` | 4-layer impact analysis |
 
-## 관련 문서
+## Related docs
 
-- 전체 아키텍처: [`architecture.md`](./architecture.md)
-- 설계 결정 배경: [`decisions.md`](./decisions.md)
+- Full architecture: [`architecture.md`](./architecture.md)
+- Decision history: [`decisions.md`](./decisions.md)
