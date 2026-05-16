@@ -354,8 +354,14 @@ class _RationaleStreamParser:
         self._state: str = "PRE"  # PRE → IN → POST
         self._buf: str = ""
         self.json_tail: str = ""
+        # Mirror buffer — used by finish() when the model skips the
+        # <rationale>...</rationale> envelope entirely (e.g. Gemma's
+        # channel mode prefixes replies with <|channel> tokens and a
+        # bare JSON payload). Always populated so we can fall back.
+        self._raw_full: str = ""
 
     def feed(self, chunk: str) -> list[RationaleDelta]:
+        self._raw_full += chunk
         self._buf += chunk
         out: list[RationaleDelta] = []
         while True:
@@ -397,6 +403,15 @@ class _RationaleStreamParser:
         elif self._state == "POST" and self._buf:
             self.json_tail += self._buf
             self._buf = ""
+        # Fallback — model skipped the <rationale> envelope. Recover the
+        # JSON payload from the full raw stream by clipping to the
+        # first '{' .. last '}'.
+        if not self.json_tail.strip():
+            s = self._raw_full
+            first = s.find("{")
+            last = s.rfind("}")
+            if first != -1 and last > first:
+                self.json_tail = s[first : last + 1]
         return out
 
 
@@ -695,7 +710,16 @@ class AIComposerService:
 
     def _parse_result(self, raw: str) -> ComposeResult:
         match = _JSON_FENCE_RE.search(raw)
-        candidate = match.group(1) if match else raw.strip()
+        if match:
+            candidate = match.group(1)
+        else:
+            # Gemma channel mode prefixes replies with `<|channel>thought
+            # <channel|>` (and similar control tokens) — strip everything
+            # before the first '{' and after the matching last '}'.
+            s = raw.strip()
+            first = s.find("{")
+            last = s.rfind("}")
+            candidate = s[first : last + 1] if first != -1 and last > first else s
         try:
             data = json.loads(candidate)
         except json.JSONDecodeError as exc:
