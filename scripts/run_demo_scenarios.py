@@ -72,15 +72,41 @@ from typing import Any, AsyncIterator
 from uuid import UUID, uuid4
 
 # Make the API_Server package importable without `pip install -e .` —
-# the harness is repo-aware and runs from the repo root.
+# the harness is repo-aware and runs from the repo root. AI_Agent has
+# its OWN `app/` package which collides with API_Server's, so we keep
+# AI_Agent off sys.path here; scenario 6 spawns the handbook smoke as
+# a subprocess to dodge the namespace clash.
 REPO = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "API_Server"))
 sys.path.insert(0, str(REPO / "Database"))
-sys.path.insert(0, str(REPO / "AI_Agent"))
+sys.path.insert(0, str(REPO / "API_Server"))
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
+
+
+# `API_Server/app/main.py` builds an `app = create_app()` at module
+# load, which constructs `Settings()` and reads required env. Set the
+# minimum needed before any `from app...` import lands so the
+# module-load Settings() succeeds; per-scenario settings still come
+# from `_make_settings` for explicit control.
+def _prep_env() -> None:
+    os.environ.setdefault(
+        "JWT_SECRET", "demo-scenarios-jwt-secret-32-bytes-min!"
+    )
+    os.environ.setdefault(
+        "CREDENTIAL_MASTER_KEY", Fernet.generate_key().decode("utf-8")
+    )
+    os.environ.setdefault("JWT_ALGORITHM", "HS256")
+    os.environ.setdefault("JWT_ACCESS_TTL_MINUTES", "60")
+    os.environ.setdefault("JWT_VERIFY_EMAIL_TTL_HOURS", "24")
+    os.environ.setdefault("EMAIL_SENDER", "console")
+    os.environ.setdefault("APP_BASE_URL", "http://testserver")
+    os.environ.setdefault("BCRYPT_COST", "4")
+    os.environ.setdefault("AI_COMPOSE_RATE_PER_MINUTE", "200")
+
+
+_prep_env()
 
 
 # ---------------------------------------------------------------- backend wrap
@@ -624,34 +650,38 @@ async def scenario_5_cold_start() -> ScenarioResult:
 
 async def scenario_6_reflective_extract_regression() -> ScenarioResult:
     """Regression — handbook smoke completes; PR-I/M didn't break the
-    reflective extract path. The check delegates to the existing
-    `smoke_handbook_policy_extract.py` so we don't duplicate the fixture
-    parsing logic."""
+    reflective extract path. Runs the existing
+    `smoke_handbook_policy_extract.py` as a subprocess to dodge the
+    AI_Agent ↔ API_Server `app/` namespace clash; the same env vars
+    (AGENT_URL, AGENT_BEARER_TOKEN) the harness already loaded carry
+    through automatically."""
     name = "Regression: GitLab handbook /v1/policy/extract"
     t0 = time.time()
     try:
-        # Import in a child process so smoke's `sys.exit` doesn't kill
-        # the harness on its own — but we want the same env, so use
-        # `runpy.run_path` and trap SystemExit.
-        import runpy
-        try:
-            runpy.run_path(
-                str(REPO / "AI_Agent" / "scripts"
-                    / "smoke_handbook_policy_extract.py"),
-                run_name="__main__",
-            )
-            return ScenarioResult(
-                6, name, True, "smoke exited cleanly",
-                latency_s=time.time() - t0,
-            )
-        except SystemExit as exc:
-            code = exc.code
-            ok = code == 0 or code is None
-            return ScenarioResult(
-                6, name, ok,
-                f"smoke exit code={code}",
-                latency_s=time.time() - t0,
-            )
+        import subprocess
+
+        # Run from the AI_Agent directory so its sys.path puts its own
+        # `app/` first — the smoke imports `app.services.document_parser`.
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "scripts/smoke_handbook_policy_extract.py"],
+            cwd=str(REPO / "AI_Agent"),
+            env={**os.environ, "PYTHONUTF8": "1"},
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        ok = proc.returncode == 0
+        # Pull a one-line summary so the harness output stays scannable.
+        last_lines = [
+            l for l in proc.stdout.splitlines() if l.strip()
+        ][-3:]
+        return ScenarioResult(
+            6, name, ok,
+            f"smoke exit code={proc.returncode}",
+            last_lines,
+            latency_s=time.time() - t0,
+        )
     except Exception as exc:
         return ScenarioResult(
             6, name, False, f"exception: {exc!r}",
