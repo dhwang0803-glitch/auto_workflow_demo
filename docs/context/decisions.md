@@ -1,961 +1,825 @@
 # Architecture Decision Records (ADR)
 
-> "왜 이 선택을 했는가"의 단일 출처. 결정이 바뀌면 새 항목을 추가하고 이전 항목은 *Superseded* 표시.
+> Single source of truth for "why we made this choice." When a decision changes, add a new entry and mark the prior entry *Superseded*.
 
-형식: `ADR-###` / 상태 / 날짜 / Context → Decision → Consequences.
+Format: `ADR-###` / Status / Date / Context → Decision → Consequences.
 
 ---
 
-## ADR-001 — 하이브리드 SaaS (Serverless + Agent)
+## ADR-001 — Hybrid SaaS (Serverless + Agent)
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**Status**: Accepted · **Date**: 2026-04-14
 
 **Context**
-n8n 유사 워크플로우 자동화 SaaS를 구축. 유저층이 갈린다:
-- Light/Middle: 월 몇 백~몇 천 건 실행. 비용 민감.
-- Heavy: 고객 VPC 내부 데이터(PII, 매출 DB 등)를 외부로 반출할 수 없음. 규제 대상.
+Building an n8n-style workflow automation SaaS. Users split into two segments:
+- Light/Middle: hundreds to a few thousand executions per month. Cost-sensitive.
+- Heavy: customer VPC holds sensitive data (PII, revenue DBs, etc.) that cannot leave their boundary. Subject to regulation.
 
 **Decision**
-단일 실행 경로 대신 `workflow.settings.execution_mode`로 두 경로 분기:
-1. `serverless` — Celery + Redis + Cloud Run. 멀티테넌트.
-2. `agent` — 고객 VPC에 경량 Agent 데몬 설치, 중앙 서버와 WebSocket 상시 연결. 서버는 `execute` 명령만 push, 데이터는 VPC에 잔류.
+Instead of a single execution path, branch on `workflow.settings.execution_mode`:
+1. `serverless` — Celery + Redis + Cloud Run. Multi-tenant.
+2. `agent` — Lightweight Agent daemon installed inside the customer VPC, kept on a persistent WebSocket to the central server. The server only pushes `execute` commands; data stays inside the VPC.
 
-두 경로가 동일한 `BaseNode` 플러그인 인터페이스를 공유해 노드 구현은 하나로 유지.
+Both paths share the same `BaseNode` plugin interface so node implementations remain a single codebase.
 
 **Consequences**
-- (+) Heavy 유저의 데이터 반출 우려 해소, 규제 대응 가능
-- (+) Light 유저는 서버리스 단가(월 $0.04~$0.81 수준)로 커버
-- (−) Agent 빌드/배포/버전 관리 파이프라인 추가 필요
-- (−) 두 경로의 통합 테스트 커버리지 부담
+- (+) Resolves Heavy users' data-egress concern; satisfies regulatory needs
+- (+) Light users covered at serverless unit costs (~$0.04–$0.81/month)
+- (−) Adds an Agent build / distribution / version-management pipeline
+- (−) Integration test coverage burden across both paths
 
-**Update (2026-04-15)** — API_Server PLAN_02 에서 **플랜별 워크플로우 쿼터**
-를 아래와 같이 확정:
+**Update (2026-04-15)** — API_Server PLAN_02 fixed **per-plan workflow quotas** as below:
 
-| 플랜 | 활성 워크플로우 상한 | 경고 시점 (`approaching_limit`) |
-|------|---------------------|-------------------------------|
-| light | **100** | 90 이상 (90%) |
-| middle | **200** | 180 이상 (90%) |
-| heavy | **500** | 450 이상 (90%) |
+| Plan | Active workflow cap | Warning trigger (`approaching_limit`) |
+|------|---------------------|---------------------------------------|
+| light | **100** | 90+ (90%) |
+| middle | **200** | 180+ (90%) |
+| heavy | **500** | 450+ (90%) |
 
-- 쿼터는 `is_active=true` 행만 카운트. soft delete 된 워크플로우는 불산입
-  → 유저가 생성/삭제를 반복해도 누적되지 않음 (DB bloat 는 별도 retention
-  정책에서 다룸)
-- 상한 도달 시 `POST /workflows` → **403 Forbidden**:
+- Quotas count only `is_active=true` rows. Soft-deleted workflows are excluded
+  → repeated create/delete by a user does not accumulate (DB bloat is handled
+  by a separate retention policy).
+- When the cap is reached, `POST /workflows` returns **403 Forbidden**:
   `"workflow limit reached: N workflows for <tier> tier (plan upgrade available)"`
-- `approaching_limit=true` 는 `GET /workflows` 응답에 포함되어 프론트가
-  경고 배너를 UI 로 띄우는 용도 (추가 API 호출 불요)
-- 값은 `API_Server/app/config.py` 의 `Settings` 에서 환경변수로 override
-  가능 (`WORKFLOW_LIMIT_LIGHT=150` 등) → 운영이 코드 재배포 없이 비즈니스
-  의사결정 반영 가능
-- **결정 근거**: 무한 생성 허용 시 운영 DB 부담 + 실행 스케줄러/트리거
-  매니저 구동 비용이 상한 없이 증가. 플랜별 차등은 가격 차등화 구조를
-  기술 계층에서 강제하는 장치
-- Phase 2 에서 조직(Organization) 단위 쿼터를 추가할 때 본 값을 **유저당
-  기본값** 으로 유지하고 조직 쿼터를 상위 레이어에 추가 예정
+- `approaching_limit=true` is included in `GET /workflows` responses so the
+  frontend can surface a warning banner without an extra API call.
+- Values are overridable via env vars on `Settings` in
+  `API_Server/app/config.py` (e.g., `WORKFLOW_LIMIT_LIGHT=150`) so ops can
+  reflect business decisions without redeploying code.
+- **Rationale**: unbounded creation would inflate the operational DB and
+  scale up scheduler/trigger-manager runtime cost without limit. Per-plan
+  differentiation enforces the pricing tier structure at the technical layer.
+- In Phase 2, when org-level quotas are added, retain these values as the
+  **per-user defaults** and add the org quota as a higher layer.
 
 ---
 
-## ADR-002 — 백엔드: Python/FastAPI (not Node.js)
+## ADR-002 — Backend: Python/FastAPI (not Node.js)
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**Status**: Accepted · **Date**: 2026-04-14
 
 **Context**
-n8n은 Node.js 기반. 동일 스택을 그대로 가져올지, 다른 스택을 선택할지 결정 필요.
+n8n is Node.js based. Decide whether to inherit the same stack or pick a different one.
 
 **Decision**
-FastAPI(async) + SQLAlchemy 2.0 async + asyncpg + Celery.
+FastAPI (async) + SQLAlchemy 2.0 async + asyncpg + Celery.
 
 **Consequences**
-- (+) 팀 역량과 정합 (Python 기반)
-- (+) 샌드박스(RestrictedPython), 데이터 처리, ML 연동 시 Python 생태계 활용
-- (+) FastAPI async 가 WebSocket(Agent 연결)과 자연스럽게 맞물림
-- (−) n8n 커뮤니티 노드를 직접 가져올 수 없음 (재구현 필요)
+- (+) Aligns with team expertise (Python)
+- (+) Leverages the Python ecosystem for sandboxing (RestrictedPython), data processing, ML integration
+- (+) FastAPI async fits naturally with WebSocket (Agent connection)
+- (−) Cannot directly reuse n8n community nodes (need re-implementation)
 
 ---
 
-## ADR-003 — 태스크 큐: Celery (not BullMQ/Dramatiq)
+## ADR-003 — Task queue: Celery (not BullMQ/Dramatiq)
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**Status**: Accepted · **Date**: 2026-04-14
 
 **Context**
-Python 기반으로 확정(ADR-002) 후, 분산 태스크 큐 선택.
+After fixing on Python (ADR-002), pick a distributed task queue.
 
 **Decision**
-Celery + Redis. Cloud Run 워커로 수평 확장.
+Celery + Redis. Cloud Run workers for horizontal scale.
 
 **Consequences**
-- (+) 성숙도, 재시도/주기/라우팅 등 기능 풍부
-- (+) Redis를 결과 백엔드 + 큐로 겸용 가능
-- (−) 설정 복잡도. Celery eager mode로 테스트 단순화 필요
+- (+) Mature, rich features (retries, periodic, routing, etc.)
+- (+) Redis doubles as result backend and queue
+- (−) Configuration complexity. Need Celery eager mode to keep tests simple
 
 ---
 
-## ADR-004 — 자격증명 암호화: Fernet(AES-256) + RSA 재암호화
+## ADR-004 — Credential encryption: Fernet (AES-256) + RSA re-encryption
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**Status**: Accepted · **Date**: 2026-04-14
 
 **Context**
-Credentials는 DB 저장 + Agent 전송의 두 수명주기를 가진다. 저장과 전송의 위협 모델이 다르다.
+Credentials have two lifecycles: DB storage and Agent transmission. The threat models for storage and transmission differ.
 
 **Decision**
-- **저장**: `cryptography.fernet.Fernet` (AES-256-CBC + HMAC). 마스터키는 환경변수 `CREDENTIAL_MASTER_KEY`.
-- **Agent 전송**: Agent 등록 시 받은 RSA 공개키로 *재암호화*. Agent만 복호화 가능.
-- **실행 시점**: Worker/Agent 메모리에서만 복호화, 노드 파라미터로 주입 후 즉시 폐기. 로그/DB/응답에 평문 절대 금지.
+- **Storage**: `cryptography.fernet.Fernet` (AES-256-CBC + HMAC). Master key in env var `CREDENTIAL_MASTER_KEY`.
+- **Agent transmission**: *Re-encrypt* with the RSA public key received at Agent registration time. Only the Agent can decrypt.
+- **At execution time**: Decrypt only inside Worker/Agent memory, inject as node parameters, then discard immediately. Plaintext is strictly forbidden in logs / DB / responses.
 
 **Consequences**
-- (+) 저장/전송 두 레이어에서 독립된 키 위협 격리
-- (+) 중앙 서버가 탈취되어도 Agent로 전달 중인 자격증명은 공개키로만 보호 → 영향 축소
-- (−) Agent별 키페어 생성/회전 정책 필요 (아직 미정 — 후속 ADR 대상)
+- (+) Independent key isolation across the storage and transmission layers
+- (+) Even if the central server is compromised, in-flight credentials to the Agent are protected solely by the public key → reduced blast radius
+- (−) Need a per-Agent keypair generation/rotation policy (still TBD — subject of a follow-up ADR)
 
 ---
 
-## ADR-005 — 사용자 코드 실행: RestrictedPython + Docker 2단 격리
+## ADR-005 — User code execution: RestrictedPython + Docker, two-layer isolation
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**Status**: Accepted · **Date**: 2026-04-14
 
 **Context**
-`CodeExecutionNode`는 유저가 작성한 Python 코드를 실행. `eval/exec` 직접 사용은 명백한 RCE.
+`CodeExecutionNode` runs Python code authored by the user. Direct use of `eval`/`exec` is an obvious RCE.
 
 **Decision**
-1차 AST 방어: `RestrictedPython.compile_restricted` + 내장 함수 화이트리스트
-2차 프로세스 방어: 격리된 Docker 컨테이너(네트워크/FS 제한) 내부 실행
-타임아웃: 기본 30초 하드 리밋
+First layer (AST defense): `RestrictedPython.compile_restricted` + builtin function whitelist
+Second layer (process defense): execution inside an isolated Docker container (network/FS restrictions)
+Timeout: 30s hard limit by default
 
 **Consequences**
-- (+) 단일 방어선 우회 시에도 두번째 방어선 잔존
-- (−) Docker 기동 오버헤드 (~수백ms). 빈번 호출 노드에는 경로 최적화 필요
+- (+) If one defense is bypassed, the second still holds
+- (−) Docker startup overhead (~hundreds of ms). Frequently invoked nodes need a fast path
 
 ---
 
-## ADR-006 — Repository 패턴 + ABC
+## ADR-006 — Repository pattern + ABC
 
-**상태**: Accepted · **날짜**: 2026-04-14
+**Status**: Accepted · **Date**: 2026-04-14
 
 **Context**
-`API_Server`와 `Execution_Engine`이 DB에 직접 의존하면 테스트 시 실제 DB 필요, 결합도 상승.
+If `API_Server` and `Execution_Engine` depend directly on the DB, tests need a real DB and coupling rises.
 
 **Decision**
-`Database/` 브랜치가 ABC (`WorkflowRepository`, `ExecutionRepository`, `CredentialStore`) + Postgres 구현체 제공. 상위 레이어는 ABC에만 의존. 테스트는 `InMemoryXxxRepository`로 대체.
+The `Database/` branch provides ABCs (`WorkflowRepository`, `ExecutionRepository`, `CredentialStore`) plus a Postgres implementation. Upper layers depend only on the ABCs. Tests substitute `InMemoryXxxRepository`.
 
 **Consequences**
-- (+) 단위 테스트에서 DB 기동 불필요
-- (+) 나중에 저장소 교체(예: CockroachDB) 시 구현체만 갈아끼움
-- (−) 인터페이스 설계/관리 오버헤드
+- (+) No DB needed in unit tests
+- (+) Future store swaps (e.g., CockroachDB) require swapping only the implementation
+- (−) Interface design / maintenance overhead
 
 ---
 
-## ADR-007 — LLM 노드 1급 추상화 + 출력 스키마 강제 + Human-in-the-loop 내장
+## ADR-007 — LLM node as a first-class abstraction + enforced output schema + built-in human-in-the-loop
 
-**상태**: Accepted · **날짜**: 2026-04-14 · *Refined by ADR-008 (structured output 어댑터 범위 축소), ADR-011 (실행 로그 분리 저장)*
+**Status**: Accepted · **Date**: 2026-04-14 · *Refined by ADR-008 (narrowed structured-output adapter scope), ADR-011 (separate execution log storage)*
 
 **Context**
 
-현업에서 n8n 등 기존 워크플로우 자동화 도구의 AI 활용에 대해 세 가지 한계가 반복 지적된다:
+In practice, AI usage in tools like n8n repeatedly hits three limits:
 
-1. **출력 불안정성** — LLM 노드가 같은 입력에도 매번 다른 형태(JSON/평문/키명 변이)를 반환해 후속 노드 파싱이 깨진다. 자동화의 본질인 "예측 가능한 반복"과 LLM의 비결정성이 근본 충돌한다.
-2. **복합 판단 정확도 급락** — "계약서에서 위험 조항을 법무팀 기준으로 등급화" 같은 도메인 복합 판단을 단일 노드에 맡기면 할루시네이션 빈도가 현업 허용치를 초과한다. 결과적으로 "자동화했는데 검수 때문에 일이 늘었다".
-3. **비용/지연** — LLM 호출 노드를 3~4개 체이닝하면 실행당 수십 초 + 토큰 비용이 누적되어, 일 수천 건 규모 업무에 경제성이 무너진다.
+1. **Output instability** — The LLM node returns different shapes (JSON / plaintext / variant key names) for the same input, breaking downstream parsing. The "predictable repetition" essence of automation fundamentally collides with LLM non-determinism.
+2. **Sharp drop in compound-judgment accuracy** — Handing tasks like "rate contract risk clauses by the legal team's standards" to a single node causes hallucination rates above acceptable thresholds. Result: "we automated it but reviewing made the workload heavier."
+3. **Cost / latency** — Chaining 3–4 LLM-call nodes accumulates tens of seconds + token cost per execution, making automation economically unviable for thousands of daily jobs.
 
-현재 우리 설계에는 LLM 전용 추상화가 없다. `HttpRequestNode`로 API를 호출하는 수준이면 지금 비판받는 n8n 구조와 동일하므로, 동일한 한계에 그대로 노출된다.
+Our current design has no LLM-specific abstraction. Calling APIs through `HttpRequestNode` puts us in the same structure n8n is criticized for — and exposes us to the same limits.
 
 **Decision**
 
-Execution Layer에 다음을 **엔진 기본 내장**으로 도입한다.
+Build the following into the Execution Layer **as engine defaults**.
 
-1. **`BaseNode.output_schema` (공통)**
-   모든 노드가 선택적으로 **JSON Schema 문자열**을 선언하고, 런타임이 `execute()` 결과를 검증한다. LLM 노드에는 **필수**로 강제한다. 검증 실패 시 `NodeRetryPolicy`(기본: 최대 2회, 지수 백오프)에 따라 재시도하며, 모든 재시도 실패는 구조적 실패로 기록한다.
-   JSON Schema 문자열로 고정한 이유는 워크플로우가 JSON으로 직렬화되어 `workflows` 테이블에 저장·복원되는 전체 수명주기에서 스키마가 **데이터와 함께 이동**해야 하기 때문이다. Pydantic 모델 객체는 Python 런타임에 묶여 직렬화가 불리하고, Frontend 스키마 편집 UI와도 어긋난다. 시스템 안정성(직렬화 라운드트립 손실 없음)을 타입 편의보다 우선한다.
+1. **`BaseNode.output_schema` (universal)**
+   Any node may declare a **JSON Schema string** optionally; the runtime validates the result of `execute()`. For LLM nodes, this is **mandatory**. On validation failure, `NodeRetryPolicy` (default: max 2 retries, exponential backoff) retries; all retries failing is recorded as a structural failure.
+   Fixing on a JSON Schema string is required because a workflow is serialized to JSON and stored / restored in the `workflows` table; the schema must travel **with the data** through that lifecycle. Pydantic model objects bind to the Python runtime, serialize poorly, and conflict with the frontend schema-edit UI. We prioritize system stability (lossless serialization round-trips) over typing convenience.
 
-2. **`LlmNode` 1급 서브클래스**
-   `HttpRequestNode` 파생이 아닌 별도 추상화. 속성: `prompt_template`, `output_schema`(필수), `model`, `temperature`, `max_retries`.
-   모델이 structured output(JSON mode, tool use)을 지원하면 그 경로를 우선 사용, 미지원 모델은 "JSON 강제 프롬프트 + 검증 루프" 폴백. 모델별 규격 차이(OpenAI tool use / Anthropic tool use / Gemini responseSchema)는 어댑터 계층에서 흡수한다.
+2. **`LlmNode` first-class subclass**
+   Its own abstraction, not a `HttpRequestNode` derivative. Attributes: `prompt_template`, `output_schema` (required), `model`, `temperature`, `max_retries`.
+   If the model supports structured output (JSON mode, tool use), prefer that path; for unsupported models, fall back to "JSON-forced prompt + validation loop." Per-model spec differences (OpenAI tool use / Anthropic tool use / Gemini responseSchema) are absorbed by an adapter layer.
 
-3. **`ApprovalNode` — 웹 승인 + 알림 2-track 기본**
-   특정 노드에서 실행을 일시정지하고 사람의 승인을 기다린다. **MVP부터 두 경로를 동시 제공**한다:
-   - **웹 경로**: 프론트엔드 "승인 인박스(Approval Inbox)"에 항목 표시, `POST /api/v1/executions/{id}/approve | reject` 엔드포인트로 재개.
-   - **알림 경로**: 승인 대기 시 사용자에게 이메일/Slack(추후 모바일 푸시) 발송, 메시지 내 액션 링크로 동일 엔드포인트 호출.
+3. **`ApprovalNode` — web approval + notification, two-track default**
+   Pauses execution at a specific node and waits for human approval. **MVP provides both paths in parallel**:
+   - **Web path**: surfaces in the frontend "Approval Inbox," resumed by `POST /api/v1/executions/{id}/approve | reject` endpoints.
+   - **Notification path**: while pending, sends email/Slack (later mobile push) to the user; the action link in the message hits the same endpoint.
 
-   두 경로 병행이 MVP 범위인 이유는 실서비스 UX 전제가 "사용자가 워크플로우 UI를 항시 띄우고 있지 않다"는 것이기 때문이다. 알림 없이 웹 인박스만 제공하면 승인 지연으로 전체 실행이 무기한 대기하게 되어 ApprovalNode 자체가 사용되지 않는다. 알림 채널은 `NotificationChannel` 인터페이스로 추상화하고 초기 구현은 이메일 + Slack 2종으로 한정한다.
+   Both paths in MVP scope because the real-world UX assumption is "the user does not keep the workflow UI open at all times." With only a web inbox and no notifications, approval delays would stall executions indefinitely and `ApprovalNode` would go unused. Notification channels are abstracted via the `NotificationChannel` interface; the initial implementation is limited to email + Slack.
 
-   DAG 런타임은 상태 머신(`running` → `paused` → `resumed`/`rejected`)을 저장하고 재개 명령을 멱등하게 처리한다. 승인 대기 시간은 분~일 단위로 길 수 있으므로 기존 30초 하드 타임아웃(ADR-005)과는 **별도 수명주기**로 관리한다.
+   The DAG runtime stores a state machine (`running` → `paused` → `resumed`/`rejected`) and processes resume commands idempotently. Approval wait time can be minutes to days, so it is managed as a **separate lifecycle** from the existing 30-second hard timeout (ADR-005).
 
-4. **노드 역할 축소 가이드 (정책)**
-   LLM 노드의 권장 역할을 "추출 / 분류 / 요약 / 변환" 단일 작업으로 한정. 복합 판단은 여러 `LlmNode` + `ConditionNode` 조합으로 분해하도록 UI 가이드 및 템플릿에 반영. 기술적 강제는 없고 규범적 가이드라인.
+4. **Node role narrowing guideline (policy)**
+   Recommend limiting LLM node responsibility to a single task: "extract / classify / summarize / transform." Compound judgment should be decomposed into multiple `LlmNode` + `ConditionNode` combinations — reflected in UI guidance and templates. No technical enforcement; normative guideline only.
 
-관측성 보강(부수):
-- `executions` 테이블에 `token_usage`, `cost_usd`, `duration_ms`, `paused_at_node` 컬럼 추가.
-- `ExecutionRepository.save_result`에서 LLM 호출 메타데이터 누적.
+Observability additions (incidental):
+- Add `token_usage`, `cost_usd`, `duration_ms`, `paused_at_node` columns to the `executions` table.
+- `ExecutionRepository.save_result` accumulates LLM call metadata.
 
 **Consequences**
 
-- (+) 현업 3대 불만(불안정성 / 정확도 / 비용 가시성)에 **구조적 응답**. "LLM은 믿을 수 없다"는 전제를 엔진 수준에서 보정.
-- (+) `output_schema` 검증은 LLM뿐 아니라 HTTP/DB 응답 검증에도 재사용 가능 → 공통 신뢰성 향상.
-- (+) 워크플로우 JSON 직렬화에 스키마가 포함되어 DB 라운드트립/버전 이행/외부 Export 모두 손실 없음.
-- (+) Approval 2-track이 "95% 자동 + 5% 검수" 배포 모델을 현실적으로 지원해 자동화 도입 초기 저항을 낮춘다.
-- (−) **런타임 복잡도 급증**. DAG 실행기가 상태 머신을 관리해야 하며, Celery/Agent 양쪽에서 멱등 재개를 보장해야 한다.
-- (−) **DB 스키마 변경** 필요(마이그레이션 1건). ADR-006의 Repository 계약이 확장된다.
-- (−) `LlmNode` 구현 난이도 높음: 모델별 structured output 규격 어댑터 계층 필요.
-- (−) **알림 인프라 의존성** 추가. SMTP/Slack 발송 실패 시 승인 지연이 곧 서비스 장애로 인식될 수 있어 재시도/대체 경로가 필요하다.
-- (−) JSON Schema 문자열은 개발자가 직접 타입으로 다루기 불편 → 내부적으로 `jsonschema` 라이브러리 검증 + 런타임 Pydantic 변환 헬퍼 제공으로 완화.
+- (+) **Structural response** to the three field complaints (instability / accuracy / cost visibility). Corrects the "LLMs cannot be trusted" premise at the engine level.
+- (+) `output_schema` validation reuses for HTTP/DB response validation, not just LLM → universal reliability gain.
+- (+) Schema is included in workflow JSON serialization → lossless across DB round trips / version migrations / external exports.
+- (+) The Approval two-track realistically supports a "95% auto + 5% review" rollout model, lowering early-adoption resistance.
+- (−) **Runtime complexity jumps**. The DAG executor must manage a state machine and guarantee idempotent resume on both Celery and Agent.
+- (−) **DB schema change** required (one migration). The Repository contract from ADR-006 expands.
+- (−) **`LlmNode` is hard to implement**: needs a per-model structured-output adapter layer.
+- (−) **Notification infrastructure dependency** added. SMTP/Slack send failures may translate to perceived service outages, requiring retry / fallback paths.
+- (−) JSON Schema strings are awkward for developers to handle directly as types → mitigated internally by `jsonschema` library validation + a runtime Pydantic conversion helper.
 
-**Update (2026-04-15) — 노드 `running` 상태의 DB 영속화**
+**Update (2026-04-15) — DB persistence of node `running` state**
 
-원본 Decision 은 `executions.paused_at_node` 를 통해 "승인 대기 중 어느 노드에
-멈췄는가" 만 드러냈다. 이후 Frontend UX 검토에서 "일반 실행 중에도 사용자가
-어느 단계까지 왔는지 보고 싶다 (로딩 아이콘이 아니라 진행 애니메이션)" 요구가
-올라와 이를 충족하도록 관측 계층을 보강한다:
+The original Decision only surfaced "which node it paused on during approval wait" via `executions.paused_at_node`. A subsequent frontend UX review surfaced the requirement "during normal execution too, the user wants to see how far it got (a progress animation, not a loading spinner)" — so we extend the observability layer:
 
-- 노드가 **시작되는 순간** `execution_node_logs` 에 `status='running'` 행을
-  INSERT 한다. 완료 시 같은 행을 `'success'|'failed'|'skipped'` 로 UPDATE.
-- 이 2-phase write 경로의 구체 스키마와 파티셔닝은 **ADR-011** 에서 정의.
-- Frontend 는 이 테이블을 폴링/스트리밍으로 읽어 노드별 진행 상태를 렌더링.
-- `ApprovalNode` 의 `paused` 전이도 같은 테이블을 경유한다 — Approval 은
-  "running 노드 중 하나가 사람 입력을 기다리는 특수 케이스" 로 일관된다.
+- The instant a node **starts**, INSERT a row with `status='running'` into `execution_node_logs`. On completion UPDATE the same row to `'success'|'failed'|'skipped'`.
+- The concrete schema and partitioning of this 2-phase write path are defined in **ADR-011**.
+- The frontend reads this table by polling/streaming and renders per-node progress.
+- The `ApprovalNode` `paused` transition also goes through the same table — Approval is consistently treated as "a special case of a running node waiting on human input."
 
 **Related**
-- Refines: ADR-006 (Repository 계약 확장)
-- Refined by: ADR-011 (실행 로그 분리 저장 / 파티셔닝 / 2-phase write)
-- Interacts with: ADR-005 (코드 노드 30초 타임아웃은 Approval/LLM 수명주기와 분리)
-- Affects branches: `Execution_Engine` (런타임/LlmNode/ApprovalNode), `Database` (스키마), `API_Server` (승인 엔드포인트, 재개 디스패치, 알림 디스패치), `Frontend` (스키마 편집 UI, 승인 인박스, 실행 진행 애니메이션)
+- Refines: ADR-006 (extends the Repository contract)
+- Refined by: ADR-011 (separate execution-log storage / partitioning / 2-phase write)
+- Interacts with: ADR-005 (the 30s code-node timeout is separate from the Approval/LLM lifecycle)
+- Affects branches: `Execution_Engine` (runtime / LlmNode / ApprovalNode), `Database` (schema), `API_Server` (approval endpoints, resume dispatch, notification dispatch), `Frontend` (schema edit UI, approval inbox, execution progress animation)
 
 ---
 
-## ADR-008 — 로컬 LLM 서빙: Gemma 4 + vLLM, 플랜별 라우팅, 별도 Inference_Service 브랜치
+## ADR-008 — Local LLM serving: Gemma 4 + vLLM, plan-based routing, separate Inference_Service branch
 
-**상태**: Accepted · **날짜**: 2026-04-14 · *Refined by ADR-009 (Agent 모드 CPU-only 경로)*
+**Status**: Accepted · **Date**: 2026-04-14 · *Refined by ADR-009 (Agent-mode CPU-only path)*
 
-![Gemma 4 + vLLM 배포 전략](./images/gemma4_vllm_deployment_strategy.svg)
+![Gemma 4 + vLLM deployment strategy](./images/gemma4_vllm_deployment_strategy.svg)
 
 **Context**
 
-ADR-007은 LLM 노드의 출력 안정성과 Human-in-the-loop 문제는 구조적으로 해결했지만, **비용·지연**이라는 세 번째 한계는 여전히 외부 API에 의존한다. 워크플로우당 AI 노드 3~4회 호출 × 일 수천 건을 가정하면:
+ADR-007 structurally addressed the LLM node's output stability and human-in-the-loop problems, but the third limit — **cost and latency** — still depends on external APIs. Assuming 3–4 AI node calls per workflow × thousands of executions per day:
 
-- API 방식: Heavy 유저 월 $50~200 가변 비용. 호출 수에 비례.
-- 추가 부담: 네트워크 RTT, API 레이트리밋, 고객 데이터가 외부로 나가는 것에 대한 B2B 저항.
+- API approach: Heavy users incur ~$50–200/month variable cost. Proportional to call count.
+- Additional burden: network RTT, API rate limits, B2B resistance to customer data leaving the boundary.
 
-같은 시점에 Google이 **Gemma 4**를 Apache 2.0으로 공개했다. 모델 라인업이 우리 3-tier 유저 세그먼트와 정확히 매칭된다:
+At the same time, Google released **Gemma 4** under Apache 2.0. The model lineup matches our 3-tier user segmentation exactly:
 
-- **26B MoE (활성 4B)**: 4B급 지연 + 26B급 품질. 일반 AI 노드(분류/요약/추출)의 주력.
-- **31B Dense**: Heavy 추론.
-- **E4B**: Agent/엣지 GPU용.
+- **26B MoE (4B active)**: 4B-class latency + 26B-class quality. Workhorse for general AI nodes (classify / summarize / extract).
+- **31B Dense**: heavy reasoning.
+- **E4B**: for Agent / edge GPU.
 
-Gemma 4는 **네이티브 function-calling + structured output**을 지원한다. vLLM이 `--tool-call-parser gemma4` 옵션으로 즉시 활용 가능. vLLM 벤치마크에서 Ollama 대비 TTFT 3배·처리량 3배, 26B MoE가 131 tok/s로 E4B(124 tok/s)보다 빠름(MoE 효과).
+Gemma 4 supports **native function-calling + structured output**. vLLM enables it immediately via `--tool-call-parser gemma4`. vLLM benchmarks show 3× TTFT and 3× throughput vs. Ollama; the 26B MoE hits 131 tok/s, faster than the E4B (124 tok/s) — MoE effect.
 
 **Decision**
 
-1. **로컬 LLM 서빙 도입** — vLLM + Gemma 4를 워크플로우 엔진의 기본 LLM 백엔드로 채택.
-   - 기본 모델: **26B MoE** (일반 노드)
-   - 중량 모델: **31B Dense** (복잡 추론, 초기엔 수요 시 별도 인스턴스 추가)
-   - 양자화: **fp8** (GCP RTX 6000 Pro 24~48GB 클래스 전제)
-   - 서빙 옵션: `--enable-auto-tool-choice --tool-call-parser gemma4`
+1. **Adopt local LLM serving** — vLLM + Gemma 4 as the workflow engine's default LLM backend.
+   - Default model: **26B MoE** (general nodes)
+   - Heavy model: **31B Dense** (complex reasoning; add a separate instance on demand initially)
+   - Quantization: **fp8** (assuming GCP RTX 6000 Pro 24–48GB class)
+   - Serving options: `--enable-auto-tool-choice --tool-call-parser gemma4`
 
-2. **라우팅 정책: 플랜별 고정 (Option C)**
-   ADR-001의 3-tier 유저 세그먼트와 일관되게 **유저 플랜으로 백엔드를 결정**한다. 런타임 복잡도 판정이나 임계치 자동 전환은 도입하지 않는다.
+2. **Routing policy: plan-based fixed (Option C)**
+   Consistent with the 3-tier user segmentation in ADR-001, **the user's plan determines the backend**. We do not introduce runtime complexity assessment or threshold-based auto-switching.
 
-   | 플랜 | LLM 백엔드 | 비고 |
-   |------|-----------|------|
-   | Light | 외부 API (Claude/Gemini) | 호출량 적음. 고정비 기피. |
-   | Middle | 외부 API (공유 풀) | 사용량 증가 시 로컬 이관은 Phase 2 재검토 |
-   | Heavy (Serverless) | **중앙 vLLM 서빙** (Gemma 4 26B MoE / 31B) | 손익분기 초과 구간 |
-   | Heavy (Agent) | Agent 내 vLLM (E4B) — **Phase 2** | MVP는 중앙 vLLM 경유 또는 API |
+   | Plan | LLM backend | Notes |
+   |------|-------------|-------|
+   | Light | External API (Claude/Gemini) | Low call volume. Avoids fixed cost. |
+   | Middle | External API (shared pool) | Re-evaluate moving to local in Phase 2 if usage grows |
+   | Heavy (Serverless) | **Central vLLM serving** (Gemma 4 26B MoE / 31B) | Above the breakeven point |
+   | Heavy (Agent) | In-Agent vLLM (E4B) — **Phase 2** | MVP routes through central vLLM or API |
 
-   **실패 시 폴백 규칙** (모든 플랜 공통):
-   - 로컬 모델이 `output_schema` 검증 N회 연속 실패 → 동일 플랜 내에서 더 큰 로컬 모델(26B → 31B)로 재시도
-   - 로컬 인프라 장애(전체) → 외부 API로 플랜과 무관하게 폴백 + 장애 알람
-   - 폴백은 운영 안전망이지 라우팅 정책이 아니다.
+   **Failure-fallback rules** (common to all plans):
+   - When a local model fails `output_schema` validation N consecutive times → retry within the same plan with the larger local model (26B → 31B)
+   - Total local infra outage → fall back to external API regardless of plan, plus an outage alarm
+   - Fallback is an operational safety net, not a routing policy.
 
-3. **`Inference_Service` 브랜치 신설**
-   vLLM 서빙을 `Execution_Engine` 내부 서비스가 아닌 **별도 레이어**로 분리한다.
-   - 배포/스케일 수명주기가 다름 (GPU 인스턴스, 모델 로드 수분 소요 vs 워커는 초 단위 기동)
-   - GPU pre-allocate ~90GB 이슈로 독립 인스턴스가 자연스러움
-   - 책임 분리: `Execution_Engine`은 노드 실행, `Inference_Service`는 모델 서빙. 교체·업그레이드 독립.
-   - 인터페이스: `Execution_Engine`의 `LlmNode`가 HTTP로 `Inference_Service`를 호출. OpenAI 호환 엔드포인트(vLLM 기본)로 단순화.
+3. **New `Inference_Service` branch**
+   Separate vLLM serving from `Execution_Engine` into its **own layer**.
+   - Different deploy/scale lifecycle (GPU instances, multi-minute model load vs. sub-second worker spin-up)
+   - GPU pre-allocate ~90 GB pressure makes a dedicated instance natural
+   - Responsibility separation: `Execution_Engine` runs nodes; `Inference_Service` serves models. Independent swap / upgrade.
+   - Interface: `LlmNode` in `Execution_Engine` calls `Inference_Service` over HTTP. Simplified via the OpenAI-compatible endpoint (vLLM default).
 
-4. **Agent 내 vLLM (E4B)는 Phase 2로 분리**
-   Heavy 유저 VPC Agent에 E4B 서빙을 내장하면 "데이터 + 추론 둘 다 VPC 잔류"가 가능해 ADR-001 하이브리드 SaaS의 장점이 극대화되지만, MVP 범위에는 포함하지 않는다:
-   - Agent 이미지에 GPU 런타임 + vLLM + 모델 가중치(수십 GB) 번들 시 배포 복잡도 급증
-   - Heavy 유저라도 GPU 보유를 전제할 수 없음
-   - Phase 1에서는 Agent가 중앙 `Inference_Service`를 호출(VPC → 중앙) 또는 외부 API 폴백. 데이터 민감도가 높은 고객은 Phase 2까지 API 폴백 금지 옵션으로 대응.
+4. **In-Agent vLLM (E4B) deferred to Phase 2**
+   Embedding E4B serving in the Heavy user's VPC Agent would maximize the ADR-001 hybrid-SaaS advantage ("data + inference both stay in the VPC"), but it is out of MVP scope:
+   - Bundling GPU runtime + vLLM + tens-of-GB model weights into the Agent image explodes deployment complexity
+   - GPU presence cannot be assumed even for Heavy users
+   - In Phase 1 the Agent calls the central `Inference_Service` (VPC → central) or falls back to an external API. For data-sensitive customers, offer a "no API fallback" option until Phase 2.
 
-5. **ADR-007 어댑터 범위 축소**
-   Gemma 4 네이티브 structured output이 제공되는 경로에서는 "JSON 강제 프롬프트 + 검증 루프" 폴백이 불필요. ADR-007 Decision 2의 어댑터 계층 범위를 "structured output 미지원 경로만"으로 축소. ADR-007 본문은 수정하지 않고 상태 행에 *Refined by ADR-008* 주석만 추가(ADR 불변성 원칙).
+5. **Narrowed ADR-007 adapter scope**
+   On paths where Gemma 4's native structured output is available, the "JSON-forced prompt + validation loop" fallback is unnecessary. Narrow ADR-007 Decision 2's adapter layer to "structured-output unsupported paths only." We do not edit the body of ADR-007; only annotate its status line with *Refined by ADR-008* (ADR immutability principle).
 
 **Consequences**
 
-- (+) **Heavy 유저 단가 급감**: 월 5만 호출 이상 구간에서 호출당 단가가 API 대비 수십 배 낮아짐
-- (+) **데이터 경계 강화**: 중앙 vLLM 서빙으로 B2B 데이터가 외부 API 제공자를 경유하지 않음 (VPC 잔류는 Phase 2)
-- (+) **네이티브 function-calling**: ADR-007의 `output_schema` 강제가 모델 레벨에서 직접 지원됨 → 어댑터 부담 감소
-- (+) **책임 분리**: `Inference_Service` 독립으로 GPU 스케일·모델 업그레이드를 Execution 레이어와 무관하게 수행
-- (−) **고정비 전환**: 얼리 유저 단계에서 GPU 인스턴스 월 $300~500은 매몰비용. Light/Middle API 매출로 상쇄 안 되는 초기 구간 존재
-- (−) **운영 복잡도**: GPU 인스턴스 헬스체크, 모델 로드 타임, OOM, pre-allocate ~90GB 이슈 관리 필요
-- (−) **폴백 경로 테스트 부담**: 로컬 장애 → API 폴백 경로는 드물게만 발동되므로 정기 카나리아 필요
-- (−) **후속 작업 필요**: post-checkout 훅 case 분기 + `_claude_templates/CLAUDE_Inference_Service.md` 템플릿 작성 (이 ADR 범위 밖, main 브랜치에서 처리)
+- (+) **Sharp drop in Heavy user unit cost**: above ~50K monthly calls, per-call cost is tens of times lower than the API
+- (+) **Stronger data boundary**: with central vLLM serving, B2B data never traverses an external API provider (VPC residency is Phase 2)
+- (+) **Native function-calling**: ADR-007's `output_schema` enforcement is supported directly by the model → reduced adapter burden
+- (+) **Responsibility separation**: independent `Inference_Service` lets us scale GPU and upgrade models without touching the Execution layer
+- (−) **Switch to fixed cost**: at the early-user stage, ~$300–500/month GPU instances are sunk cost. There is an early window where Light/Middle API revenue does not offset it
+- (−) **Operational complexity**: GPU instance health checks, model load time, OOM, pre-allocate ~90 GB management
+- (−) **Fallback path testing burden**: the local-failure → API fallback path activates rarely, so periodic canaries are needed
+- (−) **Follow-up work needed**: post-checkout hook case branch + `_claude_templates/CLAUDE_Inference_Service.md` template (out of scope for this ADR; handled in main)
 
 **Related**
-- Extends: ADR-007 (LLM 노드 1급 추상화) — Gemma 4 네이티브 structured output으로 어댑터 범위 축소
-- Interacts with: ADR-001 (하이브리드 SaaS) — Agent + vLLM 시너지는 Phase 2
-- Affects branches: `Inference_Service` (신규), `Execution_Engine` (`LlmNode`가 HTTP 클라이언트 의존), `API_Server` (플랜 기반 라우팅 결정), `Database` (유저 플랜 필드)
+- Extends: ADR-007 (LLM node first-class abstraction) — Gemma 4 native structured output narrows the adapter scope
+- Interacts with: ADR-001 (Hybrid SaaS) — Agent + vLLM synergy is Phase 2
+- Affects branches: `Inference_Service` (new), `Execution_Engine` (`LlmNode` depends on the HTTP client), `API_Server` (plan-based routing decision), `Database` (user-plan field)
 
 ---
 
-## ADR-009 — Agent 모드 CPU-only 고객 대응: KTransformers를 Inference_Service의 두 번째 백엔드로
+## ADR-009 — Agent-mode CPU-only customer support: KTransformers as a second backend in Inference_Service
 
-**상태**: Proposed · **날짜**: 2026-04-14
+**Status**: Proposed · **Date**: 2026-04-14
 
 **Context**
 
-ADR-008은 Heavy 유저의 비용·지연·데이터 경계 문제를 중앙 `Inference_Service`(vLLM + Gemma 4)로 풀었지만, **Agent 모드 = 고객 VPC 내 실행** 시나리오에서 한 가지 전제가 깨진다: *고객이 GPU를 보유하고 있을 것*. 실제 B2B 영업 과정에서 확인된 패턴은 다음과 같다.
+ADR-008 solved Heavy users' cost / latency / data-boundary problems via the central `Inference_Service` (vLLM + Gemma 4), but in the **Agent mode = execution inside the customer VPC** scenario, one premise breaks: *that the customer owns a GPU*. B2B sales conversations have surfaced these patterns:
 
-- Heavy 유저라도 사내에 **CPU 서버만 있는** 경우가 적지 않다(특히 금융/공공/제조 온프레).
-- 데이터 민감도 때문에 외부 API 폴백을 **조직 정책으로 금지**한 고객이 존재한다.
-- 즉 ADR-008의 Agent 폴백 경로(중앙 vLLM 호출 또는 외부 API)가 **둘 다 막히는** 고객 세그먼트가 있다.
+- Even Heavy users frequently have **CPU-only servers** in-house (especially financial / public sector / manufacturing on-prem).
+- Some customers have **organizationally banned external-API fallback** because of data sensitivity.
+- That is, both ADR-008 Agent fallback paths (call central vLLM, or external API) are **blocked** for a segment of customers.
 
-같은 시기에 **KTransformers**(MADSys @ Tsinghua)가 주목받기 시작했다. vLLM과 자주 비교되지만 **푸는 문제가 다르다**:
+Around the same time, **KTransformers** (MADSys @ Tsinghua) drew attention. It is often compared with vLLM but **solves a different problem**:
 
-| 축 | vLLM | KTransformers |
+| Axis | vLLM | KTransformers |
 |---|---|---|
-| 최적화 목표 | GPU 충분할 때 **동시 요청 처리량** (PagedAttention + continuous batching) | GPU 부족할 때 **CPU-GPU 이기종** 활용으로 거대 모델 구동 |
-| 강점 시나리오 | 멀티유저 SaaS 서빙 | 단일/소수 유저, GPU 없음 또는 ≤24GB |
-| 보고된 성능 | A100 기준 단순 Transformer 대비 50~200× 동시성 | prefill 4.62~19.74×, decode 1.25~4.09× (대비: 기존 CPU offloading); 24GB VRAM 단일 GPU로 671B 파라미터 구동, prefill 최대 286 tok/s |
-| 하드웨어 전제 | NVIDIA GPU (멀티 GPU 텐서/데이터 병렬 우수) | AMD EPYC + AMX 지원 CPU + 최소 16GB CUDA GPU에서 최적 |
-| API 표면 | OpenAI 호환 (즉시 사용 가능) | 연구 프로젝트 성격, OpenAI 호환 미제공 (SGLang 통합 PR 진행 중) |
-| 성숙도 | 프로덕션 검증 다수 | `kt-kernel` / `kt-sft`로 최근 리팩토링, 프로덕션 사례 적음 |
+| Optimization target | When GPU is plentiful, **concurrent request throughput** (PagedAttention + continuous batching) | When GPU is scarce, **CPU-GPU heterogeneous** execution to run very large models |
+| Strong scenario | Multi-user SaaS serving | Single / few users, no GPU or ≤24GB |
+| Reported performance | ~50–200× concurrency vs. plain Transformer on A100 | prefill 4.62–19.74×, decode 1.25–4.09× (vs. existing CPU offloading); runs 671B parameters on a single 24GB-VRAM GPU; prefill up to 286 tok/s |
+| Hardware assumption | NVIDIA GPUs (excellent at multi-GPU tensor/data parallel) | Best on AMD EPYC + AMX-capable CPUs + at least 16GB CUDA GPU |
+| API surface | OpenAI-compatible (immediately usable) | Research-flavored; no OpenAI-compatible surface (SGLang integration PR in progress) |
+| Maturity | Many production validations | `kt-kernel` / `kt-sft` recently refactored; few production references |
 
-**핵심 통찰**: KTransformers는 vLLM의 **대체재가 아니라 보완재**다. SaaS 모드(중앙 서빙)에서는 vLLM이 정답이고, KTransformers는 **"GPU 없는 Agent 고객"이라는 빈 칸**을 채운다.
+**Key insight**: KTransformers is **complementary to**, not a replacement for, vLLM. In SaaS mode (central serving), vLLM is the answer; KTransformers fills the **gap of "Agent customers without a GPU."**
 
 **Decision**
 
-1. **`Inference_Service`에 두 번째 백엔드로 KTransformers를 추가**한다.
-   - vLLM은 그대로 1순위(중앙 서빙 + GPU 있는 Agent).
-   - KTransformers는 Agent 모드에서 **GPU가 없거나 부족한 고객 전용** 경로.
-   - 두 백엔드 모두 `LlmNode` 입장에서는 동일한 OpenAI 호환 인터페이스로 보여야 한다. KTransformers는 OpenAI 호환 엔드포인트가 아직 없으므로 **`Inference_Service` 내부 어댑터**로 감싼다.
+1. **Add KTransformers as a second backend in `Inference_Service`.**
+   - Keep vLLM as the first choice (central serving + Agent with GPU).
+   - Use KTransformers as a path for **Agent-mode customers without (or short on) a GPU**.
+   - Both backends must look identical to `LlmNode` — the same OpenAI-compatible interface. Since KTransformers does not yet expose an OpenAI-compatible endpoint, wrap it with an **`Inference_Service` internal adapter**.
 
-2. **라우팅은 LLMRouter 한 곳에 집중**한다 (런타임 분기, 플랜 분기 위에 얹는 한 단계).
+2. **Centralize routing in a single LLMRouter** (runtime branching, layered above plan branching).
 
    ```python
    class LLMRouter:
        async def route(self, execution_mode: str, gpu_info: dict) -> LLMProvider:
            if execution_mode == "serverless":
-               # SaaS 모드 → 무조건 vLLM (동시성이 핵심)
+               # SaaS mode → always vLLM (concurrency is the priority)
                return self._vllm_central
 
-           # Agent 모드 → 고객 하드웨어에 따라 분기
+           # Agent mode → branch on customer hardware
            if gpu_info["vram_gb"] >= 24:
-               return self._agent_vllm           # GPU 충분 → vLLM
+               return self._agent_vllm           # GPU sufficient → vLLM
            elif gpu_info["cpu_supports_amx"]:
-               return self._agent_ktransformers  # GPU 부족 + AMX CPU → KTransformers
+               return self._agent_ktransformers  # GPU short + AMX CPU → KTransformers
            else:
-               return self._api_fallback         # 둘 다 안 되면 → 외부 API (조직 정책 허용 시)
+               return self._api_fallback         # If neither → external API (when org policy permits)
    ```
 
-   - `gpu_info`는 Agent 부팅 시 1회 수집해 `API_Server`에 등록. 런타임마다 재탐지하지 않는다.
-   - 외부 API 폴백이 조직 정책으로 금지된 고객은 라우팅 결과가 비면 **노드 실행 실패**로 처리(폴백 무한 루프 금지).
+   - `gpu_info` is collected once at Agent boot and registered with `API_Server`. Not re-detected per execution.
+   - For customers whose org policy bans external-API fallback, an empty routing result results in **node execution failure** (no infinite-fallback loops).
 
-3. **MVP에서는 도입하지 않는다 — Phase 2 로드맵으로 분리**.
-   ADR-008과 동일한 보수적 자세를 유지한다. 이유:
-   - KTransformers는 OpenAI 호환 API가 없어 어댑터 작성 비용이 든다.
-   - 하드웨어 호환성 범위가 좁다(AMD EPYC + AMX). 고객 환경 사전조사 프로세스 필요.
-   - 프로덕션 안정성 검증이 vLLM보다 부족 → MVP 신뢰성 리스크.
-   - MVP 단계의 Agent 모드는 ADR-008대로 *중앙 `Inference_Service` 경유 또는 외부 API*로 충분하다.
+3. **Not adopted in MVP — separated into the Phase 2 roadmap.**
+   Same conservative posture as ADR-008. Reasons:
+   - KTransformers has no OpenAI-compatible API, so adapter authoring incurs cost.
+   - Hardware compatibility is narrow (AMD EPYC + AMX). Customer environment surveys are required.
+   - Production stability validation is weaker than vLLM → MVP reliability risk.
+   - For the MVP, Agent mode is sufficient via *central `Inference_Service` or external API* per ADR-008.
 
-4. **Phase 2 진입 트리거**: 다음 중 하나가 충족되면 KTransformers 백엔드 구현을 착수한다.
-   - "GPU 없음 + 외부 API 금지" 조합의 Heavy 고객 후보가 **2건 이상** 영업 파이프라인에 등장
-   - KTransformers 측의 SGLang 통합 PR이 머지되어 OpenAI 호환 표면이 안정화
+4. **Phase 2 entry triggers**: implementation begins when one of the following is satisfied.
+   - **Two or more** Heavy customer prospects matching "no GPU + external-API banned" appear in the sales pipeline
+   - The KTransformers SGLang integration PR merges, stabilizing the OpenAI-compatible surface
 
 **Consequences**
 
-- (+) **빈 칸 메우기**: ADR-008의 사각지대(GPU 없는 Agent 고객 + 외부 API 금지)에 대한 명시적 대응 경로 확보. 영업 시 "그 고객은 못 받습니다"가 아니라 "Phase 2에서 지원됩니다"라고 답할 수 있음.
-- (+) **라우팅 일관성**: LLMRouter가 백엔드 다양성을 흡수하므로 `LlmNode` 코드는 손대지 않아도 됨. ADR-007의 1급 추상화 원칙과 충돌 없음.
-- (+) **MVP 범위 보호**: Phase 2 분리로 MVP 일정·신뢰성에 영향 없음. ADR-008의 보수적 폴백 전략과 동일한 패턴.
-- (−) **사전조사 부담**: Agent 고객마다 `gpu_info` + AMX 지원 여부 + 조직의 외부 API 정책 3종 세트를 영업/온보딩 단계에서 수집해야 함. CRM 또는 온보딩 체크리스트 필드 추가 필요.
-- (−) **두 번째 어댑터 유지비**: KTransformers의 OpenAI 호환 표면이 안정화되기 전에는 `Inference_Service` 내부 어댑터를 직접 유지해야 함. SGLang 통합이 머지되면 어댑터를 제거하거나 얇게 만들 수 있음.
-- (−) **운영 매트릭스 확장**: vLLM + KTransformers 두 백엔드의 헬스체크/모델 로드/버전 호환성을 각각 관리해야 함. 단, Agent 측에 한정되므로 중앙 서빙 운영 부담은 늘지 않음.
+- (+) **Filling the gap**: explicit response path for ADR-008's blind spot (no-GPU Agent customer + external-API banned). In sales, we can answer "supported in Phase 2" instead of "we cannot serve them."
+- (+) **Routing consistency**: `LLMRouter` absorbs backend variety, so `LlmNode` code is unchanged. No conflict with ADR-007's first-class abstraction.
+- (+) **MVP scope protection**: Phase 2 separation has no impact on MVP schedule / reliability. Same pattern as ADR-008's conservative fallback strategy.
+- (−) **Pre-survey burden**: for each Agent customer, sales/onboarding must collect three things — `gpu_info`, AMX support, and org policy on external APIs. Requires CRM or onboarding-checklist additions.
+- (−) **Second adapter maintenance cost**: until KTransformers' OpenAI-compatible surface stabilizes, we directly maintain the `Inference_Service` internal adapter. Once SGLang integration merges, we can remove or thin out the adapter.
+- (−) **Operational matrix expansion**: have to manage health checks / model load / version compatibility for both vLLM and KTransformers. Limited to the Agent side, so central-serving operational burden does not grow.
 
-**Update (2026-04-15) — `external_api_policy` 구현 계약**
+**Update (2026-04-15) — `external_api_policy` implementation contract**
 
-Decision §2 의 "외부 API 폴백이 조직 정책으로 금지된 고객은 라우팅 결과가
-비면 노드 실행 실패로 처리" 조항이 `API_Server` 의 라우팅 코드에서 읽어야
-할 구체 데이터 형상을 정의한다.
+Defines the concrete data shape that the routing code in `API_Server` must read for the Decision §2 clause "for customers whose org policy bans external-API fallback, an empty routing result results in node execution failure."
 
-- 저장 위치: `users.external_api_policy` (JSONB, PLAN_01 §3.1)
-- **유일한 계약 키**: `allow_outbound: boolean`
-  - `true` — 외부 API 폴백 허용
-  - `false` (기본값, 누락 시) — 외부 API 폴백 금지 → 라우팅 결과가 비면 노드 실행 실패
-- **포워드 호환 규칙**: 미정의 키는 저장 허용, 읽기 시 무시 + `WARN` 로그.
-  현재 이 ADR 가 확정한 키는 `allow_outbound` **단 하나**이며, 도메인 allow/
-  deny 리스트 등 확장 키는 차단 로직이 실제로 필요해지는 시점에 별도 PLAN 에서
-  합의 후 추가한다.
-- 변경 이력: 이 키를 추가/제거할 때는 본 ADR 의 Update 섹션에 표로 기록.
+- Storage location: `users.external_api_policy` (JSONB, PLAN_01 §3.1)
+- **Sole contract key**: `allow_outbound: boolean`
+  - `true` — allow external API fallback
+  - `false` (default, missing) — ban external API fallback → empty routing → node execution failure
+- **Forward-compat rule**: undefined keys are stored but ignored on read with a `WARN` log.
+  This ADR fixes only the single key `allow_outbound`; extension keys (e.g., domain allow / deny lists) are added in a separate PLAN once the gating logic actually needs them.
+- Change history: when adding/removing this key, record it in this ADR's Update section as a table.
 
-이 계약은 `Inference_Service` 의 `LLMRouter` 폴백 분기(§2 의 `_api_fallback`)
-가 활성화될지 말지를 결정하는 단일 소스가 된다.
+This contract becomes the single source for whether the `_api_fallback` branch in `Inference_Service`'s `LLMRouter` (Decision §2) activates.
 
 **Related**
-- Refines: ADR-008 (Gemma 4 + vLLM 로컬 서빙) — Agent 모드 백엔드 경로 보강
-- Interacts with: ADR-001 (하이브리드 SaaS) — "데이터 + 추론 둘 다 VPC 잔류" 시나리오의 GPU 없는 변종을 커버
-- Affects branches: `Inference_Service` (KTransformers 어댑터, Phase 2), `API_Server` (Agent `gpu_info`/정책 필드, `external_api_policy` 읽기 경로), `Database` (고객 환경 메타데이터, `users.external_api_policy`, `agents.gpu_info`)
-- 미해결 질문: KTransformers의 Gemma 4 26B MoE 지원 검증, AMX 미지원 CPU에서의 성능 하한선, 라이선스 재검토(Apache 2.0 호환)
+- Refines: ADR-008 (Gemma 4 + vLLM local serving) — augments the Agent-mode backend path
+- Interacts with: ADR-001 (Hybrid SaaS) — covers the no-GPU variant of "data + inference both stay in the VPC"
+- Affects branches: `Inference_Service` (KTransformers adapter, Phase 2), `API_Server` (Agent `gpu_info` / policy field, `external_api_policy` read path), `Database` (customer environment metadata, `users.external_api_policy`, `agents.gpu_info`)
+- Open questions: KTransformers' Gemma 4 26B MoE support validation, performance floor on non-AMX CPUs, license re-review (Apache 2.0 compatibility)
 
 ---
 
-## ADR-010 — pgvector 확장 MVP 선탑재
+## ADR-010 — Pre-load pgvector extension in MVP
 
-**상태**: Accepted · **날짜**: 2026-04-15
+**Status**: Accepted · **Date**: 2026-04-15
 
 **Context**
 
-Database 브랜치 MVP 부트스트랩 중 "지금은 벡터 컬럼이 필요한 유스케이스가
-없지만, 장래 RAG(자연어 → 노드 생성, 템플릿/과거 워크플로우 검색)가 들어올
-가능성" 이 논의됐다. 선택지는 둘:
+During Database branch MVP bootstrap, we discussed: "we have no use case requiring a vector column today, but RAG (natural language → node generation, template / past-workflow search) might come later." Two options:
 
-1. 순정 `postgres:16` 으로 시작, RAG 가 필요해지는 시점에
-   `CREATE EXTENSION vector` 와 pgvector 도커 이미지로 교체
-2. `pgvector/pgvector:pg16` 을 처음부터 사용하고 확장을 기본 설치
+1. Start with stock `postgres:16` and switch to a pgvector docker image with `CREATE EXTENSION vector` migration when RAG is needed
+2. Use `pgvector/pgvector:pg16` from the start and install the extension by default
 
 **Decision**
 
-**옵션 2 채택**. `Database/docker-compose.yml` 이미지는
-`pgvector/pgvector:pg16`, `schemas/001_core.sql` 에 `CREATE EXTENSION IF NOT
-EXISTS "vector"` 를 포함. MVP 스키마에는 아직 벡터 컬럼이 없다 — 확장만
-설치하고 사용 시점을 기다린다.
+**Option 2 chosen**. `Database/docker-compose.yml` image is `pgvector/pgvector:pg16`, and `schemas/001_core.sql` includes `CREATE EXTENSION IF NOT EXISTS "vector"`. The MVP schema has no vector columns yet — install the extension and wait for the use point.
 
 **Rationale**
 
-- **교체 비용의 비대칭성**: 장래 교체 시 도커 이미지 변경 + 재시작 + 확장
-  설치 마이그레이션이 필요하고, 운영 중 DB 에서는 이게 non-trivial. 지금
-  설치해 두면 RAG 도입 시 "마이그레이션 한 줄 + 컬럼 추가" 로 끝난다.
-- **선탑재 비용**: 이미지 크기 차이는 수십 MB. 설치된 미사용 확장의 런타임
-  오버헤드는 0. 즉 현재 비용이 **거의 0** 이고 미래 비용 회피는 크다.
-- **YAGNI 원칙의 예외 기준**: 비용이 0 인 옵션을 YAGNI 로 거부하면 오히려
-  기술부채가 된다. YAGNI 는 "복잡도를 키우는 기능" 에 적용되는 것이지
-  "0 비용의 기반 인프라" 에는 적용되지 않는다.
+- **Asymmetric switching cost**: future swap requires a docker image change + restart + extension install migration, which is non-trivial on an operational DB. Installing now means RAG adoption ends with "one migration line + column add."
+- **Pre-load cost**: image size differs by tens of MB. Runtime overhead of an installed but unused extension is 0. So the present cost is **near 0** and future cost avoidance is large.
+- **YAGNI exception criterion**: rejecting a zero-cost option as YAGNI creates technical debt. YAGNI applies to "features that grow complexity," not "zero-cost foundational infrastructure."
 
 **Consequences**
 
-- (+) 후속 PLAN(예: PLAN_06 RAG)에서 확장 설치 단계 불필요 → 단일 마이그레이션
-  으로 `ALTER TABLE ... ADD COLUMN embedding vector(N)` 만 하면 됨.
-- (+) 데이터 마이그레이션 리스크 축소 — 운영 DB 의 확장 설치는 재시작/락
-  이슈가 있어 별도 운영 창구가 필요한데, 이걸 MVP 단계에 흡수.
-- (−) 도커 이미지가 `pgvector` 변종으로 고정됨. 순정 이미지로 되돌릴 때
-  도커 재설정 필요 (역방향 비용도 크지 않음).
-- (−) 확장이 "설치만 돼 있고 미사용" 인 상태가 장기화되면 팀원이 "쓰는 줄
-  알았는데 왜 없지?" 같은 혼동을 할 수 있음 — 이 ADR 로 상태를 명시해
-  완화.
+- (+) Subsequent PLANs (e.g., PLAN_06 RAG) skip extension install steps → a single migration runs `ALTER TABLE ... ADD COLUMN embedding vector(N)`.
+- (+) Reduced data migration risk — installing extensions on operational DBs has restart/lock issues that need a separate ops window; absorbed at MVP stage.
+- (−) Docker image is fixed to a `pgvector` variant. Reverting to the stock image requires docker reconfiguration (reverse cost is also small).
+- (−) If the extension stays "installed but unused" for a long time, teammates may get confused ("I thought we used it — why don't we?"). Mitigated by stating the state explicitly in this ADR.
 
 **Related**
-- Enables: 후속 RAG PLAN (템플릿 갤러리 / 사용자 워크플로우 임베딩 검색)
-- Affects branches: `Database` (DDL/도커 이미지)
+- Enables: future RAG PLANs (template gallery / user-workflow embedding search)
+- Affects branches: `Database` (DDL / docker image)
 
 ---
 
-## ADR-011 — 실행 로그 분리 저장 + 월별 파티셔닝 + GCS 원문 오프로드
+## ADR-011 — Separate execution-log storage + monthly partitioning + GCS payload offload
 
-**상태**: Accepted · **날짜**: 2026-04-15
+**Status**: Accepted · **Date**: 2026-04-15
 
 **Context**
 
-ADR-006/007 이 도입한 `executions.node_results jsonb` 는 "노드별 결과 요약"
-용도로 시작했지만 실제로 쌓일 데이터는 세 가지 압력을 받는다:
+The `executions.node_results jsonb` introduced in ADR-006/007 started as "per-node result summary," but the actual data accumulating there faces three pressures:
 
-1. **ADR-007 관측성 요구** — 노드별 `token_usage`/`cost_usd`/`duration_ms` +
-   Approval 상태머신. LLM 사용량을 모델별로 집계하려면 JSONB 안을 스캔해야
-   하고, 이건 성능이 나오지 않는다.
-2. **Retry 이력** — 같은 노드가 N 회 재시도되면 JSONB 키 충돌. "최신 결과만
-   보이고 과거 시도는 유실" 되거나 깊은 중첩 구조가 된다. 둘 다 UX/디버깅에
-   해롭다.
-3. **UI 애니메이션 요구 (ADR-007 Update 2026-04-15)** — 사용자는 "로딩 아이콘"
-   이 아니라 "노드 N 까지 진행, 노드 N+1 실행 중" 을 보고 싶다. 이는 노드가
-   `running` 상태일 때도 DB 에 레코드가 존재해야 한다는 뜻이다.
-4. **stdout/stderr 원문 크기** — 커스텀 스크립트 노드가 MB 급 출력을 낼 수
-   있다. 이걸 JSONB 에 넣으면 row 가 비대화되고 전체 테이블 I/O 에 악영향.
-5. **파티셔닝 기술부채** — "나중에 로그 테이블에 파티션 붙이자" 는 잘 알려진
-   부채 함정. 운영 중 파티션 도입은 lock/재작성 리스크가 크다.
+1. **ADR-007 observability requirements** — per-node `token_usage` / `cost_usd` / `duration_ms` + Approval state machine. Aggregating LLM usage by model requires scanning inside the JSONB, and that does not perform.
+2. **Retry history** — when a node retries N times, JSONB keys collide. Either "only the latest result is visible and past attempts are lost" or a deeply nested structure forms. Both hurt UX/debugging.
+3. **UI animation requirements (ADR-007 Update 2026-04-15)** — users want to see "completed up to node N, executing node N+1," not a "loading icon." This means a record must exist in the DB while a node is `running`.
+4. **stdout/stderr payload size** — custom-script nodes can emit MB-scale output. Embedding that in JSONB inflates rows and degrades whole-table I/O.
+5. **Partitioning tech-debt trap** — "let's add partitioning to the log table later" is a well-known debt trap. Adopting partitioning on an operational DB carries lock / rewrite risk.
 
 **Decision**
 
-PLAN_03 에서 구현한 분리 저장 구조를 설계 결정으로 승격:
+Promote the separate-storage structure implemented in PLAN_03 to a design decision:
 
-1. **새 테이블 `execution_node_logs` — 월별 RANGE 파티션**
-   - 파티션 키: `started_at` (timestamptz)
-   - PK: `(id, started_at)` — Postgres 네이티브 파티셔닝은 UNIQUE 제약에 파티션
-     키 포함을 요구
-   - 초기 12 개 월 파티션을 DDL `DO` 블록으로 부트스트랩
-   - `scripts/roll_partitions.py` 가 월별 롤포워드 (외부 스케줄러 책임)
-   - 보존 삭제 정책은 **별도 운영 PLAN** 에서 결정 — 본 ADR 범위 밖
+1. **New table `execution_node_logs` — monthly RANGE partitioning**
+   - Partition key: `started_at` (timestamptz)
+   - PK: `(id, started_at)` — Postgres native partitioning requires UNIQUE constraints to include the partition key
+   - Bootstrap 12 monthly partitions in a DDL `DO` block
+   - `scripts/roll_partitions.py` rolls forward monthly (external scheduler responsibility)
+   - Retention/deletion policy is decided in a **separate ops PLAN** — out of scope for this ADR
 
-2. **`executions.node_results` 와의 역할 분리 (옵션 A)**
-   - `executions.node_results` = **최신 attempt 요약만**. `API_Server` 의
-     기존 계약(`append_node_result`) 유지.
-   - `execution_node_logs` = **상세 로그의 단독 소스**. retry/running/완료
-     모두 여기에 N 행으로 쌓인다.
-   - `Execution_Engine` 은 노드 실행 시 **두 Repository 에 모두 기록**.
+2. **Role separation from `executions.node_results` (Option A)**
+   - `executions.node_results` = **only the latest attempt summary**. Retain `API_Server`'s existing contract (`append_node_result`).
+   - `execution_node_logs` = **sole source of detailed logs**. Retry/running/completion all stack here as N rows.
+   - `Execution_Engine` writes to **both Repositories** during node execution.
 
 3. **2-phase write (`record_start` / `record_finish`)**
-   - 노드 시작 → `record_start` 가 `status='running'` 행 INSERT
-   - 노드 종료 → 같은 행 UPDATE (`success|failed|skipped`)
-   - 파티션 키 `started_at` 는 **불변** → UPDATE 가 파티션 간 row 이동을
-     일으키지 않음
-   - UPDATE WHERE 절은 반드시 `(id, started_at)` 둘 다 지정 (id 단독이면
-     Postgres 가 모든 파티션 스캔 — 파티션 프루닝 실패)
+   - On node start → `record_start` INSERTs a `status='running'` row
+   - On node end → UPDATE the same row (`success|failed|skipped`)
+   - Partition key `started_at` is **immutable** → UPDATE does not move rows across partitions
+   - The UPDATE WHERE clause must specify both `(id, started_at)` (with `id` alone, Postgres scans every partition — partition pruning fails)
 
-4. **`attempt` 는 호출자 명시 전달**
-   - 1-based 정수, DEFAULT 1 은 해피패스 편의 only
-   - `Execution_Engine` 의 리트라이 루프가 자기 카운터로 관리하고 매
-     `record_start` 에 명시 전달
-   - DB 측 auto-increment 는 사용 안 함(레이스 방어 복잡도 회피)
+4. **`attempt` is passed explicitly by the caller**
+   - 1-based integer, DEFAULT 1 is happy-path convenience only
+   - The retry loop in `Execution_Engine` owns the counter and passes it explicitly to each `record_start`
+   - No DB-side auto-increment (avoids race-defense complexity)
 
-5. **LLM 관측 4필드 컬럼 선승격**
-   - `model text`, `tokens_prompt int`, `tokens_completion int`,
-     `cost_usd numeric(10,6)` — JSONB 가 아니라 정규 컬럼
-   - 부분 인덱스 `(model) WHERE model IS NOT NULL` 로 모델별 집계 쿼리 경로
-   - 그 외 노드별 상세 메타데이터는 `input/output/error jsonb` 필드 유지
+5. **Promote four LLM observability fields to columns**
+   - `model text`, `tokens_prompt int`, `tokens_completion int`, `cost_usd numeric(10,6)` — first-class columns, not JSONB
+   - Partial index `(model) WHERE model IS NOT NULL` for per-model aggregation query path
+   - Other per-node detailed metadata stays in `input/output/error jsonb` fields
 
-6. **stdout/stderr 는 GCS 오프로드 — DB 에는 URI 포인터만**
+6. **stdout/stderr offloaded to GCS — DB only stores URI pointers**
    - `stdout_uri text NULL`, `stderr_uri text NULL`
-   - 형식 권장: `gs://{bucket}/executions/{execution_id}/{node_id}/{attempt}/stdout.log`
-   - GCS 업로더 구현은 `Execution_Engine` 책임. DB 브랜치는 URI 형식 검증 안 함.
-   - 보안 효과: 민감 페이로드가 DB 백업/덤프에 섞일 위험 축소.
+   - Recommended format: `gs://{bucket}/executions/{execution_id}/{node_id}/{attempt}/stdout.log`
+   - GCS uploader implementation is `Execution_Engine`'s responsibility. The DB branch does not validate URI format.
+   - Security effect: reduces the risk of sensitive payloads mixing into DB backups/dumps.
 
 **Consequences**
 
-- (+) LLM 사용량 집계가 파셜 인덱스 + 정규 컬럼으로 O(파티션 프루닝) 성능.
-- (+) 파티셔닝을 **처음부터** 적용해 장래 무파티션 → 파티션 전환 리스크 제거.
-- (+) 2-phase write 로 Frontend 실시간 진행 애니메이션 가능. `ApprovalNode` 와
-  일관된 상태 모델 (running 의 특수 케이스가 paused).
-- (+) stdout/stderr 가 DB row 를 부풀리지 않음. 대용량 노드 출력이 DB 성능에
-  영향 주지 않음. 백업/복제 비용 감소.
-- (+) `Execution_Engine` 의 리트라이 루프가 attempt 를 소유 → DB 가 "진실의
-  원천" 을 두 곳에 둘 필요 없음. 레이스 방어 복잡도 없음.
-- (−) `Execution_Engine` 이 두 Repository 를 모두 호출해야 함 — 호출 누락 시
-  "요약은 있는데 상세는 없음" 또는 그 반대가 발생. 호출 래퍼/데코레이터로
-  보완 필요.
-- (−) GCS 의존성이 `Execution_Engine` 에 추가됨. 업로드 실패 시 `stdout_uri`
-  는 NULL 인 채로 남아야 하며, 업로드 실패가 노드 실패를 유발해선 안 됨
-  (관측 실패 ≠ 실행 실패).
-- (−) 파티션 롤포워드가 **외부 스케줄러 책임** 이라 배포 측에서 크론 등록을
-  잊으면 새 월 INSERT 가 "no partition of relation ... found" 로 실패한다.
-  완화: `roll_partitions.py --dry-run` 을 온보딩 체크리스트에 포함, 초기
-  12 개월 버퍼.
-- (−) 보존 삭제 정책 미정 → 무제한 누적. 별도 운영 PLAN 에서 결정.
+- (+) LLM usage aggregation runs at O(partition pruning) speed with partial indexes + first-class columns.
+- (+) Partitioning is applied **from the start**, removing the future no-partition → partitioned migration risk.
+- (+) The 2-phase write enables real-time frontend progress animation. State model is consistent with `ApprovalNode` (paused is a special case of running).
+- (+) stdout/stderr does not bloat DB rows. Large node output does not hurt DB performance. Backup/replication cost decreases.
+- (+) `Execution_Engine`'s retry loop owns `attempt` → the DB does not need two sources of truth. No race-defense complexity.
+- (−) `Execution_Engine` must call both Repositories — missed calls produce "summary present but detail missing" or vice versa. Wrap with a call wrapper / decorator.
+- (−) GCS dependency added to `Execution_Engine`. On upload failure, `stdout_uri` must remain NULL, and upload failure must not cause node failure (observation failure ≠ execution failure).
+- (−) Partition rollforward is **external scheduler responsibility**. If deploys forget the cron, new-month INSERTs fail with "no partition of relation ... found." Mitigation: include `roll_partitions.py --dry-run` in the onboarding checklist; ship with a 12-month buffer.
+- (−) Retention policy undefined → unbounded accumulation. To be decided in a separate ops PLAN.
 
 **Related**
-- Refines: ADR-006 (Repository 패턴 — 새 ABC 추가), ADR-007 (노드 running
-  상태의 DB 영속화 이유 + Approval 상태머신을 동일 테이블로 통합)
-- Depends on: ADR-010 (pgvector 와 무관하지만 동일한 "기반 인프라 MVP 선탑재"
-  철학)
+- Refines: ADR-006 (Repository pattern — adds new ABCs), ADR-007 (rationale for DB persistence of node running state + unifying the Approval state machine into the same table)
+- Depends on: ADR-010 (unrelated to pgvector but shares the same "pre-load foundational infrastructure in MVP" philosophy)
 - Affects branches:
-  - `Database` — 스키마 003, Repository, `roll_partitions.py`
-  - `Execution_Engine` — 노드 실행 래퍼가 `ExecutionNodeLogRepository.record_start/finish` 호출 + `ExecutionRepository.append_node_result` 이중 쓰기, GCS 업로더, 리트라이 루프의 attempt 카운터 소유
-  - `API_Server` — 실행 상세 조회 엔드포인트가 두 테이블을 함께 읽음
-  - `Frontend` — 실행 진행 애니메이션, 노드별 로그/토큰/비용 렌더링
-  - 운영 — `scripts/roll_partitions.py` 크론 등록, GCS 버킷 프로비저닝/수명주기 정책
+  - `Database` — schema 003, Repository, `roll_partitions.py`
+  - `Execution_Engine` — node execution wrapper calls `ExecutionNodeLogRepository.record_start/finish` + `ExecutionRepository.append_node_result` dual write, GCS uploader, retry loop owns the attempt counter
+  - `API_Server` — execution detail endpoint reads both tables together
+  - `Frontend` — execution progress animation, per-node log/token/cost rendering
+  - Ops — `scripts/roll_partitions.py` cron registration, GCS bucket provisioning / lifecycle policy
 
 ---
 
-## ADR-012 — Approval 알림 감사 추적: 독립 상태, 평문 recipient, 파티셔닝 예외
+## ADR-012 — Approval notification audit trail: independent state, plaintext recipient, partitioning exception
 
-**상태**: Accepted · **날짜**: 2026-04-15
+**Status**: Accepted · **Date**: 2026-04-15
 
 **Context**
 
-ADR-007 이 `ApprovalNode` 에 "웹 인박스 + 알림(이메일/Slack)" 2-track 을
-MVP 기본으로 확정한 뒤, "발송 로직" 과 "발송 이력" 이라는 두 관심사가 남았다.
-이 ADR 은 **발송 이력(audit trail)** 만 다룬다. 실제 발송 로직은 `API_Server`
-또는 별도 워커의 책임이다.
+After ADR-007 fixed the `ApprovalNode` two-track ("web inbox + notification (email/Slack)") as MVP default, two concerns remained: "send logic" and "send history." This ADR addresses **send history (audit trail) only**. The actual send logic is the responsibility of `API_Server` or a separate worker.
 
-세 가지 설계 결정이 필요했다:
+Three design decisions were needed:
 
-1. **발송 실패가 실행 상태머신에 영향을 주는가?** — SMTP/Slack 일시 장애가
-   `executions.status` 를 건드리면 알림 인프라 장애가 곧 자동화 장애로
-   확대된다. 반대로 완전히 무시하면 극단적 영구 실패 시 사용자가 모를 수
-   있다.
-2. **`recipient` 를 어떻게 저장하는가?** — `users.email` 을 JOIN 할지, 평문
-   이메일/Slack id 를 이 테이블에 사본 저장할지. 성능(JOIN 병목) vs GDPR
-   (이메일 사본 증가) 의 트레이드오프.
-3. **파티셔닝할 것인가?** — ADR-011 은 `execution_node_logs` 에 월별 파티션을
-   선제 도입했다. 같은 원칙을 이 테이블에도 일괄 적용하면 오버엔지니어링인가?
+1. **Does send failure affect the execution state machine?** — If transient SMTP/Slack outages touch `executions.status`, notification-infra outages escalate to automation outages. Fully ignoring them risks the user not knowing in extreme permanent-failure cases.
+2. **How to store `recipient`?** — JOIN `users.email`, or store a plaintext copy (email / Slack id) on this table. Trade-off: performance (JOIN bottleneck) vs. GDPR (more email copies).
+3. **Partition the table?** — ADR-011 preemptively introduced monthly partitions on `execution_node_logs`. Is applying the same principle to this table over-engineering?
 
 **Decision**
 
-1. **발송 실패와 Approval 상태머신은 독립** — `approval_notifications.status`
-   는 `queued | sent | failed | bounced` 로 **자체 상태머신** 을 가지며,
-   `executions.status` 와 결합하지 않는다. 모든 채널 영구 실패 시에도 실행은
-   `paused` 로 남는다.
-   - 안전망: 운영 대시보드가 `list_undelivered(older_than=24h)` 를 폴링해
-     "24시간 이상 미도달" 을 에스컬레이션. 이 알람 자체는 별도 운영 PLAN 범위.
-   - 근거: 알림 인프라 장애 범위를 자동화 엔진으로 확산시키지 않기 위함.
-     "자동화했는데 한 통 이메일 못 보내서 워크플로우가 취소되더라" 가 더
-     나쁜 사용자 경험.
+1. **Send failure is independent of the Approval state machine** — `approval_notifications.status` has its **own state machine** (`queued | sent | failed | bounced`) and is not coupled to `executions.status`. Even when all channels permanently fail, execution remains `paused`.
+   - Safety net: the ops dashboard polls `list_undelivered(older_than=24h)` and escalates "more than 24 hours undelivered." This alarm itself is in a separate ops-PLAN scope.
+   - Rationale: do not let notification-infra outages spread to the automation engine. "We automated it but the workflow was canceled because one email could not send" is the worse user experience.
 
-2. **`recipient` 는 평문 저장** (이메일 주소 또는 Slack user id) — 성능을
-   이유로 정규화/JOIN 을 거부한다.
-   - 근거 1 (성능): 미도달 대시보드 쿼리 + execution 상세 조회 둘 다 hot path.
-     매번 `users` JOIN 은 파이낸셜/엔터프라이즈 고객 규모에서 DB 병목이 된다.
-   - 근거 2 (분리): `recipient` 는 "발송 시점의 주소록" 이지 "현재 사용자
-     이메일" 이 아니다. 사용자가 이메일을 변경해도 과거 이력은 "당시에 어디로
-     보냈는지" 를 그대로 보존해야 감사 가치가 있다.
-   - GDPR 대응: 삭제는 `DELETE FROM approval_notifications WHERE recipient = ?`
-     로 수행. 운영 PLAN 에서 삭제 워커/요청 처리 경로를 정의.
+2. **Store `recipient` in plaintext** (email address or Slack user id) — refuse normalization / JOIN for performance reasons.
+   - Reason 1 (performance): the undelivered dashboard query and execution detail lookup are both hot paths. Joining `users` every time becomes a DB bottleneck at financial / enterprise customer scale.
+   - Reason 2 (separation): `recipient` is "the address book at send time," not "the user's current email." Even if the user changes their email, the historical record must preserve "where it was sent at the time" to retain audit value.
+   - GDPR response: deletion runs as `DELETE FROM approval_notifications WHERE recipient = ?`. The deletion worker / request processing path is defined in the ops PLAN.
 
-3. **파티셔닝은 도입하지 않는다** — ADR-011 의 "선제 파티셔닝" 철학을 일괄
-   적용하지 않는다.
-   - 볼륨 분석: 고객 100 × 워크플로우 30 × Approval 사용률 15% × 일 5회 ×
-     알림 3건(2채널 + 재시도) ≈ 연 2.2M 행, 행당 300 B → **연 0.7 GB**.
-   - 수천만 행~억 행 도달 시점(=10년 이상 누적) 까지 단순 테이블 + 부분
-     인덱스로 충분. 쿼리 패턴(`execution_id` 기반 상세 + `status IN
-     ('queued','failed')` 부분 인덱스) 이 파티션 프루닝을 거의 타지 않음.
-   - **파티셔닝 도입 기준** (ADR-011 에 암묵적으로 있던 것을 여기서 명시화):
-     (a) 행 수가 이벤트당 O(N>5) 로 곱해져 빠르게 커지거나, (b) hot path
-     쿼리가 시간 범위 필터를 포함하거나, (c) 예상 보존 정책이 정기 삭제를
-     요구할 때만 선제 파티셔닝. 본 테이블은 셋 다 해당 없음.
+3. **No partitioning** — do not blanket-apply ADR-011's "preemptive partitioning" philosophy.
+   - Volume analysis: 100 customers × 30 workflows × 15% Approval usage × 5 daily executions × 3 notifications (2 channels + retries) ≈ 2.2M rows/year, 300 B/row → **0.7 GB/year**.
+   - A simple table + partial index suffices until tens of millions to hundreds of millions of rows accumulate (≥10 years). Query patterns (`execution_id`-based detail + `status IN ('queued','failed')` partial index) hardly use partition pruning.
+   - **Partitioning trigger criteria** (making explicit what was implicit in ADR-011): adopt preemptive partitioning only when (a) row count multiplies as O(N>5) per event and grows fast, (b) hot-path queries include a time-range filter, or (c) the expected retention policy requires periodic deletion. This table satisfies none.
 
-4. **인박스는 독립 저장소가 아니라 쿼리** — "Approval 인박스" 는 UI 개념일 뿐
-   DB 저장 구조가 아니다. `SELECT ... FROM executions WHERE status='paused'
-   AND owner_id=?` 의 페이지네이션 결과를 Frontend 가 렌더링. Pending 은 사람
-   처리 속도로 자연 캡이 걸리고, Resolved 는 날짜 범위 필터로 페이지네이션.
-   - 근거: 별도 인박스 테이블은 `executions` 와의 동기화 부담만 추가하고
-     이점이 없다.
+4. **Inbox is a query, not an independent store** — the "Approval Inbox" is a UI concept, not a DB structure. Frontend renders `SELECT ... FROM executions WHERE status='paused' AND owner_id=?` paginated results. Pending caps naturally at human processing speed; Resolved is paginated with date-range filters.
+   - Rationale: a separate inbox table only adds sync burden against `executions` with no benefit.
 
 **Consequences**
 
-- (+) 알림 인프라 장애가 워크플로우 엔진으로 확산되지 않음. SRE 경계 명확.
-- (+) 평문 저장으로 대시보드 쿼리가 단일 인덱스 스캔으로 끝남.
-- (+) 파티셔닝 도입 기준을 명문화 → 장래 "이 테이블도 파티셔닝해야 하나?"
-  토론 때 이 ADR 을 기준으로 결정 가능. ADR-011 의 과잉 일반화 방지.
-- (+) `recipient` 가 "발송 시점 스냅샷" 이 되어 감사 자료로서 완결성.
-- (−) `recipient` 사본이 사용자 삭제 요청 시 별도 처리 경로 필요 (운영 PLAN).
-- (−) "24시간+ 미도달 알림" 감시 알람 인프라가 **이 ADR 외부 의존성** 으로
-  생김 — 이게 없으면 극단적 영구 실패 케이스가 침묵 장애가 됨.
-- (−) Slack user id 와 이메일 주소가 같은 `recipient` 컬럼에 섞여 저장됨.
-  쿼리 시 `channel` 로 분기. 추후 구조화가 필요하면 JSONB 로 승격.
+- (+) Notification-infra outages do not spread to the workflow engine. Clear SRE boundary.
+- (+) Plaintext storage finishes the dashboard query in a single index scan.
+- (+) Partitioning trigger criteria are codified → future "should we partition this table too?" discussions can decide based on this ADR. Prevents over-generalizing ADR-011.
+- (+) `recipient` becomes a "send-time snapshot," giving completeness as audit material.
+- (−) `recipient` copies need a separate processing path on user-deletion requests (ops PLAN).
+- (−) The "notification undelivered for 24h+" monitoring alarm becomes an **external dependency to this ADR** — without it, extreme permanent-failure cases become silent failures.
+- (−) Slack user ids and email addresses share the same `recipient` column. Branch on `channel` at query time. If structuring is needed later, promote to JSONB.
 
 **Related**
-- Refines: ADR-007 (`ApprovalNode` 2-track 알림 경로의 저장 계층 확정)
-- Complements: ADR-011 (같은 "분리 저장" 계열이되, 본 ADR 은 **파티셔닝 예외**
-  라는 반대 방향 결정 — ADR-011 의 선제 파티셔닝이 일괄 규칙이 아니라 볼륨 +
-  쿼리 패턴 기준임을 명시)
+- Refines: ADR-007 (fixes the storage layer of `ApprovalNode`'s 2-track notification path)
+- Complements: ADR-011 (same "separate storage" family, but this ADR is the **partitioning exception** — making explicit that ADR-011's preemptive partitioning is not a blanket rule but volume + query-pattern based)
 - Affects branches:
-  - `Database` — 스키마 004, Repository (PLAN_04)
-  - `API_Server` — 발송 워커(또는 엔드포인트) 가 매 시도마다 `record()` 호출
-  - `Frontend` — 인박스는 `executions WHERE status='paused'` 페이지네이션.
-    별도 저장소 아님
-  - 운영 — 미도달 대시보드 + "24시간+" 알람, GDPR 삭제 요청 처리 경로
+  - `Database` — schema 004, Repository (PLAN_04)
+  - `API_Server` — the send worker (or endpoint) calls `record()` on every attempt
+  - `Frontend` — inbox is `executions WHERE status='paused'` pagination. Not a separate store
+  - Ops — undelivered dashboard + "24h+" alarm, GDPR-deletion request handling path
 
 ---
 
-## ADR-013 — Agent 자격증명 전송 하이브리드 암호화 사양 (AES-256-GCM + RSA-OAEP-SHA256)
+## ADR-013 — Agent credential transmission hybrid encryption spec (AES-256-GCM + RSA-OAEP-SHA256)
 
-- **상태**: Accepted (2026-04-15). **Update (2026-04-17)**: 사용 경로가 §7
-  pull 방식 (`get_credential` 프레임) 에서 **push 방식 (execute 메시지의
-  `credential_payloads` 동봉)** 으로 확정됨. credential_pipeline blueprint §2.5
-  참고. 3-필드 envelope 포맷은 동일. pull 방식 stub 은 당분간 유지하되 주
-  경로는 push. 또한 Agent **개인키 관리 운영 절차** 를 §8 로 추가 정의.
-  
-- **맥락**: ADR-004 가 "Agent 모드에서는 Agent 공개키(RSA) 로 자격증명을
-  재암호화하여 전달" 이라고만 규정했을 뿐 알고리즘/파라미터/프레임 스키마가
-  미정이었다. PLAN_05 구현 착수 전 타 브랜치(`Execution_Engine`, Agent 측
-  코드) 가 의존할 계약 형상을 고정해야 한다.
-- **결정**:
-  1. **라이브러리** — `pyca/cryptography`. Fernet(ADR-004) 이 이미 사용 중이라
-     의존성 추가 0. PyCryptodome 은 채택하지 않는다.
-  2. **하이브리드 스킴 채택** — Fernet 평문이 수 KB 에 달해 RSA-2048 OAEP-SHA256
-     단일 블록 한도(190 B) 를 초과하므로 직접 RSA 암호화는 불가능. 대칭키를
-     RSA 로 wrap 하고 페이로드는 AES 로 암호화하는 2-layer 방식으로 고정.
-  3. **대칭층** — AES-256-GCM. AEAD 라 페이로드 변조 감지 내장. CBC+HMAC 조합은
-     구현 실수 표면이 넓어 채택하지 않는다. 매 호출마다 새 random key + nonce.
-  4. **RSA 파라미터** — RSA-2048, 공개지수 65537, OAEP 패딩 (hash=SHA-256,
-     MGF1=SHA-256, label 없음). RSA-3072/4096 는 MVP~Phase 1 범위(2026-2028)
-     에서 과잉이며 성능 손실(각 6ms/15ms vs 2ms) 대비 보안 실익이 작다.
-  5. **프레임 스키마** — WebSocket 응답 프레임의 `payload` 필드가 다음 JSON
-     을 base64 로 인코딩한 3-필드 객체를 담는다:
+- **Status**: Accepted (2026-04-15). **Update (2026-04-17)**: the use path is fixed from §7
+  pull (`get_credential` frame) to **push (execute message ships
+  `credential_payloads`)**. See credential_pipeline blueprint §2.5.
+  The 3-field envelope format is identical. The pull stub remains for now,
+  but the main path is push. Also adds **operational procedures for the
+  Agent private key** in §8.
+
+- **Context**: ADR-004 stipulated only that "in Agent mode, credentials are re-encrypted with the Agent's public key (RSA) for delivery." Algorithm/parameters/frame schema were undefined. The contract shape that other branches (`Execution_Engine`, Agent-side code) depend on must be fixed before PLAN_05 implementation begins.
+- **Decision**:
+  1. **Library** — `pyca/cryptography`. Already in use for Fernet (ADR-004), so 0 added dependencies. PyCryptodome is not adopted.
+  2. **Adopt a hybrid scheme** — Fernet plaintext can reach several KB, exceeding the single-block limit (190 B) of RSA-2048 OAEP-SHA256, so direct RSA encryption is impossible. Fix on a 2-layer scheme: wrap a symmetric key with RSA, encrypt the payload with AES.
+  3. **Symmetric layer** — AES-256-GCM. Built-in tampering detection because it is AEAD. A CBC+HMAC combination has a wide implementation-mistake surface and is not adopted. New random key + nonce per call.
+  4. **RSA parameters** — RSA-2048, public exponent 65537, OAEP padding (hash=SHA-256, MGF1=SHA-256, no label). RSA-3072/4096 are excessive in the MVP–Phase 1 scope (2026–2028) and the security gain does not justify the performance loss (6ms / 15ms each vs. 2ms).
+  5. **Frame schema** — the WebSocket response frame's `payload` field carries the following JSON, base64-encoded into a 3-field object:
      ```json
      {
-       "wrapped_key": "<base64, 256 B>",     // RSA-OAEP(SHA256) 로 wrap 된 AES-256 키
+       "wrapped_key": "<base64, 256 B>",     // AES-256 key wrapped with RSA-OAEP(SHA256)
        "nonce":       "<base64, 12 B>",      // GCM nonce
-       "ciphertext":  "<base64, N+16 B>"     // AES-256-GCM(평문) + 16 B tag
+       "ciphertext":  "<base64, N+16 B>"     // AES-256-GCM(plaintext) + 16 B tag
      }
      ```
-     `wrapped_key` 길이 고정(256 B) 으로 포맷 검증 가능. Agent 측 복호 코드는
-     동일 스펙을 기대한다.
-  6. **캐시 금지** — 재암호화 결과는 DB/서버 메모리 어디에도 캐시하지 않고
-     매 요청 즉석 계산 (PLAN_05 §Q3). Agent 프로세스 메모리에만 execution
-     수명 동안 평문 보관, execution 종료 시 즉시 zeroize.
-  7. **호출 트리거** — Agent 가 Agent-initiated WebSocket 위에서
-     `get_credential(credential_id)` 프레임을 올리고 서버가 응답 프레임으로
-     상기 payload 를 반환 (pull 방식). Heavy/사설망 고객 방화벽이 인바운드
-     TCP 를 차단해도 이미 열린 아웃바운드 소켓을 재사용하므로 영향 없음.
-- **결과**:
-  - `Database/src/repositories/credential_store.py` 에 `retrieve_for_agent(
-    credential_id, agent_public_key_pem) → bytes` 신설. 순수 함수 형태로 구현해
-    향후 API_Server 인프로세스 캐시 데코레이터를 덧씌울 수 있도록 확장성 확보.
-  - `Execution_Engine` / Agent 측 복호 코드는 이 프레임 스키마를 준수.
-  - 타 브랜치가 의존할 계약 형상: 프레임 3-필드 구조 + 알고리즘 파라미터.
-- **대안과 기각 사유**:
-  - **순수 RSA (하이브리드 없이)** — 190 B 한도 초과로 기술적으로 불가능
-  - **RSA-4096** — 성능 7배 손실 대비 MVP 보안 실익 없음
-  - **ECDH + HKDF + AES-GCM** — 더 현대적이지만 Agent 공개키가 이미 RSA 로
-    고정(PLAN_02 `agents.public_key`) 되어 있어 재설계 비용이 큼. 후속
-    마이그레이션으로 보류
-  - **서버 측 DB 캐시** — 키 회전 무효화 로직/테이블/TTL 추가 복잡도 대비 성능
-    실익 미미. 실측 후 인프로세스 캐시로 대응
-- **대체 경로**: 2030 전후 RSA-2048 이 deprecated 될 때 후속 ADR 로
-  (a) RSA-3072 로 키 크기 업그레이드, 또는 (b) ECDH 기반 스킴으로 마이그레이션.
-  `agents.public_key` 컬럼 교체로 invasive 하지 않다.
-- **§8 Agent 개인키 관리 (Update 2026-04-17, PLAN_10 확정)**:
-  1. 키페어는 **고객 VPC 내부에서 생성**. 서버는 공개키만 `agents.public_key`
-     컬럼으로 받고, 개인키는 어떤 형태로도 서버에 전송·저장되지 않는다.
-  2. 개인키 파일은 VPC 파일 시스템에 **권한 600** 으로 저장. Agent 데몬 실행
-     명령에 `--agent-private-key <PEM path>` 로 경로 주입. 데몬은 시작 시
-     1회 파일을 읽어 프로세스 메모리에만 보관. 로그/응답/재부팅 시 swap/dump
-     에 노출되지 않도록 일반 파일 권한 + 프로세스 격리 운영.
-  3. **회전 (Phase 2)**: 현재 자동 회전 메커니즘 없음. 키 교체 시 새 키페어
-     생성 → 새 공개키로 `/agents/register` 재호출 (새 agent_id 발급) → 기존
-     Agent 데몬 graceful shutdown → 신규 데몬 기동. 구 `agents` 로우는
-     운영자가 수동 삭제. 자동화는 후속 ADR.
-  4. **결과 (이 ADR 의 deliverable 확장)**: push 경로 end-to-end 가 PR #52
-     (서버 측 `credential_payloads` 생성) + PR #53 (Agent 측 `hybrid_decrypt`
-     + `PreDecryptedCredentialStore`) 로 완결됨. Agent 데몬은 개인키 없이도
-     non-credential 워크플로우는 실행 가능 (CLI 인자 옵션).
+     Fixed `wrapped_key` length (256 B) makes format validation possible. The Agent-side decryption code expects the same spec.
+  6. **No caching** — re-encryption results are not cached anywhere in DB or server memory; computed on-the-fly each request (PLAN_05 §Q3). The Agent process keeps plaintext only in memory for the duration of execution and zeroizes immediately on execution end.
+  7. **Invocation trigger** — the Agent sends a `get_credential(credential_id)` frame over the Agent-initiated WebSocket; the server returns the above payload as a response frame (pull). Even if the Heavy / private-network customer firewall blocks inbound TCP, the already-open outbound socket is reused, so there is no impact.
+- **Consequences**:
+  - Add `retrieve_for_agent(credential_id, agent_public_key_pem) → bytes` to `Database/src/repositories/credential_store.py`. Implemented as a pure function so a future API_Server in-process cache decorator can be layered over it (extensibility preserved).
+  - `Execution_Engine` / Agent-side decryption code conforms to this frame schema.
+  - Contract shape that other branches depend on: 3-field frame structure + algorithm parameters.
+- **Alternatives and why rejected**:
+  - **Pure RSA (no hybrid)** — technically impossible due to the 190 B limit
+  - **RSA-4096** — 7× performance loss vs. minimal MVP security gain
+  - **ECDH + HKDF + AES-GCM** — more modern, but the Agent public key is already fixed as RSA (PLAN_02 `agents.public_key`), so the redesign cost is high. Defer to a future migration
+  - **Server-side DB cache** — added complexity (key rotation invalidation logic / table / TTL) vs. minimal performance gain. Address with an in-process cache after measurement
+- **Replacement path**: when RSA-2048 is deprecated around 2030, a follow-up ADR can either (a) upgrade to RSA-3072 or (b) migrate to an ECDH-based scheme. Replacing the `agents.public_key` column is non-invasive.
+- **§8 Agent private-key management (Update 2026-04-17, fixed in PLAN_10)**:
+  1. The keypair is **generated inside the customer VPC**. The server only receives the public key in the `agents.public_key` column; the private key is never transmitted to or stored on the server.
+  2. The private-key file is stored on the VPC file system with **permissions 600**. The Agent daemon is started with `--agent-private-key <PEM path>` injecting the path. The daemon reads the file once at startup and keeps it only in process memory; not exposed to logs / responses / swap on reboot. Operate with normal file permissions + process isolation.
+  3. **Rotation (Phase 2)**: no automatic rotation mechanism currently. To rotate keys, generate a new keypair → re-call `/agents/register` with the new public key (issues a new agent_id) → graceful shutdown of the existing Agent daemon → start the new daemon. Old `agents` rows are deleted manually by the operator. Automation is a follow-up ADR.
+  4. **Result (extension to this ADR's deliverable)**: the push path is end-to-end via PR #52 (server-side `credential_payloads` generation) + PR #53 (Agent-side `hybrid_decrypt` + `PreDecryptedCredentialStore`). The Agent daemon can also run non-credential workflows without a private key (CLI argument option).
 
 ---
 
-## ADR-014 — 배포/패키징 전략: `auto-workflow-database` 파이썬 패키지 분리
+## ADR-014 — Deployment / packaging strategy: split off the `auto-workflow-database` Python package
 
-- **상태**: Accepted (2026-04-15)
-- **맥락**: 초기에는 monorepo 브랜치가 `from Database.src.repositories.base
-  import ...` 형태로 sibling 디렉토리를 직접 import 했다. API_Server /
-  Execution_Engine 이 착수되면서 이 구조가 세 가지 문제를 일으킨다:
-  1. **sys.path 의존성** — 루트가 sys.path 에 있어야만 풀리므로 conftest 해킹 필요
-  2. **브랜치 동기화 강제** — Database 코드 변경 시 모든 하류 브랜치가 `git pull origin main` 해야 import 가 갱신됨
-  3. **경계 모호** — 내부 헬퍼(`_session.py` 등) 도 외부에서 import 가능해 공개 API 범위 불명확
-- **결정**: Database 를 `auto-workflow-database` 라는 **독립 파이썬 패키지**
-  로 취급한다. 두 단계로 진행:
+- **Status**: Accepted (2026-04-15)
+- **Context**: Initially, monorepo branches imported sibling directories
+  directly (`from Database.src.repositories.base import ...`). As API_Server /
+  Execution_Engine started, this structure caused three problems:
+  1. **sys.path dependency** — only resolves with the root on sys.path, requiring conftest hacks
+  2. **Forced branch sync** — Database code changes require every downstream branch to `git pull origin main` for imports to refresh
+  3. **Blurred boundary** — internal helpers (e.g., `_session.py`) are also importable from outside, leaving the public API surface unclear
+- **Decision**: Treat Database as an **independent Python package** named
+  `auto-workflow-database`. Two phases:
 
-  ### Phase 1 — editable local install (PLAN_00, 2026-04-15 완료)
-  - `Database/pyproject.toml` 추가 (setuptools 백엔드, v0.1.0)
-  - `Database/src/` → `Database/auto_workflow_database/` 물리 이동
-  - 타 브랜치는 `pip install -e Database/` 로 설치 (repo 체크아웃 로컬 경로 참조)
-  - Import 경로: `from auto_workflow_database.repositories.base import ...`
-  - Database 코드 변경은 editable 덕분에 즉시 반영 (재설치 불요)
-  - 하류 브랜치가 최신 Database 코드를 받으려면 여전히 `git pull origin main` 필요 (로컬 경로 참조이므로)
+  ### Phase 1 — editable local install (PLAN_00, completed 2026-04-15)
+  - Add `Database/pyproject.toml` (setuptools backend, v0.1.0)
+  - Physically move `Database/src/` → `Database/auto_workflow_database/`
+  - Other branches install with `pip install -e Database/` (referencing the local checkout path)
+  - Import path: `from auto_workflow_database.repositories.base import ...`
+  - Database code changes apply immediately thanks to editable (no reinstall needed)
+  - Downstream branches still need `git pull origin main` to receive the latest Database code (because it is a local-path reference)
 
-  ### Phase 2 — GitHub Packages wheel 게시 (시점 미정, Phase 1 안정 후)
-  - Database 릴리스마다 GitHub Actions 가 wheel 빌드 → GitHub Packages 에 push
-  - 타 브랜치의 `pyproject.toml` 이 버전 핀(`auto-workflow-database==0.2.1`)으로 전환
-  - `git pull` 없이 `pip install -U` 만으로 업그레이드 가능 → 브랜치 동기화 비용 0
-  - **Phase 1 → 2 전환 시 하류 브랜치의 `import` 문은 한 줄도 바뀌지 않음**.
-    `pyproject.toml` 의존성 라인 한 줄만 교체 (local path → version spec)
-- **결과**:
-  - 하류 브랜치(API_Server / Execution_Engine / Inference_Service) 는
-    전부 `auto_workflow_database` 네임스페이스 하나만 import
-  - 공개 API 경계를 `auto_workflow_database/__init__.py` 에서 명시적으로
-    export 가능 (필요 시 내부 헬퍼 은닉)
-  - 버전 관리가 `pyproject.toml` 에 문자열 한 줄로 집약 → Phase 2 전환 시
-    릴리스 노트/Semver 규율 도입 가능
-- **대안과 기각 사유**:
-  - **현상 유지 (sys.path + `Database.src.*`)** — 브랜치 늘어날수록 sync
-    비용이 누적, conftest 해킹 지속 필요 → 기각
-  - **Phase 2 를 지금 바로** (GitHub Packages 즉시 도입) — CI 파이프라인,
-    토큰, 권한, 버전 bump 규율 필요. 초기 개발 속도 반감. Phase 1 로
-    import 경계만 먼저 확립하고 CI 가 생길 때 게시 스텝 추가 → 합리적 점진
-  - **Git submodule** — 현대 팀 거의 사용 안 함, UX 나쁨 → 기각
-  - **코드 복사** — 재앙 → 기각
-- **연관**: PLAN_00 (Database 패키지화 완료), ADR-004/013 (Fernet + 하이브리드
-  암호 — 이 패키지의 공개 API 계약)
-- **하류 브랜치 규칙**:
-  - `API_Server` / `Execution_Engine` / `Inference_Service` 의 `pyproject.toml`
-    에 `"auto-workflow-database @ file://../Database"` (Phase 1) 또는 버전 핀
-    (Phase 2) 으로 선언
-  - 절대로 `from Database.src...` 형태로 import 하지 않는다
-  - 절대로 `Database/` 내부 파일에 직접 접근하지 않는다 (`schemas/`, `scripts/` 제외)
+  ### Phase 2 — publish a GitHub Packages wheel (timing TBD, after Phase 1 stabilizes)
+  - Each Database release: GitHub Actions builds a wheel → pushes to GitHub Packages
+  - Other branches' `pyproject.toml` switches to a version pin (`auto-workflow-database==0.2.1`)
+  - Upgrades only need `pip install -U` without `git pull` → branch sync cost 0
+  - **No `import` statement in downstream branches changes during the Phase 1 → 2 transition.**
+    Only one dependency line in `pyproject.toml` is replaced (local path → version spec)
+- **Consequences**:
+  - Downstream branches (API_Server / Execution_Engine / Inference_Service) all
+    import the single namespace `auto_workflow_database`
+  - Public API boundary can be exported explicitly in
+    `auto_workflow_database/__init__.py` (hide internal helpers as needed)
+  - Version management converges to one string in `pyproject.toml` → release
+    notes / Semver discipline can be introduced at the Phase 2 transition
+- **Alternatives and why rejected**:
+  - **Status quo (sys.path + `Database.src.*`)** — sync costs accumulate as
+    branches multiply; conftest hacks remain necessary → rejected
+  - **Phase 2 immediately** (introduce GitHub Packages now) — requires CI
+    pipeline, tokens, permissions, version-bump discipline. Halves early dev
+    velocity. Establish the import boundary first with Phase 1 and add the
+    publish step when CI exists → reasonable incremental
+  - **Git submodule** — modern teams hardly use it; bad UX → rejected
+  - **Code copy** — disaster → rejected
+- **Related**: PLAN_00 (Database packaging completed), ADR-004/013 (Fernet +
+  hybrid encryption — the package's public API contract)
+- **Downstream branch rules**:
+  - `API_Server` / `Execution_Engine` / `Inference_Service` `pyproject.toml`
+    declares `"auto-workflow-database @ file://../Database"` (Phase 1) or a
+    version pin (Phase 2)
+  - Never import in the form `from Database.src...`
+  - Never directly access files inside `Database/` (excluding `schemas/`, `scripts/`)
 
 ---
 
-## ADR-015 — 로컬 패스워드 인증 + JWT + 이메일 검증 게이트
+## ADR-015 — Local password auth + JWT + email verification gate
 
-- **상태**: Accepted (2026-04-15)
-- **맥락**: API_Server PLAN_01 이 첫 사용자-대면 엔드포인트 그룹이다. OAuth
-  소셜 로그인은 Phase 2 로 미뤄졌으므로 MVP 는 **로컬 패스워드 + JWT** 하나로
-  모든 인증 흐름을 감당한다. ADR-001 은 `users` 엔티티만 정의했을 뿐 auth
-  방식/토큰 수명/검증 게이트/password hash 격리 규칙이 없어, 하류 브랜치가
-  "어떤 토큰을 어떻게 받아 `Depends(get_current_user)` 로 풀어쓰는가" 를
-  아는 단일 진실 공급원이 필요하다.
-- **결정**:
+- **Status**: Accepted (2026-04-15)
+- **Context**: API_Server PLAN_01 is the first user-facing endpoint group.
+  OAuth social login is deferred to Phase 2, so MVP handles every
+  authentication flow with **local password + JWT** alone. ADR-001 only
+  defined the `users` entity; auth method / token TTL / verification gate /
+  password-hash isolation rules were absent. Downstream branches needed a
+  single source of truth for "what token do I receive and how do I unwrap it
+  with `Depends(get_current_user)`."
+- **Decision**:
 
-  ### 1. 해시 알고리즘 — bcrypt (cost=12)
-  - `bcrypt` 패키지 직접 사용 (passlib 경유 X — passlib 은 신버전 bcrypt 와
-    경고 충돌이 잦고 multi-hash 스키마 기능은 MVP 에 불필요)
-  - cost=12 는 OWASP 권고. 테스트에서는 cost=4 로 낮춰 속도 확보 (Settings)
-  - Argon2/scrypt 는 기각 — bcrypt 로 충분하고 생태계 지원이 가장 두텁다
+  ### 1. Hash algorithm — bcrypt (cost=12)
+  - Use the `bcrypt` package directly (not via passlib — passlib often warns
+    on conflicts with newer bcrypt versions and the multi-hash schema feature
+    is unnecessary for MVP)
+  - cost=12 is the OWASP recommendation. Tests lower to cost=4 for speed (Settings)
+  - Argon2 / scrypt are rejected — bcrypt suffices and has the deepest ecosystem support
 
   ### 2. JWT — HS256, access-only, self-refresh
-  - 알고리즘: **HS256** (대칭키, 단일 서비스). Phase 2 에서 다중 서비스
-    확장 시 RS256 으로 이전 가능
-  - Access token TTL: **60분**
-  - Refresh token 없음 — 대신 **`POST /auth/refresh`** 가 *현재 유효한*
-    access token 을 받아 새 60분짜리로 교환. 만료되면 재로그인
-  - 표준 refresh token 방식 기각 이유: 별도 토큰 수명주기/저장소/회전 정책이
-    필요해 MVP 복잡도 증가 대비 UX 이득 미미. 일반 SaaS 에서 흔한 절충안
-  - 클레임: `sub` (user UUID), `iat`, `exp`, **`purpose`** (`"access"` /
-    `"verify_email"`). purpose 필드가 access 토큰을 verify 엔드포인트에
-    넣거나 그 반대를 차단
-  - Verify email token TTL: **24시간**
-  - 라이브러리: `pyjwt` (python-jose 는 유지보수 활성도 낮음)
+  - Algorithm: **HS256** (symmetric key, single service). Can switch to RS256
+    in Phase 2 when expanding to multiple services
+  - Access token TTL: **60 minutes**
+  - No refresh token — instead, **`POST /auth/refresh`** accepts a *currently
+    valid* access token and exchanges it for a new 60-minute one. On expiry,
+    re-login
+  - Standard refresh-token approach rejected: the separate token lifecycle /
+    storage / rotation policy increases MVP complexity for limited UX gain.
+    A common compromise in general SaaS
+  - Claims: `sub` (user UUID), `iat`, `exp`, **`purpose`** (`"access"` /
+    `"verify_email"`). The `purpose` field blocks an access token from being
+    used at the verify endpoint and vice versa
+  - Verify-email token TTL: **24 hours**
+  - Library: `pyjwt` (python-jose has weaker maintenance activity)
 
-  ### 3. 이메일 검증 게이트
-  - 회원가입 즉시 `users.is_verified=false` 로 생성
-  - 서버가 `purpose="verify_email"` JWT 를 만들어 `{APP_BASE_URL}/api/v1/auth/verify?token=...`
-    링크를 사용자에게 발송
-  - `/auth/verify` 가 토큰 검증 → `UserRepository.mark_verified` (**멱등**)
-  - `/auth/login` 은 `is_verified=false` 이면 **403 email_not_verified** 거부.
-    `invalid credentials` 와 구분되는 상태 코드라 UX 메시지를 명확히 낼 수 있음
-- OAuth 소셜 로그인 연동 시에도 동일 `is_verified` 컬럼을 재사용 (provider
-    가 이메일 검증을 이미 했다면 가입 시점에 true 로 세팅)
+  ### 3. Email verification gate
+  - On signup, create as `users.is_verified=false`
+  - The server creates a `purpose="verify_email"` JWT and sends the link
+    `{APP_BASE_URL}/api/v1/auth/verify?token=...` to the user
+  - `/auth/verify` validates the token → `UserRepository.mark_verified` (**idempotent**)
+  - `/auth/login` rejects with **403 email_not_verified** if `is_verified=false`.
+    Distinct from `invalid credentials`, allowing clear UX messages
+  - The same `is_verified` column is reused even when integrating OAuth social
+    login (set `true` at signup if the provider already verified the email)
 
-  ### 4. 이메일 발송 — `EmailSender` ABC
-  - `ConsoleEmailSender` (MVP 기본): 링크를 로그에 출력. SMTP 의존성 없음
-  - `SmtpEmailSender`: **Phase 2 스텁** (`NotImplementedError`)
-  - `NoopEmailSender`: 테스트 주입용 (발송 이력 리스트 보관)
-  - `make_email_sender(settings)` 가 `EMAIL_SENDER=console|smtp` 값으로 선택
-  - DI 는 `create_app(email_sender=...)` 로 override 가능 → 테스트/dev/prod
-    교체 비용 0
+  ### 4. Email send — `EmailSender` ABC
+  - `ConsoleEmailSender` (MVP default): prints the link to the log. No SMTP dependency
+  - `SmtpEmailSender`: **Phase 2 stub** (`NotImplementedError`)
+  - `NoopEmailSender`: for test injection (keeps a list of send history)
+  - `make_email_sender(settings)` selects based on `EMAIL_SENDER=console|smtp`
+  - DI overridable via `create_app(email_sender=...)` → 0 swap cost across test/dev/prod
 
-  ### 5. `password_hash` 격리 규칙 (보안 critical)
-  - `User` DTO (Database 브랜치) 는 **`password_hash` 를 포함하지 않는다**
-  - `UserRepository.get_password_hash(email) → bytes | None` 이 유일한
-    노출 경로이며, 오직 bcrypt 검증 시점에만 호출
-  - API_Server 의 `UserResponse` Pydantic 모델도 동일 원칙 — 어떤 응답
-    직렬화 경로로도 해시 바이트가 누설 불가
-  - 테스트 `test_me_returns_current_user_profile` 이 `"password_hash" not in body`
-    를 명시 검증
+  ### 5. `password_hash` isolation rule (security critical)
+  - The `User` DTO (Database branch) **does not include `password_hash`**
+  - `UserRepository.get_password_hash(email) → bytes | None` is the only
+    exposure path, called only at bcrypt verification time
+  - The same principle applies to API_Server's `UserResponse` Pydantic model —
+    no response serialization path can leak hash bytes
+  - The test `test_me_returns_current_user_profile` explicitly asserts `"password_hash" not in body`
 
-  ### 6. 로그인 엔드포인트 포맷 — OAuth2PasswordRequestForm
-  - `/auth/login` 은 **JSON 이 아닌 form-urlencoded**. FastAPI 의
-    `OAuth2PasswordRequestForm` 을 그대로 사용 → Swagger UI 의
-    "Authorize" 버튼이 즉시 동작, OpenAPI 문서 자동 생성 혜택
-  - 프론트엔드는 FormData 로 전송 (약간의 번거로움은 감수)
-  - JSON body 기각 이유: FastAPI 생태계 표준을 벗어나면 Swagger 연동
-    설정을 직접 짜야 함
+  ### 6. Login endpoint format — OAuth2PasswordRequestForm
+  - `/auth/login` is **form-urlencoded, not JSON**. Uses FastAPI's
+    `OAuth2PasswordRequestForm` directly → the Swagger UI "Authorize" button
+    works immediately, with auto-generated OpenAPI docs as a bonus
+  - Frontend sends as FormData (slight inconvenience accepted)
+  - JSON body rejected: deviating from FastAPI's ecosystem standard would
+    require manually wiring Swagger integration
 
-  ### 7. 에러 코드 매핑
-  | 상황 | HTTP | `detail` |
-  |------|------|---------|
-  | 이메일 형식 불량 / 비밀번호 8자 미만 | 422 | Pydantic 검증 실패 |
-  | 이메일 중복 등록 | 409 | `"email already registered"` |
-  | 로그인 잘못된 자격증명 | 401 | `"invalid credentials"` |
-  | 로그인 미검증 이메일 | 403 | `"email not verified"` |
-  | Verify 토큰 불량/만료/purpose 불일치 | 400 | `"invalid token"` 등 |
-  | Access 토큰 불량/만료 | 401 + `WWW-Authenticate: Bearer` | |
-- **결과**:
-  - `API_Server` 의 모든 후속 PLAN 이 `Depends(get_current_user)` 하나로 인증 획득
-  - Database 쪽 `UserRepository` 는 API_Server PLAN_01 선행 PR (#16) 에서
-    이미 준비 완료
-  - Phase 2 OAuth 추가 시 **본 ADR 을 Update 섹션으로 확장** (새 ADR 아님) —
-    `is_verified` 컬럼과 에러 코드 체계가 그대로 재사용됨
-- **연관**: ADR-001 (users 엔티티), ADR-004 (Fernet 자격증명 저장 — 완전히
-  별개의 암호 경로), ADR-014 (`auto-workflow-database` 패키지 분리 — 본
-  ADR 의 Repository 공급 경로)
+  ### 7. Error code mapping
+  | Situation | HTTP | `detail` |
+  |-----------|------|---------|
+  | Bad email format / password under 8 chars | 422 | Pydantic validation failure |
+  | Duplicate email registration | 409 | `"email already registered"` |
+  | Login with wrong credentials | 401 | `"invalid credentials"` |
+  | Login with unverified email | 403 | `"email not verified"` |
+  | Bad / expired / mismatched-purpose verify token | 400 | `"invalid token"` etc. |
+  | Bad / expired access token | 401 + `WWW-Authenticate: Bearer` | |
+- **Consequences**:
+  - All subsequent `API_Server` PLANs gain authentication via a single `Depends(get_current_user)`
+  - The Database `UserRepository` was already prepared in API_Server PLAN_01's leading PR (#16)
+  - When OAuth is added in Phase 2, **extend this ADR via an Update section** (not a new ADR) — the `is_verified` column and error-code system are reused as-is
+- **Related**: ADR-001 (users entity), ADR-004 (Fernet credential storage —
+  a completely separate crypto path), ADR-014 (`auto-workflow-database`
+  package split — supplies the Repository for this ADR)
 
 ---
 
-## ADR-016 — 노드 자격증명 주입 파이프라인: 별도 PLAN + 후속 ADR 로 설계 분리
+## ADR-016 — Node credential injection pipeline: separate it into its own PLAN + follow-up ADR
 
-- **상태**: Accepted (2026-04-17). 본 ADR 은 *설계 형상의 윤곽* 만 고정하고,
-  **구체 파이프라인 스펙은 후속 PLAN/ADR 에서 확정**.
+- **Status**: Accepted (2026-04-17). This ADR fixes only the *outline of the
+  design shape*; the **concrete pipeline spec is fixed in a follow-up
+  PLAN/ADR**.
 
-  **Update (2026-04-17)**: §2 의 6개 결정 축 중 **공급 모델 = BYO**,
-  **복호화 스코프 = per-execution** 으로 확정. 구현 경로는
-  [`PLAN_credential_pipeline.md`](./PLAN_credential_pipeline.md) 및
-  - Database `PLAN_09` (PR #47, 머지) — `bulk_retrieve` + `credentials.type`
-  - API_Server `PLAN_07` (PR #48, 머지) — CRUD + `execute_workflow` validation
-  - Execution_Engine `PLAN_08` (TODO) — Worker 가 노드 호출 직전 평문 주입
-  위 3PR 로 분할됨. 당초 "API_Server 가 execute_workflow 에서 해소" 로 쓰였던 부분은
-  현 아키텍처에서 평문이 Celery broker 를 통과하게 되어 §1.6 불변식 1번을 위반하므로,
-  해소 책임을 Worker (Execution_Engine) 로 옮겼다. 평문 경로는 이제 "Worker 가 DB 에서
-  직접 복호화 → 노드 config 주입" 으로 broker/DB 양쪽 모두 평문이 닿지 않음.
-  나머지 4개 축 (Agent 전송 / credential_type 카탈로그 / config 머지 키 규약 / 감사 로그)
-  은 blueprint 에 구체화됨.
-- **맥락**: PLAN_06 Slack/Delay (PR #43), PLAN_07 Email (PR #44) 로 자격증명
-  기반 노드 플러그인이 본격 도입됐다. 현 구현은 노드의 `execute(input_data, config)`
-  호출 시점에 `config` dict 에 **이미 평문 자격증명이 들어있다**는 전제로
-  작성되어 있다 (e.g. `config["smtp_password"]`, 향후 DB Query 의 `config["connection_url"]`).
-  이 전제를 채우는 파이프라인 — 즉 "누가 언제 어떤 credential_id 를 찾아
-  복호화해서 어느 config 키에 머지하는가" — 은 아직 구현 공백이다.
-  정책 결정 점이 다수 있어 **단일 PLAN 으로 묶기 어렵다**는 판단 하에, 현재
-  노드 플러그인은 그대로 머지하되 파이프라인 자체는 별도 설계 트랙으로 분리한다.
-- **결정**:
+  **Update (2026-04-17)**: Of the six decision axes in §2, **supply model = BYO**
+  and **decryption scope = per-execution** are fixed. The implementation path
+  is split across three PRs:
+  [`PLAN_credential_pipeline.md`](./PLAN_credential_pipeline.md) and
+  - Database `PLAN_09` (PR #47, merged) — `bulk_retrieve` + `credentials.type`
+  - API_Server `PLAN_07` (PR #48, merged) — CRUD + `execute_workflow` validation
+  - Execution_Engine `PLAN_08` (TODO) — Worker injects plaintext just before the node call
+  The piece originally written as "API_Server resolves it in execute_workflow" — under the current architecture
+  plaintext would pass through the Celery broker, violating §1.6 invariant 1, so resolution is moved to the Worker
+  (Execution_Engine). The plaintext path is now "Worker decrypts directly from the DB → injects into node config,"
+  meaning plaintext touches neither broker nor DB.
+  The remaining four axes (Agent transmission / credential_type catalog / config-merge key convention / audit log)
+  are fleshed out in the blueprint.
+- **Context**: PLAN_06 Slack/Delay (PR #43) and PLAN_07 Email (PR #44) introduced credential-based node plugins in earnest. The current implementation assumes that **plaintext credentials are already in `config`** when `execute(input_data, config)` is called (e.g., `config["smtp_password"]`, future DB Query's `config["connection_url"]`). The pipeline that fills that assumption — i.e., "who finds which credential_id when, decrypts it, and merges it into which config key" — is still an implementation gap.
+  Because there are many policy decision points, judgment is that **bundling them into a single PLAN is hard**, so we keep the current node plugins as merged but split the pipeline into a separate design track.
+- **Decision**:
 
-  ### 1. 노드 플러그인 계약 (변경 없음, 본 ADR 로 동결)
-  - 모든 자격증명 필요 노드는 **`config` dict 에 평문 값이 이미 존재한다**는
-    전제로 구현한다 (Email: `smtp_password`, DB Query(예정): `password` 또는 `connection_url`)
-  - 노드는 자격증명을 **함수 지역 변수** 로만 참조하고 반환값/로그/예외에
-    노출하지 않는다 (CLAUDE.md 의 "실행 시점 복호화 후 즉시 폐기" 원칙)
-  - 노드는 **`credential_id` 를 직접 받지 않는다** — ID→평문 변환은 상위 계층 책임
+  ### 1. Node plugin contract (no change, frozen by this ADR)
+  - All credential-needing nodes are implemented under the assumption that **plaintext values already exist in the `config` dict** (Email: `smtp_password`, DB Query (planned): `password` or `connection_url`)
+  - Nodes reference credentials only as **function-local variables** and never expose them via return values / logs / exceptions (CLAUDE.md "decrypt at execution time and discard immediately")
+  - Nodes **do not directly receive `credential_id`** — the ID→plaintext conversion is the upper layer's responsibility
 
-  ### 2. 파이프라인은 후속 PLAN 으로 분리
-  후속 PLAN 은 **cross-branch PLAN** 이 될 가능성이 크며 (`API_Server/` +
-  `Execution_Engine/` + `Database/` 에 걸친 변경), 다음 정책 질문을 모두
-  해소해야 머지 가능:
+  ### 2. The pipeline is split into a follow-up PLAN
+  The follow-up PLAN is likely to be a **cross-branch PLAN** (changes in
+  `API_Server/` + `Execution_Engine/` + `Database/`), and must resolve all
+  the following policy questions to be merged:
 
-  | 결정 축 | 선택지 요약 |
-  |---------|-------------|
-  | **공급 모델** | (A) BYO — 고객이 자기 SMTP/DB 자격증명 등록 / (B) SaaS — 우리가 SendGrid·SES 등 제공 / (C) 하이브리드 (모드 선택) |
-  | **복호화 스코프** | per-execution (workflow 실행 시작 시 전부 해제) vs per-node-call (노드 호출 직전만) — 메모리 잔존 시간 vs 호출 오버헤드 트레이드오프 |
-  | **Agent 모드 전송** | ADR-013 의 AES-256-GCM+RSA-OAEP 경로 재사용. Agent 데몬이 VPC 내에서 최종 복호화 |
-  | **credential_type 카탈로그** | `smtp`, `postgres_dsn`, `slack_webhook`, `http_bearer`, ... — Database 의 `credentials` 테이블 type 컬럼 값 집합 고정 |
-  | **config 머지 키 규약** | workflow graph 에 `{"credential_ref": {"field": "smtp_password", "credential_id": "..."}}` 형태로 선언 → 실행 직전 파이프라인이 `config["smtp_password"]` 로 주입 (노드는 차이 못 느낌) |
-  | **감사 로그** | 어떤 실행이 어떤 credential_id 를 언제 복호화했는지 audit 테이블 기록. Agent 모드는 server 측 metadata 만 |
+  | Decision axis | Options summary |
+  |---------------|----------------|
+  | **Supply model** | (A) BYO — customer registers their own SMTP/DB credentials / (B) SaaS — we provide SendGrid/SES etc. / (C) Hybrid (mode-selectable) |
+  | **Decryption scope** | per-execution (decrypt all at workflow execution start) vs. per-node-call (only just before node call) — trade-off between memory residence time and call overhead |
+  | **Agent-mode transmission** | Reuses the AES-256-GCM+RSA-OAEP path of ADR-013. Agent daemon performs final decryption inside the VPC |
+  | **credential_type catalog** | `smtp`, `postgres_dsn`, `slack_webhook`, `http_bearer`, ... — fixed value set for the type column of Database's `credentials` table |
+  | **config-merge key convention** | Workflow graph declares `{"credential_ref": {"field": "smtp_password", "credential_id": "..."}}` → just before execution, the pipeline injects into `config["smtp_password"]` (the node sees no difference) |
+  | **Audit log** | Records which execution decrypted which credential_id and when into an audit table. Agent mode records only server-side metadata |
 
-  ### 3. 기존 ADR 와의 관계
-  - **ADR-004** (Fernet AES-256 + RSA 재암호화): 자격증명 *저장/재암호화* 규약.
-    본 ADR 은 그 위에서 *어떻게 꺼내 쓰는가* 를 다룸
-  - **ADR-013** (Agent 자격증명 전송 AES-256-GCM + RSA-OAEP-SHA256):
-    Agent 모드의 **전송** 규약. 본 파이프라인의 Agent 경로가 재사용
-  - 본 ADR 은 저장 (ADR-004) → 전송/주입 (ADR-013 + 본 ADR) → 사용 (노드) 의
-    중간 지점을 연결
+  ### 3. Relation to existing ADRs
+  - **ADR-004** (Fernet AES-256 + RSA re-encryption): governs credential
+    *storage / re-encryption*. This ADR addresses *how to fetch and use it* on top
+  - **ADR-013** (Agent credential transmission AES-256-GCM + RSA-OAEP-SHA256):
+    governs the **transmission** in Agent mode. The Agent path of this pipeline reuses it
+  - This ADR connects the midpoint of storage (ADR-004) → transmission/injection (ADR-013 + this ADR) → use (node)
 
-  ### 4. 임시 상태 — 노드 운영 한계 명시
-  파이프라인 PLAN 머지 전까지:
-  - Email/DB Query 노드는 **unit-testable 상태** (mock 주입으로 테스트 가능)
-  - **end-to-end 실행 불가** (config 에 평문을 채워주는 생산 경로 없음)
-  - Frontend 의 credential 등록 UX 도 본 ADR 의 credential_type 카탈로그가
-    확정되기 전에는 하드코딩 혹은 스텁으로만 가능
+  ### 4. Temporary state — explicit node operational limits
+  Until the pipeline PLAN merges:
+  - Email / DB Query nodes are in a **unit-testable state** (testable via mock injection)
+  - **Cannot be executed end-to-end** (no production path that fills plaintext into config)
+  - Frontend's credential registration UX can also only be hardcoded or stubbed until this ADR's credential_type catalog is fixed
 
-- **결과**:
-  - PLAN_06/07 노드 PR 은 본 ADR 을 배경으로 그대로 머지 유지
-  - 후속 "credential pipeline PLAN" 이 머지되면 본 ADR 의 §2 결정 축들에
-    대한 구체 선택이 **Update (YYYY-MM-DD)** 섹션으로 추가되거나, 축당
-    별개 ADR 로 분리
-  - 그 전까지는 API_Server / Execution_Engine 팀이 **임의의 credential
-    주입 구현을 선행 커밋하지 않는다** — 본 ADR 의 "노드는 credential_id 를
-    받지 않는다" 계약만 준수하면 향후 파이프라인 도입 시 노드 재작성 불필요
-- **연관**: ADR-004 (Fernet 저장), ADR-013 (Agent 전송), ADR-007 (LLM 노드
-  추상화 — 동일하게 credential 필요), PLAN_07 EmailSendNode (PR #44)
+- **Consequences**:
+  - PLAN_06/07 node PRs remain merged with this ADR as background
+  - When the follow-up "credential pipeline PLAN" merges, concrete choices for this ADR's §2 decision axes are added either as an **Update (YYYY-MM-DD)** section, or as separate ADRs per axis
+  - Until then, API_Server / Execution_Engine teams **do not pre-commit ad-hoc credential injection implementations** — as long as they obey this ADR's "node does not receive credential_id" contract, no node rewrite is required when the pipeline arrives
+- **Related**: ADR-004 (Fernet storage), ADR-013 (Agent transmission), ADR-007 (LLM node abstraction — same credential need), PLAN_07 EmailSendNode (PR #44)
 
 ---
 
-## ADR-017 — 노드 카탈로그 최소 사양: 상품 출시 게이트로서의 21-노드 기준
+## ADR-017 — Node catalog minimum spec: 21-node bar as a product launch gate
 
-**상태**: Accepted · **날짜**: 2026-04-18
+**Status**: Accepted · **Date**: 2026-04-18
 
 **Context**
 
-ADR-007/008/016 은 LLM/자격증명 등 노드 실행 *메커니즘* 을 다뤘지만, **카탈로그의 폭 (breadth) 이 상품 완결성에 미치는 영향** 은 어떤 ADR 에서도 결정된 적이 없다. 2026-04-17 PLAN_06~09 로 노드가 7 → 11 개까지 확장됐고, PLAN_11 (PR #57) 로 SaaS 4종이 추가 예정이지만, "몇 개·어떤 카테고리 확보되면 상품 출시 가능한가" 가 합의되지 않아 다음 의사결정의 기준이 없다:
+ADR-007/008/016 covered LLM/credential node execution *mechanisms*, but **the impact of catalog breadth on product completeness** was never decided in any ADR. As of 2026-04-17, PLAN_06~09 grew the node count to 7 → 11; PLAN_11 (PR #57) plans to add 4 SaaS nodes, but "how many / which categories must be in place to launch the product" has no consensus, leaving these decisions ungrounded:
 
-- OAuth credential_type ADR 작성 시점 (Gmail/Sheets/Drive 등 노드의 블로커)
-- `Inference_Service` 브랜치 신설 시점 (Heavy 유저 응대 전제)
-- Frontend 브랜치 착수 시점 (credential picker + node palette 의 대상 노드 확정 필요)
-- 시연회 / 체험 고객 온보딩 시점
+- When to write the OAuth credential_type ADR (blocker for Gmail/Sheets/Drive nodes)
+- When to spin up the `Inference_Service` branch (premise for handling Heavy users)
+- When to start the Frontend branch (need to confirm target nodes for credential picker + node palette)
+- When to run demos / onboarding for trial customers
 
-시연회에서 체험 고객이 **기존 Zapier/n8n/Make 워크플로우를 본 시스템에 재현 가능**하려면 "기본 사용 패턴" 을 커버해야 한다. 이 "기본" 을 명시적으로 못 박지 않으면 착수·검증 범위가 계속 미뤄진다.
+For a trial customer at a demo to **reproduce an existing Zapier/n8n/Make workflow** in our system, we need to cover the "common usage patterns." Without making this "common" set explicit, scoping for both implementation and validation keeps slipping.
 
 **Decision**
 
-### 1. 상품 출시 게이트: 21 노드, 카테고리 8개 전부 커버
+### 1. Product launch gate: 21 nodes, all 8 categories covered
 
-각 카테고리 최소 수량과 현 상태(PR #57 머지 후 11개 전제):
+Per-category minimum and current state (assuming 11 nodes after PR #57 merges):
 
-| 카테고리 | 최소 | 확보 | 확정 노드 (★는 미확보) |
+| Category | Min | Have | Confirmed nodes (★ = missing) |
 |---|---|---|---|
 | **Flow / Logic** | 5 | 3 | `condition`, `code`, `delay`, ★`loop_items`, ★`merge` |
 | **Data Transform** | 2 | 0 | ★`transform`, ★`filter` |
@@ -963,392 +827,392 @@ ADR-007/008/016 은 LLM/자격증명 등 노드 실행 *메커니즘* 을 다뤘
 | **Database** | 1 | 1 | `db_query` |
 | **Messaging** | 3 | 2 | `slack_notify`, `email_send`, ★`discord_notify` |
 | **LLM** | 2 | 1 | `openai_chat`, ★`anthropic_chat` |
-| **CRM / PM** | 5 | 3 | `notion_create_page`, `airtable_create_record`, `linear_create_issue`, ★`notion_query_database`, ★`airtable_list_records` (+ post-MVP `github_create_issue`, `hubspot_create_contact` 권장) |
-| **Dev Tools / CRM 확장** | 2 | 0 | ★`github_create_issue`, ★`hubspot_create_contact` |
+| **CRM / PM** | 5 | 3 | `notion_create_page`, `airtable_create_record`, `linear_create_issue`, ★`notion_query_database`, ★`airtable_list_records` (+ post-MVP `github_create_issue`, `hubspot_create_contact` recommended) |
+| **Dev Tools / CRM extension** | 2 | 0 | ★`github_create_issue`, ★`hubspot_create_contact` |
 
-**합계 21 = 상품 출시 최소**. 15 는 카테고리 커버리지가 불균형 (Flow/Transform 공백) 하여 기각.
+**Total 21 = product launch minimum**. 15 is rejected because category coverage is unbalanced (Flow/Transform gaps).
 
-### 2. 카테고리 "최소 수량" 의 근거
+### 2. Rationale for per-category "minimum count"
 
-- **Flow 5개**: condition 만 있으면 "분기" 밖에 못 함. 실 워크플로우는 *분기 + 합치기 + 반복 + 지연 + 커스텀* 의 5형식 조합이 기본.
-- **Data Transform 2개**: code 로 대체 가능하나 체험 고객 첫 10분의 UX 붕괴 지점 — 선언적 `transform` + 드롭 `filter` 가 표준 패턴.
-- **Messaging 3개**: Slack 금지 고객군 (금융/공공 약 20%) 에 대응해 Discord (webhook 기반, 노드 복잡도 Slack 동급) 1 개 이상 필요.
-- **LLM 2개**: 벤더 락인 회피 + 고객 기존 API 키 활용 — OpenAI 외 Anthropic 한 개 이상 필수.
-- **CRM/PM read+write 각 1개**: 실 사용의 80% 가 read → 변환 → write 패턴. `create` 만 있고 `list/query` 없으면 Airtable/Notion 은 "쓰기 전용 블랙홀" 로 인식됨.
-- **Dev Tools**: GitHub 이슈 자동화는 개발자 고객 시연의 압도적 다수 사례. HubSpot 는 영업/마케팅 체험 고객 시나리오 블로킹.
+- **Flow 5**: with only `condition`, all you can do is "branch." Real workflows need the 5-form combination of *branch + merge + loop + delay + custom* as baseline.
+- **Data Transform 2**: replaceable with `code`, but it is the UX collapse point in the trial customer's first 10 minutes — a declarative `transform` + drag-and-drop `filter` is the standard pattern.
+- **Messaging 3**: to cover customers who ban Slack (≈20% of finance/public sector), need at least one Discord (webhook-based, node complexity comparable to Slack).
+- **LLM 2**: avoid vendor lock-in + leverage the customer's existing API keys — at least one Anthropic in addition to OpenAI is required.
+- **CRM/PM read+write each at least 1**: 80% of real use is read → transform → write. With only `create` and no `list/query`, Airtable/Notion are perceived as "write-only black holes."
+- **Dev Tools**: GitHub issue automation is the overwhelmingly dominant developer-customer demo case. HubSpot blocks sales/marketing trial scenarios.
 
-### 3. 21 초과 노드는 ADR 불필요
+### 3. No ADRs for nodes beyond 21
 
-본 ADR 은 **출시 게이트** 만 고정한다. 21 달성 이후의 노드 추가는 PLAN → PR 단위로 진행 (각 ~50 LOC, 패턴 동일). 신규 카테고리 편입 (예: File Storage, Marketing) 은 별도 ADR.
+This ADR fixes only the **launch gate**. Adding nodes after reaching 21 proceeds in PLAN → PR units (~50 LOC each, identical pattern). New category additions (e.g., File Storage, Marketing) get their own ADRs.
 
-### 4. 트랙 분리: http_bearer 먼저, OAuth 별도
+### 4. Track separation: http_bearer first, OAuth separate
 
-- **본 트랙 (이 ADR)**: `http_bearer`, `smtp`, `postgres_dsn`, `slack_webhook` 만 사용. OAuth 전무.
-- **OAuth 트랙 (별도 ADR 예정)**: `oauth2` credential_type 설계 + 토큰 갱신 플로우. 완료되면 다음 4개 노드 추가 (21 에 포함 안 됨): `gmail_send`, `google_sheets_append_row`, `google_drive_upload`, `google_calendar_create_event`.
-- OAuth 트랙은 **상품 출시 후 Phase 2** — 필수 고객 요구 누적 시 착수.
+- **This track (this ADR)**: uses only `http_bearer`, `smtp`, `postgres_dsn`, `slack_webhook`. No OAuth.
+- **OAuth track (separate ADR planned)**: design the `oauth2` credential_type + token-refresh flow. Once complete, add 4 nodes (not counted in 21): `gmail_send`, `google_sheets_append_row`, `google_drive_upload`, `google_calendar_create_event`.
+- The OAuth track is **post-launch Phase 2** — start when essential customer requests accumulate.
 
-### 5. 구현 분할 — 3 PR
+### 5. Implementation split — 3 PRs
 
-- **PR A (Flow primitives)**: `loop_items`, `transform`, `merge`, `filter`. **executor 수정 동반 가능성** — DAG 순회 로직이 서브그래프 반복 / 다중 부모 대기 / skip signal 을 지원해야 함. PR A 를 먼저 처리하는 이유는 구조 리스크 앞에 배치.
-- **PR B (Messaging/LLM)**: `discord_notify`, `anthropic_chat`. SaaS 노드 패턴 (~50 LOC) 동일.
-- **PR C (SaaS 확장)**: `notion_query_database`, `airtable_list_records`, `github_create_issue`, `hubspot_create_contact`.
+- **PR A (Flow primitives)**: `loop_items`, `transform`, `merge`, `filter`. **Likely needs executor changes** — DAG traversal must support sub-graph iteration / multi-parent waiting / skip signals. PR A goes first because the structural risk lives at the front.
+- **PR B (Messaging/LLM)**: `discord_notify`, `anthropic_chat`. Same SaaS node pattern (~50 LOC).
+- **PR C (SaaS extensions)**: `notion_query_database`, `airtable_list_records`, `github_create_issue`, `hubspot_create_contact`.
 
 **Consequences**
 
-- (+) **시연회 기준 명시** — 체험 고객이 Zapier/n8n 과 1:1 비교 가능한 기능 집합이 합의됨
-- (+) **후속 ADR 착수 시점 명료** — OAuth ADR / Inference_Service / Frontend 는 21 달성 후 가동
-- (+) **PR 리뷰 단위 관리** — 10 개 노드 동시 머지 대신 3 PR 분할, 구조 리스크 (executor 수정) 가 가장 작은 스코프에 집중됨
-- (+) **노드 단위 PLAN 문화 유지** — 21 이후는 ADR 없이 PLAN 단위로 흘러감
-- (−) **flow primitive 구현 난이도** — `loop_items` 는 executor 가 서브그래프를 반복 실행하는 패턴 지원 필요. 현 DAG 순회가 static 하므로 상당 수정 예상
-- (−) **OAuth 의존 수요 지연** — Google Workspace 체험 고객은 Phase 2 까지 대기
-- (−) **21 의 선형성 한계** — 카테고리별 최소는 충족하지만 각 SaaS 내 액션 수 (e.g. Notion 만 5개 작업) 까지 올라가면 다시 확장 필요 — 본 ADR 은 그것까지 커버 안 함
+- (+) **Demo bar made explicit** — Trial customers get a feature set comparable 1:1 with Zapier/n8n
+- (+) **Clear timing for follow-up ADRs** — OAuth ADR / Inference_Service / Frontend kick off only after reaching 21
+- (+) **PR review unit management** — Instead of merging 10 nodes at once, split into 3 PRs concentrating structural risk (executor edits) in the smallest scope
+- (+) **Per-node PLAN culture preserved** — Flow after 21 proceeds in PLAN units without ADRs
+- (−) **Difficulty of flow primitive implementation** — `loop_items` requires the executor to repeatedly execute a sub-graph. Current DAG traversal is static, so significant changes are expected
+- (−) **OAuth-dependent demand delayed** — Google Workspace trial customers wait until Phase 2
+- (−) **Linearity limits of 21** — The per-category minimum is met, but climbing to action counts within each SaaS (e.g., Notion alone needing 5 actions) requires further expansion — outside this ADR's coverage
 
 **Related**
 
-- Interacts with: ADR-007 (LLM 노드 1급 추상화 — `anthropic_chat` 도입 시점에 재검토), ADR-008 (Inference_Service — 출시 게이트 후 가동), ADR-016 (credential pipeline — 21 노드 중 다수가 재사용)
-- Affects branches: `Execution_Engine` (PR A/B/C), `docs` (본 ADR + PLAN_12~14), `API_Server` (추가 credential_type 없으므로 변경 없음)
-- Supersedes: 없음 — 최초 결정
-- Next ADR (예정): `ADR-018 — OAuth credential_type 설계 및 토큰 갱신 플로우` (Phase 2)
+- Interacts with: ADR-007 (LLM node first-class abstraction — re-evaluate when introducing `anthropic_chat`), ADR-008 (Inference_Service — start after the launch gate), ADR-016 (credential pipeline — many of the 21 nodes reuse it)
+- Affects branches: `Execution_Engine` (PR A/B/C), `docs` (this ADR + PLAN_12~14), `API_Server` (no change — no new credential_types)
+- Supersedes: none — initial decision
+- Next ADR (planned): `ADR-018 — OAuth credential_type design and token refresh flow` (Phase 2)
 
 ---
 
-## ADR-018 — GCP Cloud SQL 관리형 Postgres + Secret Manager + Terraform IaC
+## ADR-018 — GCP Cloud SQL managed Postgres + Secret Manager + Terraform IaC
 
-**상태**: Accepted · **날짜**: 2026-04-19
+**Status**: Accepted · **Date**: 2026-04-19
 
 **Context**
 
-2026-04-18 E2E 스모크 테스트를 통과하며 시연 가능 수준의 MVP 에 도달 (ADR-017 21 노드 + credential pipeline + Agent 경로 전부 동작). 그러나 지금까지 모든 환경이 **로컬 Docker pgvector 컨테이너 하나에 dev / test 가 섞여 있고, 시크릿은 env 변수** 에 담겨 있다. 다음 실무 마일스톤 — 시연회 + 체험 고객 온보딩 — 을 위해서는 운영 수준으로 승격이 필요하다:
+Passing the 2026-04-18 E2E smoke test reached an MVP level worth demoing (ADR-017 21 nodes + credential pipeline + Agent path all working). However, all environments so far had **dev / test mixed in a single local Docker pgvector container, with secrets sitting in env vars**. To reach the next operational milestones — demos and trial customer onboarding — we must promote to operational level:
 
-- **공유 DB 오염 문제**: PR #63 이 `test_schema_loads` 의 destructive 테스트를 패치했으나, dev ↔ 테스트 격리가 구조적으로 안 돼 있어 동류 이슈 재발 가능성 상존.
-- **시크릿 누출 리스크**: Fernet 마스터 키가 env 파일 / 메모장 / 터미널 히스토리에 산재. 유출 시 credentials 테이블 전체 복호화 가능 (ADR-004).
-- **체험 고객 시연 불가**: 로컬 호스트 Postgres 를 외부 유저가 볼 방법이 없음. 배포 가능한 엔드포인트 필요.
-- **재현성**: 인스턴스 하나 더 만들려면 (예: staging) 수작업 반복 → 편차 발생.
+- **Shared DB pollution problem**: PR #63 patched the destructive test in `test_schema_loads`, but the lack of structural dev ↔ test isolation makes recurrence likely.
+- **Secret leak risk**: The Fernet master key is scattered across env files / notepads / terminal histories. A leak would allow decryption of the entire credentials table (ADR-004).
+- **Cannot demo to trial customers**: There is no way for outside users to reach a localhost Postgres. We need a deployable endpoint.
+- **Reproducibility**: Spinning up another instance (e.g., staging) requires manual repetition → drift.
 
 **Decision**
 
-### 1. 엔진 — Cloud SQL for PostgreSQL (AlloyDB 기각, Phase 2 재검토)
+### 1. Engine — Cloud SQL for PostgreSQL (AlloyDB rejected, re-evaluate in Phase 2)
 
-- **엔진**: Cloud SQL PostgreSQL 16 + pgvector 확장 (ADR-010 MVP 선탑재와 호환)
-- **머신 타입**: `db-g1-small` 수준 (1 vCPU, 1.7 GB RAM) — MVP/시연 용도. 체험 고객 볼륨 증가 시 `db-custom` tier 로 수직 확장.
-- **스토리지**: SSD 10 GB 시작, auto-resize 활성. 자동 백업 daily 7일 보존.
-- **가용성**: 단일 존 (HA 비활성). 시연 단계에서 SLA 보증 대상 아님. Heavy 유저 실수요 시 regional HA 로 승격.
-- **AlloyDB 기각 이유**: 최소 월 ~$400 (2 vCPU 강제), 현 시점 Heavy LLM 쿼리 수요 0. ADR-008 `Inference_Service` 가동 시 벡터 쿼리 볼륨 급증하면 그때 승격 논의 (별도 ADR).
+- **Engine**: Cloud SQL PostgreSQL 16 + pgvector extension (compatible with ADR-010's MVP pre-load)
+- **Machine type**: ~`db-g1-small` (1 vCPU, 1.7 GB RAM) — for MVP/demo. Scale vertically to a `db-custom` tier as trial customer volume grows.
+- **Storage**: SSD 10 GB to start, auto-resize on. Daily automatic backups, 7-day retention.
+- **Availability**: Single zone (HA off). Not subject to SLA guarantees at the demo stage. Promote to regional HA if Heavy user demand materializes.
+- **Why AlloyDB rejected**: Minimum ~$400/month (forces 2 vCPU); zero current Heavy LLM query demand. When ADR-008 `Inference_Service` activates and vector query volume spikes, then discuss promotion (separate ADR).
 
-### 2. 환경 분리 — 3-tier (dev / staging / prod)
+### 2. Environment separation — 3-tier (dev / staging / prod)
 
-| 환경 | Postgres | 용도 |
+| Env | Postgres | Use |
 |---|---|---|
-| **dev** | 로컬 Docker `pgvector:pg16` (포트 5435) | 개발자 로컬, 빠른 반복, 비용 0 |
-| **staging** | Cloud SQL `auto-workflow-staging` | 시연회, 체험 고객 초대, CI 통합 테스트 후단 |
-| **prod** | Cloud SQL `auto-workflow-prod` | 실사용 고객 (아직 없음, MVP 출시 후) |
+| **dev** | Local Docker `pgvector:pg16` (port 5435) | Local dev, fast iteration, $0 |
+| **staging** | Cloud SQL `auto-workflow-staging` | Demos, trial customer invites, post-CI integration tests |
+| **prod** | Cloud SQL `auto-workflow-prod` | Live customers (none yet, post-MVP launch) |
 
-`DATABASE_URL` 환경변수로 분기. 코드 변경 없음 — 현재 이미 env-based.
+Branch on the `DATABASE_URL` env var. No code change — already env-based.
 
-**dev 는 로컬 유지**: 클라우드 왕복 비용·지연 없이 TDD 반복이 가능해야 함. 로컬 schema/migration 은 `Database/scripts/migrate.py` 가 양쪽 모두 지원.
+**Dev stays local**: TDD iteration must work without cloud round-trip cost / latency. `Database/scripts/migrate.py` supports both local schema/migration paths.
 
-### 3. IaC — Terraform (gcloud CLI / 콘솔 기각)
+### 3. IaC — Terraform (gcloud CLI / console rejected)
 
-- **위치**: `infra/terraform/`
-- **이유**: staging ↔ prod 동일 모듈 재사용, diff-리뷰 가능한 변경 이력, `terraform destroy` 로 비용 즉시 정리 (시연 끝난 뒤).
-- **범위**: Cloud SQL 인스턴스·DB·유저, Secret Manager 시크릿, 필요한 API 활성화 (sqladmin, secretmanager, servicenetworking). VPC / Cloud Run / IAM 정책은 본 ADR 범위 외 (후속 배포 ADR).
-- **state 저장**: 초기엔 로컬 state 파일 (gitignore). 팀 단위 작업 전 GCS backend 전환은 별개 작업.
-- **gcloud CLI 스크립트 기각 이유**: 수동 적용은 drift 추적 안 됨. 콘솔 조작은 재현 0.
+- **Location**: `infra/terraform/`
+- **Why**: same module reusable for staging ↔ prod, diff-reviewable change history, instant cost cleanup via `terraform destroy` (after demos).
+- **Scope**: Cloud SQL instance / DB / users, Secret Manager secrets, required API enablement (sqladmin, secretmanager, servicenetworking). VPC / Cloud Run / IAM policy is out of scope (subsequent deploy ADR).
+- **State storage**: Initially local state file (gitignored). Switching to a GCS backend is a separate task before team-scale work.
+- **Why gcloud CLI scripts rejected**: Manual application has no drift tracking. Console operations have 0 reproducibility.
 
-### 4. 시크릿 — Secret Manager (env 파일 병용 안 함)
+### 4. Secrets — Secret Manager (no env-file co-existence)
 
-**보관 대상 (3종)**:
-- `credential-master-key` — ADR-004 Fernet 키. 유출 시 파괴적.
-- `jwt-secret` — ADR-015 JWT 서명 키. 유출 시 세션 탈취 가능.
-- `db-password` — Cloud SQL `auto_workflow` 유저 패스워드.
+**Targets (3)**:
+- `credential-master-key` — ADR-004 Fernet key. Catastrophic if leaked.
+- `jwt-secret` — ADR-015 JWT signing key. Leak enables session hijack.
+- `db-password` — Cloud SQL `auto_workflow` user password.
 
-**접근 경로**:
-- **Terraform**: 시크릿 리소스 자체는 정의하되, **값은 placeholder** 로 생성. 실제 값은 콘솔/CLI 로 수동 주입 (Terraform state 에 secret 값이 찍히는 것 방지).
-- **애플리케이션 (Cloud Run 배포 이후)**: `--set-secrets` 로 env 에 주입 또는 SDK (`google-cloud-secret-manager`) 직접 호출.
-- **현 MVP 단계**: 로컬 개발은 `.env.local` (gitignore), staging/prod 만 Secret Manager 사용.
+**Access path**:
+- **Terraform**: Defines secret resources but **values are placeholders**. Real values are injected manually via console/CLI (prevents secret values being recorded in Terraform state).
+- **Application (after Cloud Run deploy)**: Inject into env via `--set-secrets`, or call SDK (`google-cloud-secret-manager`) directly.
+- **Current MVP stage**: Local dev uses `.env.local` (gitignored); only staging/prod use Secret Manager.
 
-**env 파일과 병용하지 않는 이유**: 동일 시크릿이 두 곳에 있으면 어느 쪽이 진실인지 모호해지고, git 에 들어갈 위험이 실질적으로 감소하지 않음.
+**Why no env-file co-existence**: The same secret in two places blurs which is the source of truth, and the risk of git inclusion does not materially decrease.
 
-### 5. 연결 경로 — 개발·CI 는 Public IP + Authorized Networks, Cloud Run 은 Private IP (후속)
+### 5. Connection path — dev/CI use Public IP + Authorized Networks; Cloud Run uses Private IP (later)
 
-- **MVP**: 지정 CIDR (개발자 IP) 만 public IP 접근 허용.
-- **Phase 2**: VPC Peering + Private IP + Cloud SQL Auth Proxy (Cloud Run 배포 시 필수).
-- **로컬 → staging**: `cloud-sql-proxy` CLI 로 localhost 포워딩. 배포 README 에 가이드.
+- **MVP**: Allow public IP access only from designated CIDRs (developer IPs).
+- **Phase 2**: VPC Peering + Private IP + Cloud SQL Auth Proxy (required when deploying Cloud Run).
+- **Local → staging**: localhost forwarding via `cloud-sql-proxy` CLI. Guide in the deploy README.
 
-### 6. 마이그레이션 실행 — 기존 `migrate.py` 재사용
+### 6. Migration execution — reuse the existing `migrate.py`
 
-`Database/scripts/migrate.py` 는 `DATABASE_URL_SYNC` 만 보면 되는 구조. Terraform apply 후 사용자가:
+`Database/scripts/migrate.py` only needs `DATABASE_URL_SYNC`. After Terraform apply:
 ```bash
 DATABASE_URL_SYNC="postgresql://..." python Database/scripts/migrate.py
 ```
-한 줄로 schema + 7 migrations 적용. 별도 Cloud SQL용 migration runner 불필요.
+One line applies schema + 7 migrations. No separate Cloud SQL migration runner.
 
 **Consequences**
 
-- (+) **환경 격리**: dev 로컬 / staging 클라우드 → 테스트 오염 재발 불가
-- (+) **시연 가능 엔드포인트**: staging 인스턴스 public IP + authorized dev IP → 시연회에서 고객 브라우저/API 호출 가능 (Frontend 붙이면)
-- (+) **시크릿 중앙화**: 유출 시 즉각 rotate 가능 (Secret Manager version bump). env 파일 회수 불가능 대비 큰 개선
-- (+) **재현성**: `terraform apply -var-file=staging.tfvars` 한 줄로 인스턴스 복제
-- (+) **운영 비용 명확**: 시연 종료 후 `terraform destroy` → 다음날부터 $0
-- (−) **월 고정비 발생**: Cloud SQL `db-g1-small` ~$25/month + 스토리지 + egress → 체감 $35~50/month (staging 한 개 기준)
-- (−) **Terraform 학습 곡선**: 팀에 HCL 초심자 있으면 초기 기여 장벽. README 로 완화.
-- (−) **Secret Manager 접근 IAM 설정 필요**: Cloud Run 연동 때 service account + role 바인딩 추가 단계
-- (−) **AlloyDB 승격 시 비용 변동 준비**: 현 Cloud SQL 경로가 2 ~ 3 개월 내 AlloyDB 로 바뀌면 Terraform 모듈 재작성 필요 (migration 자체는 pg_dump/restore 로 가능)
+- (+) **Environment isolation**: dev local / staging cloud → no recurrence of test pollution
+- (+) **Demo-ready endpoint**: staging instance public IP + authorized dev IPs → customer browser/API calls during demos (once Frontend is attached)
+- (+) **Centralized secrets**: Immediate rotation on leak (Secret Manager version bump). Big improvement over irretrievable env files
+- (+) **Reproducibility**: One line of `terraform apply -var-file=staging.tfvars` clones the instance
+- (+) **Clear ops cost**: After demos, `terraform destroy` → $0 from the next day
+- (−) **Monthly fixed cost**: Cloud SQL `db-g1-small` ~$25/month + storage + egress → effectively $35–50/month per staging instance
+- (−) **Terraform learning curve**: HCL beginners face an entry barrier. Mitigated by README.
+- (−) **Secret Manager IAM setup needed**: Service account + role binding step added when integrating Cloud Run
+- (−) **Prepare for cost change on AlloyDB promotion**: If the current Cloud SQL path swaps to AlloyDB in 2-3 months, the Terraform module needs rewriting (the migration itself can use pg_dump/restore)
 
 **Related**
 
-- Refines: ADR-004 (Fernet 마스터 키 — 보관 위치를 env 에서 Secret Manager 로), ADR-015 (JWT 시크릿 — 동일)
-- Extends: ADR-010 (pgvector MVP 선탑재 — Cloud SQL 이 pgvector 지원해야 함)
-- Defers: ADR-008 (`Inference_Service` GPU 인프라) 는 별도 Terraform 모듈 — 본 ADR 은 DB 레이어만
-- Affects branches: `docs` (본 ADR), `Database` (`deploy/terraform/`, `deploy/README.md`)
-- Next ADR (예정): `ADR-019 — OAuth credential_type 설계 및 토큰 갱신 플로우` (Phase 2, 기존 계획 유지. 본 ADR 이 018 슬롯을 먼저 쓴 이유는 운영 DB 승격이 시연회 블로커이기 때문)
+- Refines: ADR-004 (Fernet master key — moves storage from env to Secret Manager), ADR-015 (JWT secret — same)
+- Extends: ADR-010 (pgvector MVP pre-load — Cloud SQL must support pgvector)
+- Defers: ADR-008 (`Inference_Service` GPU infra) — separate Terraform module; this ADR covers only the DB layer
+- Affects branches: `docs` (this ADR), `Database` (`deploy/terraform/`, `deploy/README.md`)
+- Next ADR (planned): `ADR-019 — OAuth credential_type design and token refresh flow` (Phase 2; original plan retained. This ADR took slot 018 first because operational DB promotion was the demo blocker)
 
 ---
 
-## ADR-020 — API_Server 배포: Cloud Run + VPC Peering + Private IP + Cloud SQL Auth Proxy 사이드카 + 전용 IAM SA
+## ADR-020 — API_Server deployment: Cloud Run + VPC Peering + Private IP + Cloud SQL Auth Proxy sidecar + dedicated IAM SA
 
-**상태**: Accepted (설계) · **날짜**: 2026-04-18
+**Status**: Accepted (design) · **Date**: 2026-04-18
 
 **Context**
 
-ADR-018 로 Cloud SQL + Secret Manager + Terraform 이 staging 에서 E2E 검증됨 (PR #64, #65). 시크릿 주입, 마이그레이션 (pgvector 포함), 59 통합 테스트, Cloud SQL Auth Proxy, API_Server HTTP 스모크까지 전 경로 통과 후 destroy. 남은 건 "배포".
+ADR-018 brought Cloud SQL + Secret Manager + Terraform through E2E validation in staging (PR #64, #65). Secret injection, migrations (including pgvector), 59 integration tests, Cloud SQL Auth Proxy, and an API_Server HTTP smoke all passed before destroy. What remains is "deploy."
 
-현 시점 API_Server 는 로컬 uvicorn 으로만 실행 가능 — 외부에서 접근할 endpoint 가 없어 시연회·체험 고객 온보딩 불가. 배포 타깃 후보는 Cloud Run / GKE / Compute Engine. MVP 단계 (트래픽 소규모, 운영 인력 0) 에서 선택이 필요하다.
+Currently API_Server runs only via local uvicorn — there is no externally accessible endpoint, blocking demos and trial customer onboarding. Deployment target candidates are Cloud Run / GKE / Compute Engine. At the MVP stage (small traffic, 0 ops headcount), a choice is needed.
 
-ADR-018 staging 검증 시점에 이미 **ADR-020 의 기술 리스크 대부분이 선제 해소됨**: Auth Proxy 경로, Secret Manager ↔ 앱 env 주입, pgvector on Cloud SQL 16. 즉 본 ADR 은 "어떻게 조립할지" 결정하면 된다.
+By the time of the ADR-018 staging validation, **most of ADR-020's technical risks were already pre-resolved**: Auth Proxy path, Secret Manager ↔ app env injection, pgvector on Cloud SQL 16. So this ADR only needs to decide "how to assemble it."
 
 **Decision**
 
-### 1. 배포 타깃 — Cloud Run (GKE / Compute Engine 기각)
+### 1. Deployment target — Cloud Run (GKE / Compute Engine rejected)
 
-- **Cloud Run**: 컨테이너 이미지만 올리면 됨, 0~N 자동 스케일, TLS/HTTPS 기본, IAM 인증 옵션, 요청 기반 과금. 트래픽 0 이면 월요금 거의 0.
-- **GKE 기각**: control plane $72/month 고정, 노드풀/업그레이드/k8s 지식 오버헤드. 단일 서비스에 과잉.
-- **Compute Engine 기각**: OS 패치·systemd·오토스케일 전부 수작업. Cloud Run 이 주는 이점 모두 상실.
+- **Cloud Run**: Just push a container image, 0~N autoscale, default TLS/HTTPS, IAM auth option, request-based billing. Zero traffic ≈ ~$0/month.
+- **GKE rejected**: $72/month fixed control plane, node-pool / upgrade / k8s knowledge overhead. Overkill for a single service.
+- **Compute Engine rejected**: All OS patching / systemd / autoscaling done manually. Loses every Cloud Run benefit.
 
-### 2. 네트워크 — VPC Peering + Private IP + Direct VPC Egress (Serverless VPC Connector 기각)
+### 2. Network — VPC Peering + Private IP + Direct VPC Egress (Serverless VPC Connector rejected)
 
-- Cloud SQL 은 **Private IP only** (public IP 제거). 노출 표면 최소화, authorized_networks 관리 불필요.
-- Cloud Run → Cloud SQL: **Direct VPC Egress** (2024 GA). Serverless VPC Connector 1세대는 커넥터 인스턴스 상시 비용 + 스루풋 캡 → 기각.
-- VPC Peering 은 Cloud SQL 이 Google-managed producer VPC 에 살기 때문에 필수. `google_service_networking_connection` + `/24` allocated range. 사내 CIDR 과 겹치지 않게 선점.
+- Cloud SQL is **Private IP only** (public IP removed). Minimizes attack surface, eliminates `authorized_networks` management.
+- Cloud Run → Cloud SQL: **Direct VPC Egress** (2024 GA). Serverless VPC Connector v1 carries always-on connector instance cost + a throughput cap → rejected.
+- VPC Peering is required because Cloud SQL lives in a Google-managed producer VPC. `google_service_networking_connection` + `/24` allocated range. Choose carefully to avoid clashing with internal CIDRs.
 
-### 3. DB 연결 — Cloud SQL Auth Proxy 사이드카 (Private IP 직결 기각)
+### 3. DB connection — Cloud SQL Auth Proxy sidecar (direct Private IP rejected)
 
-- Cloud Run 서비스에 **2번째 컨테이너**로 Auth Proxy 를 배포 → App 은 `localhost:5432` 로만 붙으면 됨.
-- Private IP 직결도 가능하지만 Auth Proxy 는 (a) IAM SA 로 자동 인증, (b) TLS 자동, (c) staging 에서 이미 검증됨 → 재검증 불필요.
-- 검증 레퍼런스: 2026-04-18 staging 세션에서 `localhost:5434` ↔ Cloud SQL 동작 확인.
+- Deploy Auth Proxy as a **second container** in the Cloud Run service → app only connects to `localhost:5432`.
+- Direct Private IP is also possible, but Auth Proxy gives (a) automatic IAM SA auth, (b) automatic TLS, (c) already validated in staging → no re-validation needed.
+- Validation reference: confirmed `localhost:5434` ↔ Cloud SQL works in the 2026-04-18 staging session.
 
-### 4. 권한 — 전용 IAM Service Account + 최소 권한 (default compute SA 재사용 기각)
+### 4. Permissions — Dedicated IAM Service Account + least privilege (default compute SA reuse rejected)
 
-- SA: `auto-workflow-api@<project>.iam.gserviceaccount.com` (API_Server 전용)
-- 필요 role:
-  - `roles/cloudsql.client` — Auth Proxy 인증
-  - `roles/secretmanager.secretAccessor` — 3 시크릿 read only (`credential-master-key`, `jwt-secret`, `db-password`)
-  - `roles/logging.logWriter`, `roles/monitoring.metricWriter` — 관측
-- default compute SA 기각: role 과도, 전 서비스 공유 → blast radius 큼.
+- SA: `auto-workflow-api@<project>.iam.gserviceaccount.com` (API_Server only)
+- Required roles:
+  - `roles/cloudsql.client` — Auth Proxy authentication
+  - `roles/secretmanager.secretAccessor` — Read-only access to 3 secrets (`credential-master-key`, `jwt-secret`, `db-password`)
+  - `roles/logging.logWriter`, `roles/monitoring.metricWriter` — Observability
+- Why default compute SA rejected: roles too broad, shared by all services → large blast radius.
 
-### 5. 시크릿 주입 — Cloud Run v2 `value_source.secret_key_ref` (SDK 호출 기각)
+### 5. Secret injection — Cloud Run v2 `value_source.secret_key_ref` (SDK call rejected)
 
-- Cloud Run v2 서비스 정의의 `env.value_source.secret_key_ref` 로 시크릿 4종을 env 에 마운트:
-  - `DATABASE_URL` ← `database-url-<env>` (**Phase 2 에서 신설**) — user/password/host/db 포함 DSN. 호스트는 `127.0.0.1:5432` (Auth Proxy 사이드카 수신 주소) 로 고정. Terraform 이 `random_password.db_app.result` 를 끼워 조립 → state 엔 DSN 문자열이 기록되나 실제 접근 포인트는 Secret Manager.
-  - `JWT_SECRET` ← `jwt-secret-<env>` (placeholder → 수동 v2 주입)
-  - `CREDENTIAL_MASTER_KEY` ← `credential-master-key-<env>` (placeholder → 수동 v2 주입)
-- `db-password-<env>` 도 유지 — migrate.py 같은 laptop-side 스크립트가 사용.
-- 앱 코드 변경 0 (pydantic-settings 가 DATABASE_URL 하나만 보면 됨). 대안이었던 "DB_PASSWORD 만 주입 + 앱이 DSN 조립" 은 API_Server 에 cross-branch 코드 변경이 필요해 기각.
-- SDK 호출 기각: GCP 의존성 코드 침투 + 로컬 dev 복잡화.
+- Mount 4 secrets to env via Cloud Run v2 service definition's `env.value_source.secret_key_ref`:
+  - `DATABASE_URL` ← `database-url-<env>` (**newly created in Phase 2**) — DSN with user/password/host/db. Host fixed to `127.0.0.1:5432` (the Auth Proxy sidecar listening address). Terraform assembles by interpolating `random_password.db_app.result` → state records the DSN string but the actual access point is Secret Manager.
+  - `JWT_SECRET` ← `jwt-secret-<env>` (placeholder → manual v2 injection)
+  - `CREDENTIAL_MASTER_KEY` ← `credential-master-key-<env>` (placeholder → manual v2 injection)
+- `db-password-<env>` is also retained — used by laptop-side scripts like migrate.py.
+- 0 application code changes (pydantic-settings only needs to look at DATABASE_URL). The alternative "inject only DB_PASSWORD + app assembles DSN" needed cross-branch code changes in API_Server → rejected.
+- SDK call rejected: GCP dependency code intrusion + complicates local dev.
 
-### 6. 컨테이너 이미지 규약
+### 6. Container image conventions
 
-- **base**: `python:3.13-slim` multi-stage (builder → runtime). libpq5 만 런타임에 남김.
+- **base**: `python:3.13-slim` multi-stage (builder → runtime). Only `libpq5` left in runtime.
 - **user**: `uid=10001 appuser` (non-root)
-- **포트**: `$PORT` (Cloud Run 이 8080 주입). `exec uvicorn ... --host 0.0.0.0 --port ${PORT}` 로 PID 1 시그널 전파.
-- **빌드 컨텍스트**: repo root (Database 패키지 동시 설치 위해). `.dockerignore` 로 tests/plans/secrets 제외.
-- **관련 수정** (PR #66, `API_Server` 브랜치): `scheduler_jobstore_url` 이 SQLAlchemy 기본 psycopg2 를 찾던 버그 → `+psycopg` (psycopg3 sync, Database 가 이미 의존) 으로 교정. 본 ADR 과는 별 PR 로 분리 (모듈 레이어 버그 성격 → API_Server 브랜치 소유).
+- **port**: `$PORT` (Cloud Run injects 8080). `exec uvicorn ... --host 0.0.0.0 --port ${PORT}` for PID 1 signal propagation.
+- **build context**: repo root (to install the Database package together). `.dockerignore` excludes tests/plans/secrets.
+- **Related fix** (PR #66, `API_Server` branch): `scheduler_jobstore_url` was looking for the SQLAlchemy default psycopg2 → fixed to `+psycopg` (psycopg3 sync, on which Database already depends). Split into a separate PR from this ADR (module-layer bug nature → owned by API_Server branch).
 
-#### 6-a. `api_image_uri` 정책 — 필수 변수 (hello 기본값 기각)
+#### 6-a. `api_image_uri` policy — required variable (hello default rejected)
 
-- Terraform 의 `api_image_uri` 는 **default 없는 필수 변수**. 초기 설계에서는 `gcr.io/cloudrun/hello` 를 기본값으로 두어 "이미지 없어도 첫 apply 성공" 을 노렸으나, `hello` 는 `/` 만 응답하고 `/health` 는 404 → `startup_probe` 가 첫 revision 을 거부 → 첫 apply 가 사실상 실패.
-- 대안 = **부트스트랩 2-단계 apply** + **필수 변수 강제**:
-  1. `terraform apply -target=google_project_service.runtime_apis -target=google_artifact_registry_repository.images` 로 AR 만 선행 생성.
-  2. `docker build + push` 로 실 이미지 AR 에 업로드.
-  3. `api_image_uri = "<region>-docker.pkg.dev/.../api:<tag>"` 지정 후 전체 `terraform apply`.
-- 이후 정상 운영: CI (`release` 브랜치 push) 가 `gcloud run deploy --image=...` 로 out-of-band 갱신. Terraform 의 `lifecycle.ignore_changes = [template[0].containers[0].image]` 가 다음 `terraform apply` 때 revert 를 막아 준다.
-- 기각 이유 — "첫 apply 실패 감수" 는 CI/CD 안전성 우선 원칙과 어긋나고, 매번 apply 가 probe 통과 revision 만 생성하도록 강제하는 편이 사고 표면을 확실히 줄임.
+- Terraform's `api_image_uri` is **a required variable with no default**. The initial design used `gcr.io/cloudrun/hello` as the default to make "first apply succeed even without an image," but `hello` only answers `/` and returns 404 on `/health` → `startup_probe` rejects the first revision → effectively the first apply fails.
+- Alternative = **bootstrap 2-step apply** + **forced required variable**:
+  1. `terraform apply -target=google_project_service.runtime_apis -target=google_artifact_registry_repository.images` to create AR first.
+  2. `docker build + push` to upload the real image to AR.
+  3. Set `api_image_uri = "<region>-docker.pkg.dev/.../api:<tag>"` and run a full `terraform apply`.
+- Subsequent normal operation: CI (`release` branch push) updates out-of-band via `gcloud run deploy --image=...`. Terraform's `lifecycle.ignore_changes = [template[0].containers[0].image]` prevents the next `terraform apply` from reverting.
+- Why rejected — "accept first-apply failure" violates the CI/CD safety-first principle, and forcing every apply to create only probe-passing revisions clearly reduces incident surface.
 
-### 7. 이미지 레지스트리·CI — 환경별 브랜치 기반 배포 (push-on-main 자동 배포 기각)
+### 7. Image registry / CI — environment-by-branch deployments (push-on-main auto-deploy rejected)
 
-**환경 ↔ 브랜치 매핑** (ADR-018 의 staging/prod 슬롯 재사용):
+**Environment ↔ branch mapping** (reusing ADR-018's staging/prod slots):
 
-| 배포 브랜치 | 대상 환경 | 배포 방식 | GH Actions |
+| Deploy branch | Target environment | Deployment method | GH Actions |
 |---|---|---|---|
-| `development` | 개발 서버 (ADR-018 staging) | **수동 배포** (gcloud / terraform) | 트리거 없음 |
-| `release` | 운영 서버 (ADR-018 prod) | **자동** — build + AR push + Cloud Run deploy | `ff-only` 머지에만 발동 |
+| `development` | Dev server (ADR-018 staging) | **Manual deploy** (gcloud / terraform) | No trigger |
+| `release` | Prod server (ADR-018 prod) | **Automatic** — build + AR push + Cloud Run deploy | Triggered only on `ff-only` merge |
 
-**승격 흐름**:
+**Promotion flow**:
 
 ```
-module 브랜치 (API_Server, infra, …)
+module branches (API_Server, infra, …)
     ↓ PR
-main                         # 통합 / 리뷰 완료
-    ↓ 수동 merge
-development                  # 개발 서버 수동 배포로 검증·디버깅
-    ↓ ff-only merge (검증 통과 시)
-release                      # GH Actions 자동 배포 → 운영 서버
+main                         # integration / review complete
+    ↓ manual merge
+development                  # validated and debugged via dev server manual deploy
+    ↓ ff-only merge (after validation passes)
+release                      # GH Actions auto-deploy → prod server
 ```
 
-**이유**:
-- `main` 직접 자동 배포 기각: 통합 직후 prod 로 가면 디버깅/관측 창 없음. dev 환경에서 먼저 거르는 게이트 필요.
-- development 수동 유지: 배포 타이밍을 사람이 통제 (데이터 점검·로그 추적·부분 피처 토글과 동시 진행). 자동화 가치 < 통제 가치인 구간.
-- release 를 **ff-only 로 강제**: merge commit 금지 → 운영 이력이 development 의 선형 확장으로만 증가. rollback/diff 가 명확해지고, 사고 발생 시 "무엇이 들어갔는가" 가 git log 로 바로 보인다. non-ff push 는 CI 에서 실패시키거나 branch protection 으로 차단.
-- 로컬 push 기각 (기존 유지): 재현성 0, credential leak, reviewer 가 뭘 배포되는지 검증 불가.
+**Why**:
+- Direct main auto-deploy rejected: going straight to prod after integration leaves no debugging / observation window. Need a gate that filters at the dev environment first.
+- Keep development manual: A human controls deploy timing (concurrent with data inspection, log tracing, partial feature toggles). Range where automation value < control value.
+- **Force ff-only on release**: No merge commits → prod history grows only as a linear extension of development. Rollback / diff become clear; on incidents, "what got in" is immediately visible from `git log`. Non-ff push fails CI or is blocked by branch protection.
+- Local push rejected (kept): 0 reproducibility, credential leaks, reviewer cannot verify what is deployed.
 
-**GH Actions trigger (개요)**:
+**GH Actions trigger (overview)**:
 ```yaml
 on:
   push:
     branches: [release]
 ```
-ff-only 강제는 branch protection rule (`Require linear history`) 으로 보완.
+ff-only enforcement is supplemented by the branch protection rule `Require linear history`.
 
-### 7-a. 개발 서버 수동 배포 runbook
+### 7-a. Dev server manual deploy runbook
 
-Phase 3 에서 `infra/docs/README.md` **"Cloud Run 배포"** 섹션으로 구체화:
+Codified in Phase 3 as the **"Cloud Run deployment"** section of `infra/docs/README.md`:
 
-- WIF 사전 설정 (Workload Identity Pool + OIDC provider + CI SA + SA impersonation 바인딩) 1회
-- GitHub repo secrets (`GCP_WIF_PROVIDER`, `GCP_WIF_SERVICE_ACCOUNT`) + vars (`GCP_PROJECT_ID_PROD`, `GCP_REGION`) 등록
-- 배포 브랜치 `development`, `release` 를 `main` 기준으로 생성 + `release` 에 **Require linear history** + Rebase/Squash merge 만 허용 하는 branch protection
-- 부트스트랩 2-단계 apply (§6-a): AR `-target` apply → image push → 전체 apply
-- `development` 브랜치 수동 배포: `docker build/push + gcloud run deploy auto-workflow-api-staging`
-- `release` 브랜치: ff-only merge → `.github/workflows/deploy-prod.yml` 자동 실행 (linearity guard → WIF auth → build → push → `gcloud run deploy auto-workflow-api-prod`)
-- 롤백: `git revert` + push (같은 workflow 가 이전 tree 로 재빌드/재배포) 또는 `gcloud run services update-traffic` 즉시 이전 revision 으로 스위치
+- WIF setup (Workload Identity Pool + OIDC provider + CI SA + SA impersonation binding) once
+- Register GitHub repo secrets (`GCP_WIF_PROVIDER`, `GCP_WIF_SERVICE_ACCOUNT`) + vars (`GCP_PROJECT_ID_PROD`, `GCP_REGION`)
+- Create deploy branches `development`, `release` from `main` + branch protection on `release` with **Require linear history** + only Rebase/Squash merges allowed
+- Bootstrap 2-step apply (§6-a): AR `-target` apply → image push → full apply
+- Manual deploy from `development` branch: `docker build/push + gcloud run deploy auto-workflow-api-staging`
+- `release` branch: ff-only merge → `.github/workflows/deploy-prod.yml` runs automatically (linearity guard → WIF auth → build → push → `gcloud run deploy auto-workflow-api-prod`)
+- Rollback: `git revert` + push (the same workflow rebuilds/redeploys against the prior tree), or `gcloud run services update-traffic` to switch instantly to a previous revision
 
-### 8. Execution_Engine — 본 ADR 범위 외 (ADR-021 에서 결정)
+### 8. Execution_Engine — out of scope (decided in ADR-021)
 
-- Cloud Run 은 request-driven. Celery worker 는 long-running queue puller → 모델 맞지 않음.
-- ADR-021 후보:
-  - (A) Cloud Run Worker Pools (2024 공개, HTTP 리스너 없는 long-running 컨테이너) — 가장 자연스러움
-  - (B) Cloud Run Jobs + Cloud Tasks — queue-depth 기반, 실행당 컨테이너
-  - (C) GKE Autopilot — 복잡도↑
-- 본 ADR 은 API_Server 만 배포. Execution_Engine 은 이미지만 확보 (본 PR) 후 ADR-021.
+- Cloud Run is request-driven. Celery worker is a long-running queue puller → model mismatch.
+- ADR-021 candidates:
+  - (A) Cloud Run Worker Pools (2024 release, long-running containers without an HTTP listener) — most natural
+  - (B) Cloud Run Jobs + Cloud Tasks — queue-depth based, container per execution
+  - (C) GKE Autopilot — higher complexity
+- This ADR deploys API_Server only. Execution_Engine just secures the image (in this PR) and ADR-021 follows.
 
-### 9. Broker (Redis) — Memorystore, 그러나 Phase 2 후
+### 9. Broker (Redis) — Memorystore, but post-Phase 2
 
-- ADR-003 Redis broker 유지. Memorystore Redis 인스턴스는 EE 를 배포할 때 필요 → ADR-021 과 함께 Terraform 추가.
-- 본 ADR 은 선언만, 비용·리소스 아직 만들지 않음.
+- Keep ADR-003 Redis broker. The Memorystore Redis instance is needed when EE deploys → add to Terraform together with ADR-021.
+- This ADR only declares it; no resources / cost yet.
 
-### 10. Frontend · 관측 — 범위 외
+### 10. Frontend / observability — out of scope
 
-- Frontend 배포는 브랜치 착수 시 별도 ADR (Cloud Storage + CDN vs Cloud Run 정적 호스팅).
-- Cloud Monitoring 대시보드·알림은 실사용자 투입 전까지 Cloud Run 기본 로그 + Error Reporting 으로 충분.
+- Frontend deploy gets its own ADR when the branch starts (Cloud Storage + CDN vs. Cloud Run static hosting).
+- Cloud Monitoring dashboards / alerts are sufficient with Cloud Run default logs + Error Reporting until real users come online.
 
 **Consequences**
 
-- (+) **외부 접근 HTTPS 엔드포인트 확보**: 시연회·체험 고객·Frontend 개발 병행 가능
-- (+) **비용 $0 근접**: Cloud Run 트래픽 0 ≈ 과금 0. 기반 고정비는 Cloud SQL `db-g1-small` ~$25/month 만 유지 (EE/Redis 는 ADR-021 이후).
-- (+) **보안 표면 축소**: Cloud SQL public IP 제거, 전용 SA 최소 권한, 시크릿 중앙화
-- (+) **재현성**: Terraform 모듈로 staging ↔ prod 동일 배포
-- (+) **기술 리스크 선제 해소됨**: Auth Proxy·Secret Manager·pgvector 전부 staging 검증 완료
-- (−) **복잡도 추가**: VPC / Peering / SA / AR / 사이드카 / Direct VPC Egress → 운영 이해 곡선
-- (−) **Cold start**: min-instances=0 이면 첫 요청 ~2s. 시연에는 min=1 권장 (~$7/month 추가)
-- (−) **Execution_Engine 미포함**: Serverless 실행 모드 미가용. Agent 경로만 활성. 전 기능 배포는 ADR-021 완료 후
-- (−) **VPC Peering allocated range 선점 필요**: 사내/다른 VPC 와 `10.x` 충돌 가능성 → `/24` 신중 선택
-- (−) **APScheduler sync driver 의존**: PR #66 으로 psycopg3 sync 로 교정했으나, 향후 APScheduler 4.x (async jobstore) 로 이관 시 config 재조정 필요
-- (+) **prod 배포 이력 선형성**: `release` ff-only 강제 → 운영 서버에 반영된 변경을 git log 로 단일 체인에서 추적 가능. rollback = `git revert` + push.
-- (−) **승격 수동 오버헤드**: main → development (수동) → release (ff-only) 3단 게이팅. 작은 변경도 2회 merge. 긴급 hotfix 는 별도 runbook 필요 (Phase 3).
-- (+) **probe-통과 이미지 강제**: `api_image_uri` 를 필수 변수로 승격 → 부트스트랩에서도 `/health` 응답 가능한 진짜 이미지로만 revision 생성. hello 기본값이 유발할 startup_probe 실패·destroy+recreate 시 회귀 리스크 제거.
-- (−) **부트스트랩 2-단계 apply**: 완전 신규 프로젝트는 AR 만 `-target` 으로 먼저 만든 뒤 이미지 푸시 → 전체 apply 의 순서를 밟아야 함 (§6-a). 후속 apply 는 단일 단계로 끝남.
-- (−) **Cloud Run Direct VPC Egress teardown 지연**: Phase 4 destroy 중 `serverless-ipv4-*` 주소 예약 GC 가 10~30분 지속됨 (GCP 내부 reconciler, CLI 강제 해제 경로 없음). 과금 리소스는 2~5분이면 사라지나 VPC/subnet/service-networking 해제는 최대 **45분 예산** 잡고 폴링해야 함. 시연 중간 destroy 금지. 상세 대응: `infra/docs/README.md` "Destroy 소요 시간 예산" 섹션.
+- (+) **External HTTPS endpoint secured**: Demos / trial customers / Frontend dev can run in parallel
+- (+) **Near-zero cost**: Cloud Run zero traffic ≈ zero billing. Baseline fixed cost remains only Cloud SQL `db-g1-small` ~$25/month (EE/Redis post-ADR-021).
+- (+) **Reduced security surface**: Cloud SQL public IP removed, dedicated SA with minimum permissions, centralized secrets
+- (+) **Reproducibility**: Terraform module gives identical staging ↔ prod deploys
+- (+) **Technical risks pre-resolved**: Auth Proxy / Secret Manager / pgvector all validated in staging
+- (−) **Added complexity**: VPC / Peering / SA / AR / sidecar / Direct VPC Egress → operational learning curve
+- (−) **Cold start**: With min-instances=0, first request ~2s. For demos, recommend min=1 (~$7/month extra)
+- (−) **Execution_Engine not included**: Serverless execution mode unavailable. Only the Agent path is active. Full functionality deploys after ADR-021
+- (−) **VPC Peering allocated range pre-claim required**: Possible `10.x` collision with internal / other VPCs → choose `/24` carefully
+- (−) **APScheduler sync driver dependency**: Fixed to psycopg3 sync via PR #66; future migration to APScheduler 4.x (async jobstore) needs config rework
+- (+) **Linear prod deploy history**: `release` ff-only enforced → changes reflected on the prod server are tracked in a single chain in `git log`. Rollback = `git revert` + push.
+- (−) **Manual promotion overhead**: 3-stage gating main → development (manual) → release (ff-only). Even small changes take 2 merges. Emergency hotfixes need a separate runbook (Phase 3).
+- (+) **Probe-passing image enforced**: Promoting `api_image_uri` to a required variable → only revisions that can answer `/health` are created even during bootstrap. Removes regression risk from startup_probe failure / destroy+recreate caused by hello defaults.
+- (−) **Bootstrap 2-step apply**: Brand-new projects must follow the order: create AR first via `-target`, push image, then full apply (§6-a). Subsequent applies finish in a single step.
+- (−) **Cloud Run Direct VPC Egress teardown delay**: During Phase 4 destroy, GC of `serverless-ipv4-*` address reservations persists for 10–30 min (GCP-internal reconciler, no CLI force-release path). Billed resources disappear in 2–5 min, but VPC / subnet / service-networking release should be polled with up to a **45-minute budget**. No destroying mid-demo. Detailed handling: `infra/docs/README.md` "Destroy time budget" section.
 
-### §보안 회로 — 시크릿 R/W 는 stdout 금지
+### §Security circuit — secret R/W must not hit stdout
 
-Phase 4 중 DB 비밀번호가 `gcloud secrets versions access` 의 stdout 으로 유출된 실제 사건(2026-04-19) 을 계기로, 본 ADR 의 보안 범주를 "시크릿이 GCP 내부에 암호화되어 있는가" 에서 **"시크릿이 워크스테이션에 잔존하는가"** 까지 확장한다.
+Triggered by an actual incident during Phase 4 (2026-04-19) where the DB password leaked via `gcloud secrets versions access` stdout, this ADR's security scope expands from "is the secret encrypted inside GCP" to **"does the secret persist on the workstation."**
 
-**규칙**
+**Rules**
 
-- 시크릿 **쓰기**: 값을 변수에 넣지 말고 `| gcloud secrets versions add ... --data-file=-` 로 바로 파이프. `set -x` 활성 셸에서 실행 금지.
-- 시크릿 **읽기**: `gcloud secrets versions access` 출력을 그대로 쳐다보지 말고 `$(...)` 로 쉘 변수에 캡처 → 다음 명령의 env 로 넘기고 `unset`. 서브 명령 argv 로도 넘기지 말 것 (argv 는 `/proc` 에 보임).
-- 래퍼 스크립트: `infra/scripts/migrate_via_proxy.sh` 가 위 패턴을 물리화 — 이 래퍼를 쓰면 laptop 에서 migrate 돌릴 때 비밀번호가 argv / stdout / 파일 어디에도 남지 않음.
-- CI 자동 탐지: `.github/workflows/secret-scan.yml` (gitleaks) 가 모든 PR 과 주요 브랜치 push 를 스캔. 사고 후 rotate 는 Secret Manager 에서 새 version 추가 → Cloud Run revision 강제 재배포 (v2 의 `version = "latest"` 는 cold start 에만 pick-up).
-- 워크스테이션 위생: PowerShell/bash history, 터미널 스크롤백, **에이전트 대화 JSONL 로그** 까지 평문이 들어가므로 노출 의심 시 모두 scrub. 상세: `infra/docs/README.md` "개발자 workstation 위생".
+- Secret **write**: do not put values into variables — pipe directly via `| gcloud secrets versions add ... --data-file=-`. Do not run in a `set -x` shell.
+- Secret **read**: do not stare at `gcloud secrets versions access` output — capture into a shell variable with `$(...)`, hand to the next command via env, then `unset`. Do not pass via subcommand argv either (argv is visible in `/proc`).
+- Wrapper script: `infra/scripts/migrate_via_proxy.sh` materializes the pattern — using this wrapper for laptop-side migrate runs leaves the password in neither argv / stdout / files.
+- CI auto-detection: `.github/workflows/secret-scan.yml` (gitleaks) scans every PR and main-branch push. After incidents, rotation = add a new version in Secret Manager → force re-deploy a Cloud Run revision (v2's `version = "latest"` is only picked up at cold start).
+- Workstation hygiene: PowerShell/bash history, terminal scrollback, **and the agent conversation JSONL log** can all hold plaintext. When suspected, scrub all of them. Details: `infra/docs/README.md` "Developer workstation hygiene."
 
-(+) 사고 1건 → 재발 방지 설비 5건 (runbook R/W 패턴, 래퍼, gitleaks, ADR §보안, 워크스테이션 체크리스트) 으로 영구 회로화.
-(−) 이미 유출된 JSONL / 스크롤백은 수작업 스크럽 필요 — 사고 발생 후 원격 회수 불가.
+(+) One incident → 5 prevention installations (R/W runbook pattern, wrapper, gitleaks, ADR §security, workstation checklist) circuited permanently.
+(−) Already-leaked JSONL / scrollback need manual scrub — cannot be remotely retrieved after the fact.
 
-**Phase 진행 상태**
+**Phase progress**
 
-| Phase | 범위 | 상태 |
+| Phase | Scope | Status |
 |---|---|---|
-| 0 | `API_Server/Dockerfile`, `Execution_Engine/Dockerfile`, `.dockerignore` + 로컬 build & run 스모크 | ✅ 본 PR |
-| 1 | ADR-020 설계 문서 | ✅ 본 PR |
-| 2 | `network.tf` (VPC + 서비스 네트워킹 피어링) + `cloud_run.tf` (AR + SA + IAM + Cloud Run v2 + Auth Proxy 사이드카) + `main.tf` 업데이트 (Cloud SQL Private IP) + 신규 `database-url-<env>` 시크릿 (DSN 조립) | ✅ 본 PR |
-| 3 | 배포 브랜치 2종 신설 (`development`, `release`) + branch protection (release 는 ff-only, linear history) + 개발 서버 수동 배포 runbook (README) + `release` push 트리거 GH Actions workflow (OIDC → AR push → Cloud Run prod deploy) | ✅ 본 PR (워크플로우 + README). 브랜치 생성 + protection + WIF 설정은 사용자 ops 단계 |
-| 4 | 실제 apply + 개발 서버 수동 배포 스모크 + release 승격 1회 dry-run + destroy | ✅ 실증 완료 (2026-04-19) |
+| 0 | `API_Server/Dockerfile`, `Execution_Engine/Dockerfile`, `.dockerignore` + local build & run smoke | ✅ This PR |
+| 1 | ADR-020 design doc | ✅ This PR |
+| 2 | `network.tf` (VPC + service-networking peering) + `cloud_run.tf` (AR + SA + IAM + Cloud Run v2 + Auth Proxy sidecar) + `main.tf` updates (Cloud SQL Private IP) + new `database-url-<env>` secret (DSN assembly) | ✅ This PR |
+| 3 | Two new deploy branches (`development`, `release`) + branch protection (ff-only, linear history on release) + dev-server manual deploy runbook (README) + GH Actions workflow triggered by `release` push (OIDC → AR push → Cloud Run prod deploy) | ✅ This PR (workflow + README). Branch creation + protection + WIF setup is a user-ops step |
+| 4 | Real apply + dev-server manual-deploy smoke + 1 dry-run release promotion + destroy | ✅ Validated (2026-04-19) |
 
-**Phase 4 실증 요약 (2026-04-19)**
+**Phase 4 validation summary (2026-04-19)**
 
-- 2-단계 부트스트랩 apply → AR → 이미지 push → 전체 apply → Cloud Run prod 기동. `/health` 200, register endpoint 201, migrate.py 7-file 적용.
-- `release` 브랜치 승격 1회 dry-run: ff-only 머지 → WIF OIDC → build → push → Cloud Run revision 교체까지 **1분 37초**에 완료. branch protection `Require linear history` 가 merge commit 을 실제로 거부하는지도 확인.
-- 회귀 4건 + 대응 (본 ADR Consequences 확장 근거):
-  1. `cloudrun_subnet_cidr = /28` → Direct VPC Egress 가 `min_instance_count > 0` 조건에서 IP 부족. `/26` 로 하향 고정 (variables.tf + tfvars.example).
-  2. Fernet/JWT placeholder 가 평문 `REPLACE_ME_…` → 컨테이너 기동 시 `Fernet.__init__` 가 base64 검증 실패로 crash → `/health` startup probe 실패. `main.tf` 에서 valid 44-char URL-safe base64 더미 + `PLACEHOLDER` 시그널로 교체. 실키는 stdin 파이프 주입.
-  3. GitHub Actions Variable `GCP_REGION = "asia-northeast3 "` (trailing space) → `invalid reference format` 으로 docker build 실패. 워크플로우 맨 앞에 trim/공백 검증 step 추가.
-  4. `serverless-ipv4-*` address reservation GC 지연 (10~30분) 으로 VPC/subnet/service-networking destroy 가 블록됨. 폴링 우회 runbook 화 (`infra/docs/README.md` → "Destroy 소요 시간 예산").
-- 보안 회고: 작업 중 `gcloud secrets versions access` 가 DB 비밀번호를 stdout 에 흘려 스크롤백/셸 히스토리/에이전트 JSONL 로그에 평문 잔존. 현 프로젝트는 teardown 되어 blast radius 는 0 이지만, prod 상시 운영 환경이었다면 즉시 rotate 대상. 아래 §보안 회로 참조.
+- Two-stage bootstrap apply → AR → image push → full apply → Cloud Run prod boot. `/health` 200, register endpoint 201, migrate.py applied 7 files.
+- One dry-run promotion to `release`: ff-only merge → WIF OIDC → build → push → Cloud Run revision swap completed in **1 min 37 sec**. Verified that `Require linear history` branch protection actually rejects merge commits.
+- 4 regressions + responses (basis for Consequences expansion in this ADR):
+  1. `cloudrun_subnet_cidr = /28` → Direct VPC Egress runs out of IPs under `min_instance_count > 0`. Lowered to `/26` (variables.tf + tfvars.example).
+  2. Fernet/JWT placeholders were plain `REPLACE_ME_…` → on container start `Fernet.__init__` failed base64 validation and crashed → `/health` startup probe failed. Replaced with valid 44-char URL-safe base64 dummies + `PLACEHOLDER` signal in `main.tf`. Real keys injected via stdin pipe.
+  3. GitHub Actions Variable `GCP_REGION = "asia-northeast3 "` (trailing space) → `invalid reference format` failed docker build. Added trim/whitespace check step at the top of the workflow.
+  4. `serverless-ipv4-*` address reservation GC delay (10–30 min) blocked VPC/subnet/service-networking destroy. Codified polling workaround in the runbook (`infra/docs/README.md` → "Destroy time budget").
+- Security retro: during work, `gcloud secrets versions access` leaked the DB password to stdout, leaving plaintext in scrollback / shell history / agent JSONL log. The current project was torn down so blast radius is 0, but in always-on prod this would have been an immediate rotation target. See §Security circuit below.
 
 **Related**
 
-- Builds on: ADR-018 (Cloud SQL + Secret Manager + Terraform) — 본 ADR 은 그 위에 Cloud Run 배포 레이어
-- Uses: ADR-004 (Fernet 마스터 키), ADR-015 (JWT 시크릿) — 주입 경로 구체화
-- Defers: ADR-021 (Execution_Engine 배포 — Cloud Run Worker Pools vs Cloud Tasks, Memorystore Redis)
-- Supersedes (부분): ADR-003 의 배포 관련 구체화는 ADR-021 로 이관 (broker 자체는 Redis 유지)
-- Affects branches: `docs` (본 ADR), `infra` (Dockerfile / terraform / CI). `API_Server` 의 psycopg3 sync 교정은 PR #66 으로 분리 머지.
-- Next ADR (예정): `ADR-021 — Execution_Engine 배포 (Cloud Run Worker Pools vs Cloud Tasks) + Memorystore Redis`
+- Builds on: ADR-018 (Cloud SQL + Secret Manager + Terraform) — this ADR adds the Cloud Run deploy layer on top
+- Uses: ADR-004 (Fernet master key), ADR-015 (JWT secret) — concrete injection paths
+- Defers: ADR-021 (Execution_Engine deployment — Cloud Run Worker Pools vs. Cloud Tasks, Memorystore Redis)
+- Supersedes (partial): ADR-003 deploy specifics moved to ADR-021 (broker itself stays Redis)
+- Affects branches: `docs` (this ADR), `infra` (Dockerfile / terraform / CI). The psycopg3 sync fix in `API_Server` is split into PR #66.
+- Next ADR (planned): `ADR-021 — Execution_Engine deployment (Cloud Run Worker Pools vs. Cloud Tasks) + Memorystore Redis`
 
 ---
 
-## ADR-019 — OAuth2 credential_type (Google): Auth Code + Refresh Token, `oauth_metadata` JSONB 컬럼, 노드 실행 전 refresh 게이트
+## ADR-019 — OAuth2 credential_type (Google): Auth Code + Refresh Token, `oauth_metadata` JSONB column, refresh gate before node execution
 
-**상태**: Draft · **날짜**: 2026-04-19
+**Status**: Draft · **Date**: 2026-04-19
 
 **Context**
 
-ADR-017 에서 21-노드 MVP 를 확보했으나 카테고리 "Productivity/Collaboration" 은 Slack/Discord/Notion/Airtable 네 가지로만 채워져 있고, **수요가 가장 큰 Google Workspace (Gmail/Drive/Sheets/Docs/Slides/Calendar) 는 전부 OAuth2 블로커**에 걸려 보류됨. ADR-018 Next 항목 + ADR-020 Related 에서 OAuth ADR 을 Phase 2 로 명시해 왔다.
+While ADR-017 secured a 21-node MVP, the "Productivity/Collaboration" category is filled only by Slack/Discord/Notion/Airtable, and **the most-demanded Google Workspace (Gmail/Drive/Sheets/Docs/Slides/Calendar) is fully blocked on OAuth2**. The OAuth ADR has been called out for Phase 2 in ADR-018 Next and ADR-020 Related.
 
-ADR-020 Phase 4 (2026-04-19) 로 prod 배포 경로 실증이 완료되면서 OAuth 블로커를 해제할 시점이 왔다. 시연 시나리오 (Phase C) 는 "Gmail 수신 → LLM 요약 → Sheets 로그 → Slack 알림" 형태로 **Workspace 노드에 의존**하기 때문에 Frontend 착수 전에 본 ADR 의 구현이 선행돼야 한다.
+ADR-020 Phase 4 (2026-04-19) validated the prod deploy path, so it is time to unblock OAuth. The demo scenario (Phase C) is shaped as "Gmail receive → LLM summary → Sheets log → Slack notify" — **dependent on Workspace nodes** — so this ADR's implementation must precede Frontend kickoff.
 
-OAuth 설계 공간은 넓다 — 플로우 종류, 토큰 저장 방식, refresh 시점, scope 범위, consent screen 상태, redirect URI 호스트, revoked 처리 등. 본 ADR 은 **Google Workspace 에 한정해** 의사결정을 고정하고, 향후 다른 공급자 (Microsoft 365, GitHub App 등) 는 본 ADR 의 구조를 재사용한 후속 ADR 에서 다룬다.
+The OAuth design space is wide — flow types, token storage, refresh timing, scope scope, consent screen state, redirect URI host, revoked handling, etc. This ADR fixes decisions **limited to Google Workspace**; future providers (Microsoft 365, GitHub App, etc.) reuse this ADR's structure in a follow-up ADR.
 
 **Decision**
 
-### 1. 플로우 — Authorization Code + Refresh Token (Implicit / PKCE-only / Device Code 기각)
+### 1. Flow — Authorization Code + Refresh Token (Implicit / PKCE-only / Device Code rejected)
 
-- **Auth Code**: 서버사이드 콜백 (`/api/v1/oauth/google/callback`) 이 authorization code 를 access_token + refresh_token 로 교환. Refresh token 보관이 가능해야 워크플로우가 백그라운드에서 사용자 부재 시점에도 Gmail/Sheets 를 호출할 수 있다.
-- **Implicit / Hash Fragment 기각**: refresh token 미발급. 1시간 뒤 워크플로우 실행 불가.
-- **PKCE 단독 기각**: SPA 앞단(Frontend)이 아직 없고, 서버-서버 교환에서는 client_secret 이 보호되므로 PKCE 는 Phase 2 (Frontend 브라우저 플로우 추가 시) 옵션으로 덧붙임.
-- **Device Code 기각**: CLI 도구 용도. 체험 고객은 브라우저로 진입.
+- **Auth Code**: A server-side callback (`/api/v1/oauth/google/callback`) exchanges the authorization code for access_token + refresh_token. Storing the refresh token allows workflows to call Gmail/Sheets in the background even when the user is absent.
+- **Implicit / Hash Fragment rejected**: No refresh token. Workflow execution stops after 1 hour.
+- **PKCE alone rejected**: There is no SPA frontend yet, and in server-server exchange the client_secret is protected, so PKCE is layered on as a Phase 2 option (when a Frontend browser flow is added).
+- **Device Code rejected**: For CLI tools. Trial customers come in via browser.
 
-### 2. Scope 전략 — 노드별 최소 권한 + incremental consent
+### 2. Scope strategy — least privilege per node + incremental consent
 
-| 노드 | Google Scope |
+| Node | Google Scope |
 |---|---|
 | `gmail_send`, `gmail_search` | `gmail.send`, `gmail.readonly` |
-| `drive_upload_file`, `drive_list_files` | `drive.file` (앱이 만든 파일만) |
+| `drive_upload_file`, `drive_list_files` | `drive.file` (only files the app created) |
 | `sheets_append_row`, `sheets_read_range` | `spreadsheets` |
 | `docs_create`, `docs_append_text` | `documents` |
 | `slides_create`, `slides_append_slide` | `presentations` |
 | `gcalendar_create_event`, `gcalendar_list_events` | `calendar.events` |
 
-- **최소 권한**: `gmail` 풀스코프 대신 `gmail.send` + `gmail.readonly` 로 분리. `drive` 풀스코프 대신 `drive.file` (앱이 만든 파일만) → Google verification 통과 난이도 대폭 감소.
-- **Incremental consent**: 사용자가 Gmail 노드만 쓰다가 나중에 Sheets 노드를 추가하면 `/authorize` 요청 시 `include_granted_scopes=true` 로 기존 동의를 유지하며 추가 scope 만 요청. Refresh token 은 그대로 재사용.
-- **구현 메커니즘** (Phase 6 hardening, 2026-04-20):
-  - `POST /authorize` 가 `extends_credential_id: UUID | None` 파라미터를 받는다. 설정 시 `credential_name` 은 무시(기존 row 사용) — Pydantic xor 검증.
-  - 라우터가 owner 검증 (`bulk_retrieve(owner_id=user.id)`) 후 기존 `oauth_metadata.granted_scopes` 와 새 요청 scope 의 합집합을 계산해 consent URL 에 explicit 하게 실어 보낸다 (`include_granted_scopes=true` 만 의지하면 state 의 scope 와 Google 응답 scope 가 어긋남).
-  - 콜백의 `existing_credential_id` 분기는 (a) `refresh_token` 이 없어도 정상 처리 — Google 은 incremental 시 신규 refresh token 을 반환하지 않는 게 정상 동작이고, 기존 stored token 을 그대로 재사용한다. (b) `update_oauth_tokens(granted_scopes=token_resp.scope.split())` 로 Google 의 권위 있는 scope 응답을 `oauth_metadata.{scopes,granted_scopes}` 양쪽에 REPLACE.
-  - 첫 consent 분기는 종전대로 `refresh_token` 필수 — 없으면 `oauth=error&reason=no_refresh_token` 으로 redirect (Google testing mode 에서 sensitive scope 미체크 등 진단 신호).
-- **기각**: "전 스코프 한 번에 동의" 패턴 — consent screen 이 길어지고 verification 부담 ↑, 체험 고객 거부감 ↑.
+- **Least privilege**: Split `gmail` full-scope into `gmail.send` + `gmail.readonly`. Replace `drive` full-scope with `drive.file` (only files the app created) → drastically lowers the difficulty of passing Google verification.
+- **Incremental consent**: When a user adds a Sheets node after using only Gmail nodes, request `/authorize` with `include_granted_scopes=true` to keep existing consent and ask only for the additional scope. Refresh token is reused.
+- **Implementation mechanics** (Phase 6 hardening, 2026-04-20):
+  - `POST /authorize` accepts an `extends_credential_id: UUID | None` parameter. When set, `credential_name` is ignored (use existing row) — Pydantic xor validation.
+  - The router validates ownership (`bulk_retrieve(owner_id=user.id)`), then computes the union of existing `oauth_metadata.granted_scopes` and the new request scope, sending it explicitly in the consent URL (relying solely on `include_granted_scopes=true` causes the state's scope and Google's response scope to drift apart).
+  - The callback's `existing_credential_id` branch (a) handles missing `refresh_token` correctly — Google not returning a new refresh token on incremental is normal, and the existing stored token is reused. (b) `update_oauth_tokens(granted_scopes=token_resp.scope.split())` REPLACES `oauth_metadata.{scopes,granted_scopes}` on both sides with Google's authoritative scope response.
+  - The first consent branch keeps requiring `refresh_token` — without it, redirect with `oauth=error&reason=no_refresh_token` (a diagnostic signal for cases like Google testing mode without sensitive scope checks).
+- **Rejected**: "Consent for all scopes at once" pattern — lengthens the consent screen, raises verification burden, and increases trial customer aversion.
 
-### 3. 저장 스키마 — `credentials.oauth_metadata JSONB` 컬럼 (별도 `oauth_tokens` 테이블 기각)
+### 3. Storage schema — `credentials.oauth_metadata JSONB` column (separate `oauth_tokens` table rejected)
 
-`credentials` 테이블의 `type` CHECK 제약에 `google_oauth` 를 추가하고, 신규 `oauth_metadata JSONB NULL` 컬럼을 덧붙인다.
+Add `google_oauth` to the `credentials` table's `type` CHECK constraint and add a new `oauth_metadata JSONB NULL` column.
 
 ```sql
 ALTER TABLE credentials
@@ -1359,7 +1223,7 @@ ALTER TABLE credentials
   ADD COLUMN oauth_metadata JSONB NULL;
 ```
 
-`oauth_metadata` 형태 (non-sensitive 필드만):
+`oauth_metadata` shape (non-sensitive fields only):
 ```json
 {
   "provider": "google",
@@ -1370,22 +1234,23 @@ ALTER TABLE credentials
 }
 ```
 
-- **Access token**: `oauth_metadata.access_token` 에 평문 저장 (5~60분 유효. 유출 피해 시간 제한적 + 너무 자주 쓰여 암복호화 오버헤드 큼).
-- **Refresh token**: `encrypted_data` 컬럼에 Fernet 암호화 (기존 ADR-004 경로 재사용). 유출 시 영구 피해 → 반드시 암호화.
-- **account_email**: 사용자에게 "어떤 Google 계정인지" 표시용 (비밀번호 아님). UX 상 중요.
+- **Access token**: stored as plaintext in `oauth_metadata.access_token` (5–60 min validity. Limited leak-impact window + too frequently used to justify encrypt/decrypt overhead).
+- **Refresh token**: Fernet-encrypted into the `encrypted_data` column (reuses the existing ADR-004 path). Permanent damage on leak → must be encrypted.
+- **account_email**: Display "which Google account is this" to the user (not a password). UX-significant.
 
-**별도 `oauth_tokens` 테이블 기각**: credential 과 1:1 대응이고 조인이 추가돼 성능/복잡도만 증가. Google 외 공급자가 추가돼도 `oauth_metadata` 형태를 `{"provider": "<name>", ...}` 로 분기해 수용 가능.
+**Why a separate `oauth_tokens` table is rejected**: 1:1 with credential and adds a join, increasing only performance/complexity. Even when other providers join, `oauth_metadata` shape can branch as `{"provider": "<name>", ...}`.
 
-### 4. Refresh 정책 — `GoogleWorkspaceNode` 베이스 클래스의 `_google_client()` 메서드가 실행 직전에 갱신, `-5min` 버퍼
+### 4. Refresh policy — `_google_client()` on the `GoogleWorkspaceNode` base class refreshes just before execution, with a `-5min` buffer
 
-기존 노드는 `BaseNode(ABC)` 상속 + `async def execute(self, input_data, config) -> dict` 구조 (`Execution_Engine/src/nodes/base.py`). Google 공통 로직은 중간 베이스 클래스로 내린다:
+Existing nodes inherit `BaseNode(ABC)` and define `async def execute(self, input_data, config) -> dict` (`Execution_Engine/src/nodes/base.py`). Common Google logic descends to a middle base class:
 
 ```python
 class GoogleWorkspaceNode(BaseNode):
-    """Gmail/Drive/Sheets/Docs/Slides/Calendar 공통. 서브클래스는 execute 안에서
-    self._google_client(cred) 로 이미 refresh 된 googleapiclient Resource 를 받는다."""
+    """Common base for Gmail/Drive/Sheets/Docs/Slides/Calendar. Subclasses
+    receive an already-refreshed googleapiclient Resource via
+    self._google_client(cred) inside execute."""
 
-    REQUIRED_SCOPES: tuple[str, ...] = ()      # 서브클래스가 오버라이드
+    REQUIRED_SCOPES: tuple[str, ...] = ()      # subclass overrides
 
     async def _ensure_fresh_token(self, cred: dict) -> dict:
         md = cred["oauth_metadata"]
@@ -1413,20 +1278,20 @@ class GmailSendNode(GoogleWorkspaceNode):
         ...  # svc.users().messages().send(...)
 ```
 
-- **버퍼 5분**: 토큰 만료 임박(<5min) 이면 선제 갱신. 긴 워크플로우 실행 중간에 만료되는 사고 방지.
-- **호출 위치**: 모든 Google 노드는 `execute()` 안에서 `await self._google_client(cred)` 만 쓰면 됨 — 갱신 로직을 각 노드가 재구현하지 않도록 베이스 클래스에 봉인. 서브클래스가 `_ensure_fresh_token` 을 잊어도 `_google_client` 를 거치면 자동 통과.
-- **동시성**: 동일 credential 로 병렬 실행 N 개가 동시에 만료를 발견하면 refresh N 번 호출 가능 → Google 은 refresh_token 을 rotation 하지 않으므로(보통) 안전하지만, 불필요. 같은 process 내 `asyncio.Lock` per credential_id (class-level `dict[UUID, Lock]`) 로 완화. 분산 경우(멀티 Worker) 는 Phase 2 — 실제 분산 워커 배포 시점 (ADR-021) 에 Redis 분산 락 필요 여부를 사용 패턴 보고 결정.
-- **기각**: "정기 백그라운드 스위퍼" — 호출 시점에 정리하는 게 단순하고 사용 안 하는 credential 에 대한 API 호출을 아낌.
+- **5-min buffer**: Pre-emptively refresh when token expiry is near (<5min). Prevents accidents in long workflows where the token expires mid-run.
+- **Call site**: All Google nodes only need `await self._google_client(cred)` inside `execute()` — the refresh logic is sealed in the base class, so subclasses do not reimplement it. Even if a subclass forgets `_ensure_fresh_token`, going through `_google_client` covers it automatically.
+- **Concurrency**: If N parallel executions on the same credential simultaneously detect expiration, refresh may be called N times → Google does not (typically) rotate refresh_token, so this is safe but unnecessary. Mitigated within the same process by an `asyncio.Lock` per credential_id (a class-level `dict[UUID, Lock]`). The distributed case (multi-Worker) is Phase 2 — at the actual distributed worker deploy point (ADR-021), decide whether a Redis distributed lock is needed based on observed usage patterns.
+- **Rejected**: "Periodic background sweeper" — cleaning at call time is simpler and saves API calls for unused credentials.
 
-### 5. Redirect URI — Cloud Run `run.app` 기본 URL 고정, 커스텀 도메인은 Phase 2
+### 5. Redirect URI — fix on the Cloud Run `run.app` default URL, custom domain in Phase 2
 
-- **Phase 1 (testing mode, 본 ADR)**: `https://<cloud-run-service-url>/api/v1/oauth/google/callback`. testing mode 는 redirect URI 가 Google 소유 도메인(`run.app`) 이어도 허용.
-- **Phase 2 (production verification 필요 시)**: 커스텀 도메인 (`oauth.<domain>`) 을 Cloud Run Domain Mapping 으로 연결 후 Google OAuth Console 의 redirect URIs 목록에 **기존 URI 와 함께 등록 (복수 허용)** → Frontend 배포 도메인 결정 후 트래픽 전환 → `run.app` URI 제거. 병렬 운영으로 downtime 0.
-- **기각**: 처음부터 커스텀 도메인 — 도메인 결제/DNS/Domain Mapping 이 OAuth 착수의 블로커가 되면 안 됨. testing mode 사용자는 개발자 본인 → consent screen 브랜드성 무관.
+- **Phase 1 (testing mode, this ADR)**: `https://<cloud-run-service-url>/api/v1/oauth/google/callback`. Testing mode allows redirect URIs in Google-owned domains (`run.app`).
+- **Phase 2 (when production verification is needed)**: connect a custom domain (`oauth.<domain>`) via Cloud Run Domain Mapping, **register it alongside the existing URI in the Google OAuth Console redirect URIs list (multiple allowed)** → switch traffic after Frontend deploy domain is decided → remove the `run.app` URI. Zero downtime via parallel operation.
+- **Rejected**: Custom domain from the start — domain billing / DNS / Domain Mapping must not block OAuth kickoff. In testing mode the user is the developer themselves → consent screen branding is irrelevant.
 
-### 6. State CSRF — HMAC-signed, 10분 TTL, 단일 사용
+### 6. State CSRF — HMAC-signed, 10-min TTL, single use
 
-`/authorize` → `/callback` 왕복에서 forgery 방지를 위해 `state` 파라미터에 서명된 페이로드를 실어 보낸다.
+To prevent forgery on the `/authorize` → `/callback` round trip, the `state` parameter carries a signed payload.
 ```
 state = base64url( json({
     "owner_id": "<uuid>",
@@ -1436,495 +1301,495 @@ state = base64url( json({
 }) || "." || hmac_sha256(JWT_SECRET, payload) )
 ```
 
-- **검증**: 콜백에서 HMAC 재계산 + issued_at 이 10분 이내 + nonce 가 최근 사용 목록에 없음(Redis 나 DB 의 `oauth_state` 경량 테이블. MVP 에서는 `(nonce, used_at)` 을 그냥 메모리 LRU 에 둬도 단일 인스턴스에서 충분).
-- **JWT_SECRET 재사용**: ADR-015 의 JWT 서명 키와 동일. Secret Manager 에서 이미 관리 중.
-- **기각**: "session 쿠키에 state 저장" — Frontend 없는 현재 구조에서 세션이 없음. URL-encoded HMAC 이 단순하고 stateless.
+- **Validation**: At callback, recompute HMAC + check `issued_at` is within 10 minutes + check `nonce` is not in the recent-used list (Redis or a lightweight `oauth_state` table in DB; for MVP, an in-memory LRU keyed on `(nonce, used_at)` suffices on a single instance).
+- **JWT_SECRET reuse**: Same as ADR-015's JWT signing key. Already managed in Secret Manager.
+- **Rejected**: "Store state in a session cookie" — there is no session in the current frontend-less structure. URL-encoded HMAC is simple and stateless.
 
-### 7. API 라우터 — `/api/v1/oauth/google/*` 3 개 엔드포인트
+### 7. API router — three endpoints under `/api/v1/oauth/google/*`
 
 ```
 POST /api/v1/oauth/google/authorize
     body: { credential_name: str, scopes: list[str], return_to?: str }
-    resp: { authorize_url: str }    # 302 대신 URL 반환 — CLI/Frontend 둘 다 수용
-    auth: Bearer JWT (로그인된 owner)
+    resp: { authorize_url: str }    # Return URL instead of 302 — fits CLI / Frontend
+    auth: Bearer JWT (logged-in owner)
 
 GET  /api/v1/oauth/google/callback
     query: code, state, error?
-    action: code → token 교환 → credential_store.store_google_oauth(...)
-    resp: HTML or 302 redirect to return_to (Frontend 도입 후)
+    action: code → token exchange → credential_store.store_google_oauth(...)
+    resp: HTML or 302 redirect to return_to (after Frontend introduction)
 
 POST /api/v1/credentials/{id}/reauth
-    body: { scopes: list[str] }     # incremental consent 확장용
+    body: { scopes: list[str] }     # for incremental consent expansion
     resp: { authorize_url: str }
-    auth: Bearer JWT, credential 소유자만
+    auth: Bearer JWT, credential owner only
 ```
 
-- **기각**: `/authorize` 를 302 로 바로 redirect — Frontend 는 fetch 로 URL 만 받고 `window.location.assign()` 하는 편이 다루기 쉬움. CLI 도 URL 출력 후 사용자 수동 브라우저 유도.
-- **revoke 엔드포인트 미포함**: 사용자가 Google 계정 설정에서 해제하는 경로가 표준. 앱 측은 `credential_store.delete(id)` 가 이미 있음.
+- **Rejected**: redirecting `/authorize` directly with 302 — Frontend prefers fetching the URL and calling `window.location.assign()`. CLI also outputs the URL and lets the user open the browser.
+- **No revoke endpoint**: Standard practice is for users to unregister via Google account settings. The app side already has `credential_store.delete(id)`.
 
-### 8. Error 처리 — revoked / expired refresh → credential 메타데이터 업데이트 + 명시적 재동의 요구
+### 8. Error handling — revoked / expired refresh → update credential metadata + require explicit re-consent
 
-Google API 가 refresh_token 갱신 시 `invalid_grant` 를 리턴하는 3 대 원인:
-1. 사용자가 Google 계정에서 앱 권한 취소 (revoked)
-2. Refresh token 이 6개월간 미사용으로 expired (testing mode 특유)
-3. Scope 가 사용자 동의 범위를 벗어남
+The 3 main reasons Google API returns `invalid_grant` on refresh_token renewal:
+1. The user revoked app permission in their Google account
+2. The refresh token expired due to 6 months of disuse (testing-mode specific)
+3. The scope exceeds the user's consent
 
-대응:
-- `oauth_metadata.status = "needs_reauth"` + `last_error = "<reason>"` 를 DB 에 기록
-- Execution_Engine 이 `ensure_fresh_token` 에서 `OAuthReauthRequired` 예외 발생 → 노드 실행이 `failed` 로 종료되고 워크플로우 실행 로그에 "자격증명 재동의 필요" 표시
-- 사용자는 `POST /credentials/{id}/reauth` 로 `authorize_url` 받아 재동의 → 새 refresh_token 이 기존 행에 덮어쓰기 → 다음 실행 정상 진행
+Response:
+- Record `oauth_metadata.status = "needs_reauth"` + `last_error = "<reason>"` in the DB
+- Execution_Engine raises `OAuthReauthRequired` from `ensure_fresh_token` → node execution ends as `failed` and the workflow execution log shows "credential re-consent required"
+- The user calls `POST /credentials/{id}/reauth` to get an `authorize_url`, re-consents → new refresh_token overwrites the existing row → next execution proceeds normally
 
-**기각**: "실패 시 자동 이메일" — Frontend 없이 메일링만 먼저 만들면 UX 분산. Frontend 도입 시 배너/대시보드로 한꺼번에 처리.
+**Rejected**: "Auto email on failure" — building only mailing without the Frontend disperses UX. Will be handled together with banners/dashboards once the Frontend is added.
 
-### 9. OAuth Client 시크릿 관리
+### 9. OAuth client secret management
 
-- Google Cloud Console 의 OAuth 2.0 Client ID → `client_id` + `client_secret` 발급
-- Secret Manager 에 `google-oauth-client-secret-<env>` 로 저장. Cloud Run env 에 `GOOGLE_OAUTH_CLIENT_ID` (평문 env, non-sensitive) + `GOOGLE_OAUTH_CLIENT_SECRET` (secret_key_ref) 로 주입.
-- ADR-018 시크릿 R/W 패턴 적용 — 실값은 stdin pipe 로만 주입.
+- Issue `client_id` + `client_secret` from Google Cloud Console OAuth 2.0 Client ID
+- Store in Secret Manager as `google-oauth-client-secret-<env>`. Inject into Cloud Run env as `GOOGLE_OAUTH_CLIENT_ID` (plaintext env, non-sensitive) + `GOOGLE_OAUTH_CLIENT_SECRET` (secret_key_ref)
+- Apply ADR-018 secret R/W pattern — real value injected only via stdin pipe.
 
-### 10. 테스트 — OAuth callback mock + refresh rotation + 만료 직전 실행 시나리오
+### 10. Tests — OAuth callback mock + refresh rotation + execution-just-before-expiry scenario
 
-- **Callback mock**: `httpx.MockTransport` 로 Google `/token` 엔드포인트 가짜 응답. state HMAC 경로는 실코드 실행.
-- **Refresh rotation**: `ensure_fresh_token` 이 만료 1분 전/후 상황에서 각각 refresh 호출 여부 검증.
-- **Reauth flow**: `invalid_grant` 주입 → status 업데이트 + `OAuthReauthRequired` 예외 검증.
-- **Contract test**: 6 노드 모두 `GoogleWorkspaceNode` 를 상속하고 `execute()` 안에서 `_google_client` 를 거쳐 API 를 부르는지 (리플렉션 / AST 확인).
+- **Callback mock**: Mock the Google `/token` endpoint with `httpx.MockTransport`. The state HMAC path runs real code.
+- **Refresh rotation**: Verify `ensure_fresh_token` triggers refresh in pre-/post-expiry-by-1-minute scenarios.
+- **Reauth flow**: Inject `invalid_grant` → verify status update + `OAuthReauthRequired` exception.
+- **Contract test**: All 6 nodes inherit `GoogleWorkspaceNode` and call APIs through `_google_client` inside `execute()` (reflection / AST verification).
 
 **Consequences**
 
-- (+) **Google Workspace 6 노드 즉시 착수 가능** — 시연 시나리오 블로커 해제
-- (+) **credential_type 확장 패턴 재사용** — 기존 `CredentialStore` 구조·암호화·Agent 재암호화 경로가 그대로 적용됨. 신규 테이블 없음.
-- (+) **최소 권한 + incremental consent** — Google verification 통과 난이도 감소, 체험 고객 거부감 감소
-- (+) **testing mode 로 시작** — OAuth consent screen submission 의 긴 verification 프로세스를 실사용자 수요 발생 전까지 미룸
-- (+) **Redirect URI 전환 경로 확보** — Phase 2 커스텀 도메인 전환을 복수 URI 로 downtime 0 수행
-- (−) **testing mode 100 명 제한** — 체험 고객이 100 명 넘으면 verification 제출 필수. 이 시점에 커스텀 도메인 전환도 같이 해야 함 (Phase 2 의존성)
-- (−) **refresh_token 6개월 미사용 expire** — testing mode 에서는 OAuth client 당 refresh_token 이 6개월간 미사용 시 만료됨. 드물게 사용하는 워크플로우는 재동의 유도 UX 가 Frontend 도입 전엔 API 메시지로만 전달됨
-- (−) **분산 refresh 락은 실사용 패턴 보고 판단** — 같은 credential 로 병렬 워커가 동시 refresh 시 중복 호출 가능. Google 은 refresh_token rotation 을 기본 하지 않아 안전하지만 이상적이진 않음. 단일 프로세스 `asyncio.Lock` 만 우선 구현하고, 멀티워커 배포 (ADR-021) 시 실측 중복률 보고 Redis 분산 락 도입 여부를 결정 — 설계 시점에 미리 넣지 않음.
-- (−) **State TTL/LRU 도 실측 기반 튜닝** — 10분 TTL + in-memory LRU 가 min_instance=1 단일 인스턴스 전제에서는 충분하지만, 인스턴스 스케일 아웃 시 nonce 재사용 체크가 깨짐. 멀티 인스턴스 전환 시점에 Redis `SETNX` 나 DB `oauth_state_nonces` 테이블로 승격 — 구현 후 실트래픽 보고 결정.
-- (−) **Google API 쿼터** — testing mode 는 Gmail 100 msgs/day, Drive 1000 req/100s 등 제한. 시연 시나리오 설계 시 염두
-- (−) **consent screen 등록 수작업** — scope 6 종 + client ID 2 종 (staging/prod) 콘솔 등록은 Terraform 불가. runbook 으로 문서화.
-- (−) **OAuth client secret 도 시크릿 1종 추가** — Secret Manager 에 `google-oauth-client-secret-<env>` 신설. 시크릿 관리 대상 4 종으로 증가.
+- (+) **6 Google Workspace nodes can start immediately** — demo-scenario blocker released
+- (+) **Reusable credential_type extension pattern** — Existing `CredentialStore` structure / encryption / Agent re-encryption paths apply as-is. No new tables.
+- (+) **Least privilege + incremental consent** — Lower difficulty for Google verification, less aversion from trial customers
+- (+) **Start in testing mode** — Defers the long verification process for OAuth consent screen submission until real-user demand emerges
+- (+) **Redirect URI transition path secured** — Phase 2 custom-domain switch achieved with multiple URIs and zero downtime
+- (−) **Testing mode 100-user cap** — When trial customers exceed 100, verification submission is mandatory. Also need to do the custom-domain switch at this time (Phase 2 dependency)
+- (−) **refresh_token expires after 6 months of disuse** — In testing mode, the refresh_token expires after 6 months without use per OAuth client. For rarely used workflows, the re-consent UX is conveyed only via API messages until Frontend is added
+- (−) **Distributed refresh lock decided based on observed pattern** — Concurrent workers refreshing the same credential simultaneously may cause duplicate calls. Google does not rotate refresh_token by default so it is safe but not ideal. Implement only single-process `asyncio.Lock` first and decide whether to introduce a Redis distributed lock based on actual measurement at multi-worker deploy (ADR-021) — do not pre-bake it at design time.
+- (−) **State TTL/LRU also tuned based on measurement** — 10-min TTL + in-memory LRU is sufficient under the min_instance=1 single-instance premise, but the nonce-reuse check breaks when scaling out instances. Promote to Redis `SETNX` or DB `oauth_state_nonces` table at the multi-instance transition point — decide after measuring real traffic.
+- (−) **Google API quotas** — Testing mode has limits like Gmail 100 msgs/day, Drive 1000 req/100s. Account for these when designing demo scenarios
+- (−) **Manual consent-screen registration** — Console registration of 6 scopes + 2 client IDs (staging/prod) is not Terraform-able. Documented in a runbook.
+- (−) **OAuth client secret adds another secret type** — Adds `google-oauth-client-secret-<env>` to Secret Manager. Total secret-managed targets grow to 4.
 
-**Phase 진행 상태**
+**Phase progress**
 
-| Phase | 범위 | 상태 |
+| Phase | Scope | Status |
 |---|---|---|
-| 1 | ADR-019 설계 문서 | ⏳ 본 PR (draft) |
-| 2 | Database: `credentials.oauth_metadata` 마이그레이션 + CHECK 확장 + `CredentialStore.store_google_oauth` / `update_oauth_tokens` / `mark_needs_reauth` 추가 | 미착수 |
-| 3 | API_Server: `/authorize` + `/callback` + `/credentials/:id/reauth` 라우터 + state HMAC + httpx 기반 Google `/token` 클라이언트 | 미착수 |
-| 4 | Execution_Engine: `GoogleWorkspaceNode` 베이스 클래스 (`BaseNode` 상속) + `_ensure_fresh_token` / `_google_client` 메서드 + asyncio Lock per credential_id | 미착수 |
-| 5 | 6 노드 구현 (Gmail 2 + Drive 2 + Sheets 2 + Docs 2 + Slides 2 + Calendar 2 = 12 함수 / 6 노드 타입) | 미착수 |
-| 6 | Runbook: GCP Console OAuth client 등록 + Secret Manager 주입 + 시연 시나리오 drive test | ✅ (Terraform 시크릿 3종 + IAM + Cloud Run env + [`infra/docs/README_oauth.md`](../../infra/docs/README_oauth.md)) |
+| 1 | ADR-019 design doc | ⏳ This PR (draft) |
+| 2 | Database: `credentials.oauth_metadata` migration + CHECK extension + `CredentialStore.store_google_oauth` / `update_oauth_tokens` / `mark_needs_reauth` added | Not started |
+| 3 | API_Server: `/authorize` + `/callback` + `/credentials/:id/reauth` routers + state HMAC + httpx-based Google `/token` client | Not started |
+| 4 | Execution_Engine: `GoogleWorkspaceNode` base class (inherits `BaseNode`) + `_ensure_fresh_token` / `_google_client` methods + asyncio Lock per credential_id | Not started |
+| 5 | 6-node implementation (Gmail 2 + Drive 2 + Sheets 2 + Docs 2 + Slides 2 + Calendar 2 = 12 functions / 6 node types) | Not started |
+| 6 | Runbook: GCP Console OAuth client registration + Secret Manager injection + demo scenario drive test | ✅ (Terraform 3 secrets + IAM + Cloud Run env + [`infra/docs/README_oauth.md`](../../infra/docs/README_oauth.md)) |
 
 **Related**
 
-- Builds on: ADR-004 (Fernet 암호화 경로 재사용 for refresh_token), ADR-015 (JWT_SECRET 을 state HMAC 에 재사용), ADR-017 (21-노드 카탈로그 → Workspace 6 노드로 27+ 확장), ADR-018 (Secret Manager 에 OAuth client secret 추가)
-- Defers: Microsoft 365 / GitHub App / Slack OAuth 등 다른 공급자 — `oauth_metadata.provider` 분기로 재사용 가능하도록 설계돼 있음. 수요 발생 시 별도 ADR.
-- Affects branches: `docs` (본 ADR), `Database` (스키마 + Repository), `API_Server` (라우터), `Execution_Engine` (믹스인 + 6 노드)
-- Next ADR (예정): `ADR-021 — Execution_Engine 배포 (Cloud Run Worker Pools vs Cloud Tasks) + Memorystore Redis` — OAuth 노드가 멀티워커 분산 refresh 락 필요 시점과 맞물릴 가능성
+- Builds on: ADR-004 (reuses Fernet encryption path for refresh_token), ADR-015 (reuses JWT_SECRET for state HMAC), ADR-017 (extends the 21-node catalog by 6 Workspace nodes to 27+), ADR-018 (adds OAuth client secret to Secret Manager)
+- Defers: Microsoft 365 / GitHub App / Slack OAuth and other providers — designed for reuse via `oauth_metadata.provider` branching. Separate ADR when demand arises.
+- Affects branches: `docs` (this ADR), `Database` (schema + Repository), `API_Server` (router), `Execution_Engine` (mixin + 6 nodes)
+- Next ADR (planned): `ADR-021 — Execution_Engine deployment (Cloud Run Worker Pools vs. Cloud Tasks) + Memorystore Redis` — possibly aligned with the point at which OAuth nodes need a multi-worker distributed refresh lock
 
 ---
 
-## ADR-023 — HITL 편집 회수 → Personal Skill (사용자 수정 패턴 학습)
+## ADR-023 — HITL edit reclaim → Personal Skill (learn the user's edit pattern)
 
-**상태**: Accepted · **날짜**: 2026-05-07 · **갱신**: 2026-05-14 (PR-I closed-loop sync)
+**Status**: Accepted · **Date**: 2026-05-07 · **Updated**: 2026-05-14 (PR-I closed-loop sync)
 
-### 2026-05-14 amendment — DB↔JSON write path 분리
+### 2026-05-14 amendment — split DB ↔ JSON write paths
 
-PR-D/E/G 이후 PR-I 진입 시 발견: candidate persistence 가 DB 만 건드리고 reflective agent 가 read 하는 per-user JSON 메모리 파일에 write 하는 경로가 누락. 또 `modal_app.py` 에 `personal_memory_volume` mount 자체가 없어 production 도 retrieval 비활성. 본 ADR 의 결정 5 (격리) + 6 (시연 narrative) 가 실라이브에서 작동하려면 sync 가 필수 — PR-I 가 보강:
+Discovered when entering PR-I after PR-D/E/G: candidate persistence touched only the DB and the path that writes to the per-user JSON memory file read by the reflective agent was missing. Also, `modal_app.py` itself lacked the `personal_memory_volume` mount, so retrieval was disabled in production. For decisions 5 (isolation) and 6 (demo narrative) of this ADR to actually work in live conditions, this sync is mandatory — PR-I shores it up:
 
 - DB Skill row (`scope='user'`, `status='active'`) = source-of-truth (audit / activate UI / dedup hash)
-- JSON 메모리 파일 (`{personal_memory_dir}/{user_id}.json`, Modal Volume) = retrieval read-canonical
-- `PersonalizationService.activate_candidate` 가 status update 후 best-effort `POST /v1/personalization/memory/upsert` (실패 시 warning + 200 — 다음 activate/extract 가 sync 재시도)
-- AI_Agent 측 writer 는 atomic tmp+rename + Modal Volume `commit.aio()` (warm container 사이 가시성 보장) + USER_ID_SAFE 가드 mirror
+- JSON memory file (`{personal_memory_dir}/{user_id}.json`, Modal Volume) = read-canonical for retrieval
+- `PersonalizationService.activate_candidate` performs a status update then a best-effort `POST /v1/personalization/memory/upsert` (returns warning + 200 on failure — next activate/extract retries the sync)
+- The AI_Agent-side writer uses atomic tmp+rename + Modal Volume `commit.aio()` (visibility guarantee across warm containers) + USER_ID_SAFE guard mirror
 
-본 amendment 는 결정 4 (사용자 검토 게이트) 의 변경 X — 활성 시점이 sync trigger 라 narrative 그대로 유지.
+This amendment does not change decision 4 (user-review gate) — the activation moment is the sync trigger, so the narrative stays the same.
 
 ---
 
-**상태 (원안)**: Proposed · **날짜**: 2026-05-07
+**Status (original)**: Proposed · **Date**: 2026-05-07
 
 **Context**
 
-ADR-022 (Skill Bootstrap) 는 팀의 정적 도메인 지식을 skill 로 명시화하는 입구를 만들었다 — docs 가 있으면 추출, 없으면 인터뷰. 그 결과 워크플로 초안 생성 시 BGE-M3 retrieval 로 skill 이 시스템 프롬프트에 inject 된다. ADR-022 §11.5 후속 영향에 "관찰 기반 skill 후보" 가 명시됐지만 실제 구현은 미정으로 남았다.
+ADR-022 (Skill Bootstrap) opened the entrance to making the team's static domain knowledge explicit as skills — extract if docs exist, interview if not. As a result, BGE-M3 retrieval injects skills into the system prompt at workflow-draft generation. ADR-022 §11.5 follow-up impact mentioned "observation-based skill candidates" but the actual implementation was left undecided.
 
-해커톤 마감 (2026-05-18, 11일) 시점에 차별화 narrative 재정렬 결과:
+Re-aligning the differentiation narrative at the hackathon deadline (2026-05-18, 11 days out):
 
-- 평가기준 70% 가 비기술 (Impact & Vision 40 + Storytelling 30). 기술적 깊이는 30% 만.
-- n8n / Zapier 의 본질적 한계는 "**시스템이 사용자를 학습하지 않음**" — 사용자가 매번 같은 손맛으로 같은 수정을 반복함. 이 갭이 시중 자동화 도구와의 진짜 차별 지점.
-- ADR-022 의 skill bootstrap 만으로는 회수 루프가 비어있음 — AI 가 만든 워크플로 초안을 사용자가 수정한 결과가 다시 skill 로 환류되지 않음.
-- 워크플로 v1 (AI 초안) vs v2 (사용자 수정본) 의 diff 는 사용자의 일관 편집 패턴을 자연스럽게 노출. 이게 새 skill 의 원천이 될 수 있음.
-- PLAN_13 의 reflective agent (extract → self_eval → reflect) 의 propose+judge 패턴이 "diff 가 일반화 가능한 패턴인가?" 판단에 직접 fit. 새 모델 학습 / 새 인프라 X.
+- 70% of evaluation criteria are non-technical (Impact & Vision 40 + Storytelling 30). Technical depth is only 30%.
+- The fundamental limit of n8n / Zapier is that "**the system does not learn the user**" — users repeat the same edits with the same hand-feel every time. This gap is the real differentiator from existing automation tools.
+- ADR-022's skill bootstrap alone leaves the reclaim loop empty — the result of the user editing the AI-drafted workflow does not flow back as a skill.
+- The diff between workflow v1 (AI draft) vs. v2 (user-edited version) naturally exposes the user's consistent editing patterns. This can become the source of new skills.
+- PLAN_13's reflective agent (extract → self_eval → reflect) propose+judge pattern fits the judgment "is this diff a generalizable pattern?" directly. No new model training / new infrastructure.
 
 **Decision**
 
-1. **HITL 편집 diff 를 personal_skill 의 새 입력 채널로 채택**. ADR-022 의 docs / wizard 입력에 "hitl_edit" 입력을 추가해 동일 skill 데이터 모델에서 통합. 회수 루프를 skill bootstrap 의 자연스러운 폐쇄 (closed-loop) 단계로 자리매김.
+1. **Adopt the HITL edit diff as a new input channel for personal_skill**. Add "hitl_edit" to ADR-022's docs / wizard inputs and unify under the same skill data model. Position the reclaim loop as the natural closed-loop step of skill bootstrap.
 
-2. **Diff 는 semantic, not text**. 워크플로 schema 의 노드/엣지/매개변수 단위 비교. 노드 id 보존 + deep equality + changed_keys 추출. 텍스트 diff (label/typo) 는 propose 단계에서 noise drop.
+2. **Diff is semantic, not text**. Compare workflow schemas at the node / edge / parameter unit. Preserve node id + deep equality + extract changed_keys. Drop text diffs (label/typo) at the propose stage as noise.
 
-3. **Propose+Judge 2단계 LLM 게이트** (PLAN_13 reflective agent 패턴 재활용):
-   - Propose: diff + v1 컨텍스트 → 일반화 hint (max_tokens=256)
-   - Judge: hint 가 (i) 일반화 가능 (ii) 모순 없음 (iii) 1회성 noise 가 아님 판단 (max_tokens=128)
-   - 통과 → personal_skill_candidate (status="pending_review"), 거절 → drop + suggestion_hash 로 재추천 억제
-   - reflect 루프 X — 1회 판정으로 종료 (diff noise 면 반복해도 노이즈)
+3. **Two-stage LLM gate of Propose+Judge** (reuse the PLAN_13 reflective agent pattern):
+   - Propose: diff + v1 context → generalization hint (max_tokens=256)
+   - Judge: hint is (i) generalizable (ii) non-contradictory (iii) not one-off noise (max_tokens=128)
+   - Pass → personal_skill_candidate (status="pending_review"), reject → drop + suppress re-recommendation via suggestion_hash
+   - No reflect loop — terminate after a single judgment (if diff is noise, repetition still yields noise)
 
-4. **자동 활성 X — 사용자 검토 게이트 유지**. ADR-022 §11.1 "MVP 사용자 검토" 정책 일관. 검토 결정 (accept / edit / reject) 은 별 테이블 `personal_skill_reviews` 에 누적 — Claude Code 의 프로젝트별 `MEMORY.md` 와 동일 위치, 사용자별 일관 결정 이력 영속화.
+4. **No auto-activation — keep the user review gate**. Consistent with ADR-022 §11.1 "MVP user review" policy. Review decisions (accept / edit / reject) accumulate in a dedicated table `personal_skill_reviews` — same role as Claude Code's per-project `MEMORY.md`, persisting per-user consistent decision history.
 
-5. **Personal skill 격리 + 단일 풀 inject**:
-   - Skill 테이블에 `scope: "workspace" | "user"` + `user_id` 컬럼 추가. retrieval 쿼리에서 user_id filter 강제 — 사용자 A 의 personal skill 이 B 의 검색 풀에 절대 들어가지 않음.
-   - 시스템 프롬프트는 단일 "## Skills" 섹션 — workspace vs personal 구분 표시 X. **Narrative invisibility 가 핵심**: 사용자가 자기 손맛이 자연스럽게 녹은 초안을 받고 "어 내가 보통 추가하던 거네" 자각하는 순간이 가장 강한 차별화 narrative. 분리 표시는 invisibility 를 깨뜨림.
-   - 충돌 (workspace vs personal 모순) 은 본 ADR Out of Scope. 빈번 시 future ADR 에서 reranker / scope 표시 / 가중치 도입.
+5. **Personal skill isolation + single pool inject**:
+   - Add `scope: "workspace" | "user"` + `user_id` columns to the Skill table. Force user_id filter in retrieval queries — user A's personal skill never enters user B's search pool.
+   - System prompt is a single "## Skills" section — no workspace vs. personal indicator. **Narrative invisibility is key**: the moment the user receives a draft with their own hand-feel naturally embedded and realizes "oh, this is what I usually add" is the strongest differentiation narrative. Separation breaks invisibility.
+   - Conflicts (workspace vs. personal contradiction) are out of scope here. If frequent, future ADR introduces reranker / scope display / weights.
 
-6. **시연 narrative**: "**팀이 시스템을 학습시키는 게 아니라, 시스템이 팀을 학습한다**". 영상 30초 안에 "초안 v1 → 사용자 수정 → 다른 워크플로 초안에서 그 수정이 미리 반영됨" 시퀀스로 보여줄 수 있음. n8n 직격 차별화.
+6. **Demo narrative**: "**The team does not train the system; the system learns the team.**" In a 30-second video this can be shown as the sequence "draft v1 → user edits → in another workflow draft, that edit is reflected ahead of time." Direct differentiation from n8n.
 
 **Consequences**
 
-- (+) **Skill bootstrap 의 closed-loop 완성** — ADR-022 후속 영향의 "관찰 기반 skill 후보" 직접 구현. 정적 입력 (docs/wizard) + 동적 입력 (hitl_edit) 동일 backend.
-- (+) **차별화 narrative 직격** — Impact & Vision 40% 평가기준에서 "시스템이 사용자를 학습한다" 가 n8n 미커버 영역. Storytelling 30% 도 30초 시퀀스로 영상화 가능.
-- (+) **재활용 인프라로 8일 안에 완결** — 새 모델 학습 X / 새 retrieval 인프라 X / PLAN_13 propose+judge 그대로 재활용. PLAN_14 가 9 PR 분할로 5/11→5/16 페이스.
-- (+) **Cold-start 친화** — 사용자 1명의 1회 수정으로 후보 1개 생성. 통계 누적 모델 (반려 옵션 c) 과 달리 시연 시점에 즉시 효과.
-- (+) **Privacy 격리 명시** — 테이블 단위 user_id filter + 단위 테스트 (격리 가드). 사용자 간 손맛 누출 차단.
-- (−) **Database 마이그레이션 3건** — `workflow_revisions` 테이블 + `skills` 컬럼 4개 추가 + `personal_skill_reviews` 테이블. Alembic 절차는 기존 그대로지만 staging schema pollution flakiness (`project_test_flakiness_debt.md`) 모니터링 의무.
-- (−) **LLM judge 추가 비용** — 워크플로 저장당 propose+judge 2회 호출 (~10-15s warm). 비동기 후처리이므로 사용자 인터랙션 차단 X — Modal 콜드 스타트 시연 시 미리 warm-up 호출 의무.
-- (−) **단일 풀 inject 의 LLM 우선순위 위임 리스크** — workspace ↔ personal 충돌 시 LLM 의 자연 통합에 위임. 충돌 빈번 시 fallback 으로 reranker / scope 표시 / 가중치 도입 (future ADR).
-- (−) **Frontend UI 부담 1.5일** — Library "Suggested from your edits" 섹션 + 활성/편집/거절 UI + 노드 옆 "당신의 패턴" 배지 옵션. 시간 부족 시 PR-H 컷 후보 1순위 — LangSmith trace + DB query 데모로 fallback.
-- (−) **LangSmith 외부 송출 (ADR-022 update 와 동일)** — propose+judge 호출도 트레이스 대상. 해커톤 fixture 는 공개 자료라 무관, 실고객 적용 시 self-hosted LangSmith.
+- (+) **Closed-loop completion of skill bootstrap** — Direct implementation of "observation-based skill candidates" from ADR-022's follow-up impact. Static input (docs/wizard) + dynamic input (hitl_edit) share one backend.
+- (+) **Direct hit on differentiation narrative** — In the Impact & Vision 40% criterion, "the system learns the user" is an area n8n does not cover. The Storytelling 30% can also be filmed as a 30-second sequence.
+- (+) **Completed in 8 days using reused infrastructure** — No new model training / no new retrieval infra / reuses PLAN_13 propose+judge as-is. PLAN_14 splits into 9 PRs over 5/11→5/16 pace.
+- (+) **Cold-start friendly** — One edit by one user generates one candidate. Unlike accumulation-based models (rejected option c), takes immediate effect at demo time.
+- (+) **Explicit privacy isolation** — Per-table user_id filter + unit tests (isolation guard). Prevents hand-feel leakage between users.
+- (−) **3 Database migrations** — `workflow_revisions` table + 4 added columns to `skills` + `personal_skill_reviews` table. Alembic procedure stays the same, but the staging schema-pollution flakiness (`project_test_flakiness_debt.md`) must be monitored.
+- (−) **Added LLM judge cost** — 2 propose+judge calls per workflow save (~10–15s warm). Async post-processing, so does not block user interaction — must do warm-up calls before Modal cold-start demos.
+- (−) **Risk of single-pool inject delegating priority to the LLM** — On workspace ↔ personal conflict, delegate to the LLM's natural integration. If conflicts are frequent, fall back to reranker / scope display / weights (future ADR).
+- (−) **1.5 days of frontend UI burden** — Library "Suggested from your edits" section + activate/edit/reject UI + optional "your pattern" badge next to the node. If time is short, this is the #1 candidate to cut from PR-H — fall back to LangSmith trace + DB query demo.
+- (−) **LangSmith external transmission (same as ADR-022 update)** — propose+judge calls are also tracing targets. The hackathon fixture is public material so it is irrelevant; for real customer adoption, self-hosted LangSmith.
 
-**미해결 (PLAN_14 에서 확정)**
+**Open (fixed in PLAN_14)**
 
-1. Diff 추출의 정밀도 — 노드 매개변수 deep equality 가 너무 엄격하면 propose 단계 drop 룰 강화. 실측 후.
-2. Personal skill 의 시간적 감쇠 — 본 ADR 은 active/archived 만. 자동 retire 임계는 future.
-3. Workspace 공유 (opt-in) — 사용자가 personal skill 을 팀에 공유 옵션. ADR-022 §11.5 다중 멤버십 future 와 묶어 후속.
-4. Compose 시 단일 풀 inject 효과 — LLM 이 personal skill 을 자연 흡수하는지 실측. Reranker / scope 표시 / Frontend 배지 visibility 도 narrative 효과 측정 후 옵션.
-5. Reject 사유 사용자 표시 — 거절된 후보를 "거절된 제안 보기" 토글로 노출 옵션.
-6. Suggestion_hash 충돌 — SHA256 prefix 16 char 면 충돌 무시 가능, 실측 시 충돌 발견되면 hint 텍스트도 hash 입력에 포함.
+1. Diff extraction precision — if node-parameter deep equality is too strict, strengthen the propose-stage drop rule. After measurement.
+2. Temporal decay of personal skills — this ADR has only active/archived. Auto-retire threshold is future.
+3. Workspace sharing (opt-in) — option for the user to share personal skills with the team. Bundle with ADR-022 §11.5 future multi-membership in a follow-up.
+4. Effect of single-pool inject during compose — measure whether the LLM naturally absorbs personal skills. Reranker / scope display / Frontend badge visibility are also options after measuring narrative effect.
+5. Showing reject reason to the user — option to surface rejected candidates via a "view rejected suggestions" toggle.
+6. Suggestion_hash collision — SHA256 prefix 16 chars makes collisions negligible; if collisions are observed in measurement, include hint text in the hash input.
 
 **Related**
 
-- Builds on: ADR-022 (skill bootstrap 부모), PLAN_12 (skill DB / retrieval / inject 인프라), PLAN_13 (propose+judge 패턴 재활용)
-- Resolves (deferred): ADR-022 §11.5 후속 영향의 "관찰 기반 skill 후보 / adversarial harness 자동화" 의 첫 절반
-- Affects branches: `docs` (본 ADR), `AI_Agent` (agents/personalization_agent + services/workflow_diff + 라우트), `API_Server` (revision hook + 프록시), `Database` (마이그레이션 + 모델), `Frontend` (Library 검토 UI)
-- Next ADR (예정): personal skill 의 workspace 공유 / 시간적 감쇠 / 충돌 해소 — 본 ADR 실측 후 별 ADR 분리
+- Builds on: ADR-022 (parent of skill bootstrap), PLAN_12 (skill DB / retrieval / inject infrastructure), PLAN_13 (reuses propose+judge pattern)
+- Resolves (deferred): the first half of "observation-based skill candidates / adversarial harness automation" in ADR-022 §11.5 follow-up impact
+- Affects branches: `docs` (this ADR), `AI_Agent` (agents/personalization_agent + services/workflow_diff + routes), `API_Server` (revision hook + proxy), `Database` (migrations + models), `Frontend` (Library review UI)
+- Next ADR (planned): personal skill workspace sharing / temporal decay / conflict resolution — separated into a new ADR after measurement of this one
 
 ---
 
-## ADR-022 — 런타임 하네스 + Skill Bootstrap: 통합 파이프라인 + Multi-turn LLM + Retrieval
+## ADR-022 — Runtime Harness + Skill Bootstrap: Unified pipeline + Multi-turn LLM + Retrieval
 
-**상태**: Accepted · **날짜**: 2026-04-25
+**Status**: Accepted · **Date**: 2026-04-25
 
 **Context**
 
-PLAN_11 (AI_Agent Modal 호스팅 + Gemma 4 26B-A4B) 5 PR 머지 + staging end-to-end smoke 통과 직후 시점. AI Composer 가 한국어 프롬프트로 한국어 clarify 응답 정확 반환을 확인했으나, 더 본질적 차별화 재검토 필요성 부각:
+Right after PLAN_11 (AI_Agent Modal hosting + Gemma 4 26B-A4B) 5 PR merge + staging end-to-end smoke pass. AI Composer was confirmed to return Korean clarify responses correctly to Korean prompts, but the need to revisit the more fundamental differentiation surfaced:
 
-- 단순 워크플로우 자동화 (n8n 클론) 는 시중 도구 대비 차별점 0. 어떤 페인포인트도 풀지 못함.
-- 현업이 워크플로우 자동화 도구를 안 쓰는 본질적 이유 3대:
-  1. AI 가 만든 draft 가 **실제 팀 SOP 와 다름**
-  2. 매번 **팀 정책에 맞춰 수정** 해야 함 (정책이 코드 밖에 있음)
-  3. **AI Agent 결과를 신뢰할 수 없음** (검증 인프라 부재)
-- ADR-008 의 LLM 호스팅 결정은 **호스팅** 결정이지 사용자 가치 차별화 결정이 아님. PLAN_11 도 운영 인프라 결정 — 같은 한계.
-- 기존 `docs/harness_engineering_guide.md` 가 **dev-time 하네스** (Claude Code 자체 행동 제어) 컨셉을 이미 정립. 동일 컨셉을 runtime AI Composer 출력에 확장 가능.
+- Plain workflow automation (n8n clone) has 0 differentiation vs. existing tools. Solves no painpoint.
+- The 3 fundamental reasons real users do not adopt workflow automation tools:
+  1. The AI-generated draft **differs from the actual team SOP**
+  2. They have to **adjust to team policy every time** (policy lives outside code)
+  3. **Cannot trust AI Agent results** (lack of validation infrastructure)
+- ADR-008's LLM hosting decision is a **hosting** decision, not a user-value differentiation decision. PLAN_11 is also operational infra — same limit.
+- The existing `docs/harness_engineering_guide.md` already established the **dev-time harness** concept (controlling Claude Code's own behavior). The same concept can be extended to runtime AI Composer output.
 
 **Decision**
 
-1. **Harness 엔지니어링을 runtime 도메인으로 확장**. dev-time 하네스 (permission/gate/TDD 강제) 와 동일 원칙으로, AI Composer 가 생성한 워크플로우에 대한 **정책 적용 + 검증** 을 한 묶음으로 생성. "워크플로우 만든다" 가 아니라 "워크플로우 + 가드 + 검증 묶음을 만든다".
+1. **Extend harness engineering to the runtime domain**. With the same principles as the dev-time harness (permission/gate/TDD enforcement), generate **policy application + validation** as a bundle for workflows produced by AI Composer. Not "create a workflow" but "create a workflow + guards + validation bundle."
 
-2. **팀 정책을 Skill 로 부트스트랩 — 통합 파이프라인**:
+2. **Bootstrap team policy as Skills — unified pipeline**:
    ```
-   문서 0개+ → 파싱·추출 → 갭 분석 → 타겟팅 질문 → 대화형 답변 → skill 조립 → 사람 검토 → 활성
+   0+ documents → parse / extract → gap analysis → targeted questions → conversational answers → skill assembly → human review → activation
    ```
-   - docs 풍부한 팀: 빠른 길 (질문 0-2개)
-   - docs 없는 1인: 풀 대화 (질문 5-10개)
-   - 같은 backend / storage / 검토 UI / 적용 메커니즘. 분기는 입구만.
+   - Doc-rich teams: fast path (0–2 questions)
+   - 1-person without docs: full conversation (5–10 questions)
+   - Same backend / storage / review UI / application mechanism. Branching only at the entrance.
 
-3. **인터랙션 모델: single-shot → multi-turn**. 인터뷰 + 정책 적용 안내가 자연스러운 대화 형식. 턴당 max_tokens **1024** + timeout **60-90s** + **streaming 필수**. PR #125 의 240s timeout 은 single-shot 가정 패치 — multi-turn 전환 시 재조정 대상.
+3. **Interaction model: single-shot → multi-turn**. Interview + policy application guidance are naturally conversational. Per turn: max_tokens **1024** + timeout **60–90s** + **streaming required**. The 240s timeout in PR #125 is a single-shot patch — subject to re-tuning at the multi-turn switch.
 
-4. **Skill 주입은 broadcast 가 아닌 retrieval**. 활성 skill 이 10-20개 누적 가능. 모두 컨텍스트에 주입하면 4000+ token 오버헤드. **BGE-M3 임베딩 기반 query→top-K (5개) 검색** 으로 컨텍스트 ~1000 token 으로 제한. 이후 턴은 llama.cpp slot KV cache 활용으로 prefill 단축.
+4. **Skill injection is retrieval, not broadcast**. Active skills can accumulate to 10–20. Injecting all into context is 4000+ token overhead. **BGE-M3 embedding-based query→top-K (5) retrieval** limits context to ~1000 tokens. Subsequent turns leverage the llama.cpp slot KV cache to shorten prefill.
 
-5. **데모 페르소나 우선순위** (영상):
-   - Persona B (5인 팀, 핸드북 PDF) — **첫 60초 메인** → Main Track $100K + Special Tech (llama.cpp) $10K
-   - Persona A (1인 사업자, 문서 없음) — 보조 ~20초 → Impact Track Digital Equity $10K
-   → 듀얼 타겟 ($60K 동시 수상 가능) 유지하되 narrative 무게중심을 Main Track 으로.
+5. **Demo persona priority** (video):
+   - Persona B (5-person team, handbook PDF) — **first 60 seconds main** → Main Track $100K + Special Tech (llama.cpp) $10K
+   - Persona A (1-person business, no documents) — supporting ~20 seconds → Impact Track Digital Equity $10K
+   → Maintain dual targeting (chance to win $60K simultaneously) but shift the narrative weight to the Main Track.
 
 **Consequences**
 
-- (+) 현업 미사용 이유 #2 (팀 정책), #3 (신뢰) 직접 해결
-- (+) 도구 차별화 = "정책 학습/적용/검증의 통합 시스템" — n8n/Zapier 미커버 영역
-- (+) Digital Equity narrative (1인 사업자 부트스트랩) + Special Tech (llama.cpp 기반 multi-turn) 동시 만족
-- (+) 기존 `harness_engineering_guide.md` 자산이 ADR-022 의 컨셉 부모로 자연스럽게 연결 (dev-time + runtime 두 층)
-- (−) 구현 부담 +10일 (W2 후반 + W3) — W4 영상/writeup 시간 압박 증가
-- (−) PLAN_12 신설 + DB 스키마 4-5개 추가 (`skills`, `skill_sources`, `skill_applications`, `policy_documents`, `policy_extractions`)
-- (−) Frontend 작업 비중 증가 (검토 UI + 인터뷰 ChatPanel 재사용 + skill 카드)
-- (−) PR #125 의 240s timeout 은 short-lived → multi-turn 전환 시 60-90s 로 재패치 필요 (스택 PR 가 아닌 별도 PR)
-- (−) BGE-M3 임베딩 인덱싱 + retrieval 인프라 W2 안에 들어가야 함 (기존 PLAN 에 임베딩만 명세, 실제 구현 미착수)
+- (+) Directly solves real-user non-adoption reasons #2 (team policy) and #3 (trust)
+- (+) Tool differentiation = "integrated system of policy learning / application / validation" — area n8n / Zapier do not cover
+- (+) Simultaneously satisfies the Digital Equity narrative (1-person business bootstrap) + Special Tech (llama.cpp-based multi-turn)
+- (+) The existing `harness_engineering_guide.md` asset connects naturally as the conceptual parent of ADR-022 (two layers: dev-time + runtime)
+- (−) +10 days of implementation burden (W2 second half + W3) — increases pressure on W4 video / writeup time
+- (−) New PLAN_12 + DB schemas grow by 4–5 (`skills`, `skill_sources`, `skill_applications`, `policy_documents`, `policy_extractions`)
+- (−) Frontend work share rises (review UI + ChatPanel reuse for interview + skill cards)
+- (−) PR #125's 240s timeout is short-lived → must re-patch to 60–90s on multi-turn switch (separate PR, not stacked)
+- (−) BGE-M3 embedding indexing + retrieval infrastructure must land within W2 (existing PLAN only specifies embedding; actual implementation has not started)
 
-**미해결 (PLAN_12 에서 확정)**
+**Open (fixed in PLAN_12)**
 
-1. 추출 정책 단위 — 권장: 한 조건+액션 페어 = 1 skill
-2. 모호한 정책 처리 — 권장: "구체화 필요" 플래그 + multi-turn 후속 질문
-3. 정책 충돌 감지 — MVP: 사용자 검토 단계에서 사람이 발견. 자동 검출은 W4 이후
-4. 버전 관리 — 재업로드 시 diff 표시 + 항목별 적용/유지/삭제. 자동 머지 X
-5. 팀 경계 모델 — 워크스페이스 = 팀, skill 은 워크스페이스 scope. 다중 멤버십 future
+1. Extraction policy unit — recommendation: one condition+action pair = 1 skill
+2. Handling ambiguous policies — recommendation: "needs clarification" flag + multi-turn follow-up question
+3. Policy conflict detection — MVP: detected by humans at the user review stage. Auto-detection after W4
+4. Version management — show diff on re-upload + per-item apply / keep / delete. No auto-merge
+5. Team boundary model — workspace = team, skills are workspace-scoped. Multi-membership future
 
 **Update (2026-04-29) — Source round-trip wire shape**
 
-W2-9 라이브러리 뷰 (PR #146) 머지 직후 발견된 갭: wizard mid-flow `PolicyTurn` 은 source attribution (`source_kind` + `sources`) 을 들고 있는데 `/skills/answers` persist 시점에 drop 됨. 결과 SkillsLibrary 가 attribution pill 을 못 그림 (in-memory wizard drafts 에서만 표시). PLAN_12 의 W3-6 retrieval 시점에서 정책 출처 인용이 필요하므로 round-trip 을 W2 안에서 닫음.
+Gap discovered right after merging the W2-9 library view (PR #146): a wizard mid-flow `PolicyTurn` carries source attribution (`source_kind` + `sources`), but at `/skills/answers` persist time it gets dropped. Result: SkillsLibrary cannot draw the attribution pill (only shown in in-memory wizard drafts). Since policy source citation is needed at PLAN_12's W3-6 retrieval, close the round-trip within W2.
 
-**옵션 비교** (해커톤 마감 우선):
-- **옵션 A (채택)** — `skill_sources.source_ref` JSONB 안에 두 필드 묻고 read 경로에서 추출. 마이그레이션 0개. 단점: source_ref 가 다목적 dict (이미 session_id/policy_id/answers 보유) — schema 충돌 거의 없음.
-- 옵션 B (기각) — `skills` 테이블에 `source_kind enum` + `sources jsonb` 별도 컬럼. 검색/필터 (`/skills?source_kind=regulatory`) 가능. 마이그레이션 + 3 PR. **쓰임이 W3-6 까지 미정** 이라 옵션 A 로 충분.
+**Option comparison** (hackathon-deadline priority):
+- **Option A (adopted)** — Bury the two fields inside `skill_sources.source_ref` JSONB and extract on the read path. 0 migrations. Downside: source_ref is a multi-purpose dict (already holds session_id/policy_id/answers) — schema collisions are nearly nil.
+- Option B (rejected) — Add a separate `source_kind enum` + `sources jsonb` columns to the `skills` table. Search/filter (`/skills?source_kind=regulatory`) becomes possible. Migration + 3 PRs. Since **usage until W3-6 is undecided**, Option A suffices.
 
-**계약 형상** (3 PR 묶음으로 머지 — `bc52cf0` → `28a4994` → `266b9d6`):
+**Contract shape** (merged as a 3 PR bundle — `bc52cf0` → `28a4994` → `266b9d6`):
 
-| 레이어 | 변경 |
+| Layer | Change |
 |---|---|
-| Database (PR #147 γ) | `Skill` DTO 에 `source_ref: dict \| None` 추가. `PostgresSkillRepository` 의 read 경로 (`get_owned`/`list_owned`/`update_status`) 가 latest `skill_sources.source_ref` (by `extracted_at`) 를 hydrate. `list_owned` 은 correlated scalar subquery 로 N+1 회피. `InMemorySkillRepository` 도 동일 시맨틱. |
-| API_Server (PR #148 α) | `AnswersRequest` 에 `source_kind: SourceKindLiteral \| None` + `sources: list[PolicySourceBody]` optional. `SkillBootstrapService.answer_questions` 는 두 필드를 `source_ref` JSONB 에 묻음. `SkillResponse` 가 두 필드 노출 — `_to_response` 가 hydrated `skill.source_ref` 에서 추출. |
-| Frontend (PR #149 β) | `AnswersRequest` payload 에 `currentTurn.sourceKind` + `currentTurn.sources` 동봉. `SkillRecord` 가 두 필드 required (서버는 항상 채움 — null/[] for legacy). `SkillsLibrary` 에서 `SourceKindPill` 조건부 렌더 (`source_kind != null` 일 때만 — pre-round-trip skill 은 synthesized 로 오인 방지). |
+| Database (PR #147 γ) | Add `source_ref: dict \| None` to the `Skill` DTO. `PostgresSkillRepository`'s read path (`get_owned`/`list_owned`/`update_status`) hydrates the latest `skill_sources.source_ref` (by `extracted_at`). `list_owned` avoids N+1 with a correlated scalar subquery. `InMemorySkillRepository` has the same semantics. |
+| API_Server (PR #148 α) | Add optional `source_kind: SourceKindLiteral \| None` + `sources: list[PolicySourceBody]` to `AnswersRequest`. `SkillBootstrapService.answer_questions` buries both fields into the `source_ref` JSONB. `SkillResponse` exposes both fields — `_to_response` extracts from the hydrated `skill.source_ref`. |
+| Frontend (PR #149 β) | The `AnswersRequest` payload carries `currentTurn.sourceKind` + `currentTurn.sources`. `SkillRecord` makes both fields required (the server always fills them — null/[] for legacy). `SkillsLibrary` conditionally renders `SourceKindPill` (only when `source_kind != null` — to avoid pre-round-trip skills being misidentified as synthesized). |
 
-**Source kind literal** (Database/API_Server/Frontend 동기):
-- `regulatory` — 실제 법/규제 출처 그라운딩
-- `industry-baseline` — 외부 산업 표준 (Stripe / NRF / FTC 등) 링크
-- `synthesized` — 학습 데이터 패치워크. authoritative URL 없음. 라이브러리 뷰가 정직 표기.
-- `null` — pre-round-trip skill (legacy). 라이브러리 뷰가 pill 숨김.
+**Source kind literal** (Database/API_Server/Frontend in sync):
+- `regulatory` — actual law/regulation source grounding
+- `industry-baseline` — external industry standard (Stripe / NRF / FTC etc.) link
+- `synthesized` — patchwork of training data. No authoritative URL. Library view marks honestly.
+- `null` — pre-round-trip skill (legacy). Library view hides the pill.
 
-**검증**:
-- Database: parametrized contract 테스트 (memory + Postgres) — round-trip on `create`/`get`/`list_owned`/`update_status`
-- API_Server: `test_skills.py` 14 passed (라이브 PG via docker compose, port 5435) — source 동봉 + omit 두 시나리오
-- Frontend: Playwright 10 passed — industry-baseline pill 렌더링 + null 케이스 부재 + 외부 링크 `target=_blank rel=noopener noreferrer`
+**Validation**:
+- Database: parametrized contract tests (memory + Postgres) — round-trip on `create`/`get`/`list_owned`/`update_status`
+- API_Server: `test_skills.py` 14 passed (live PG via docker compose, port 5435) — both source-included and source-omitted scenarios
+- Frontend: Playwright 10 passed — industry-baseline pill render + null-case absence + external link `target=_blank rel=noopener noreferrer`
 
-**관련 결정**
+**Related decisions**
 
-- ADR-008 (LLM 호스팅 선택) — 본 ADR 이 사용자 가치 결정으로 보완. 호스팅 결정은 유지.
-- 메모리 `project_skill_bootstrap_design.md` — 본 ADR 의 작업 분해 / 데모 시퀀스 / 숫자 budget / 컨텍스트 budget
-- 메모리 `project_wizard_polish_abc.md` — source attribution 의 honest labelling 정책 결정 (synthesized 표기 의무)
-- PLAN_12 (착수 예정) — 본 ADR 의 구현 로드맵 + DB 스키마
-- PR #125 (머지됨) — single-shot 가정 timeout 패치 (multi-turn 전환 시 재조정)
-- PR #147 / #148 / #149 (머지됨) — source round-trip 묶음 (Database / API_Server / Frontend)
+- ADR-008 (LLM hosting choice) — this ADR complements as a user-value decision. The hosting decision stands.
+- Memory `project_skill_bootstrap_design.md` — work decomposition / demo sequence / number budget / context budget for this ADR
+- Memory `project_wizard_polish_abc.md` — honest labeling policy decision for source attribution (synthesized labeling required)
+- PLAN_12 (to start) — implementation roadmap + DB schema for this ADR
+- PR #125 (merged) — single-shot timeout patch (re-tuned at multi-turn switch)
+- PR #147 / #148 / #149 (merged) — source round-trip bundle (Database / API_Server / Frontend)
 
 ---
 
-## ADR-021 — Execution_Engine 배포 (Cloud Run Worker Pools) + Memorystore Redis
+## ADR-021 — Execution_Engine deployment (Cloud Run Worker Pools) + Memorystore Redis
 
 Status: Draft (2026-04-20)
 
 **Context**
 
-ADR-020 은 API_Server 만 Cloud Run v2 로 올리고, `Execution_Engine` 배포는 본 ADR 로 이관했다. 그 결과 현재 staging 환경은 다음 구멍을 안고 있다:
+ADR-020 deployed only API_Server to Cloud Run v2 and deferred `Execution_Engine` deployment to this ADR. As a result, the current staging environment has the following holes:
 
-- **실행 경로 없음**: API 가 워크플로우 실행을 트리거해도 소비자 (Celery worker) 가 없다. Inline 모드도 구현돼 있지 않아 `workflow_service.execute_workflow()` 를 Cloud Run 요청 프로세스 안에서 돌리는 stopgap 조차 없음.
-- **broker 없음**: ADR-003 은 Redis broker 를 확정했지만 Memorystore 인스턴스는 존재하지 않음.
-- **Frontend 블로커**: Phase C Frontend E2E 는 "워크플로우 실행 → 결과 조회" 경로 필요. EE 배포 없이는 데모 불가.
-- **분산 refresh 락 판단 연기**: ADR-019 §1/Consequences 에서 "멀티워커 배포 시점에 Redis 분산 락 필요 여부를 실측" 이라 기록. 그 시점이 본 ADR.
+- **No execution path**: Even when the API triggers a workflow execution, there is no consumer (Celery worker). Inline mode is also not implemented, so even the stopgap of running `workflow_service.execute_workflow()` inside the Cloud Run request process is unavailable.
+- **No broker**: ADR-003 fixed Redis as the broker, but no Memorystore instance exists.
+- **Frontend blocker**: Phase C Frontend E2E needs the "trigger workflow execution → fetch result" path. Without EE deployment, no demo.
+- **Distributed refresh lock decision deferred**: ADR-019 §1/Consequences noted "measure whether a Redis distributed lock is needed at the multi-worker deploy point." That point is this ADR.
 
-Cloud Run 은 request-driven 컨테이너 (HTTP 리스너 필수, 요청 없으면 idle shutdown). Celery worker 는 Redis 큐를 polling 하는 long-running process — request-driven 모델과 맞지 않는다. ADR-020 §8 은 이 불일치를 해소할 후보 3개를 남겼다: (A) Cloud Run **Worker Pools** (HTTP 리스너 없는 long-running), (B) Cloud Run Jobs + Cloud Tasks (push 모델, 실행당 컨테이너), (C) GKE Autopilot.
+Cloud Run is request-driven (HTTP listener required, idle shutdown without requests). A Celery worker is a long-running process polling a Redis queue — incompatible with the request-driven model. ADR-020 §8 left three candidates to resolve this mismatch: (A) Cloud Run **Worker Pools** (long-running without HTTP listener), (B) Cloud Run Jobs + Cloud Tasks (push model, container per execution), (C) GKE Autopilot.
 
 **Decision**
 
-### 1. 컴퓨트 — Cloud Run Worker Pools (Option A)
+### 1. Compute — Cloud Run Worker Pools (Option A)
 
-- **Worker Pools** (2024 GA) 는 HTTP 리스너 없이 컨테이너를 long-running 으로 띄우는 Cloud Run v2 SKU. Celery worker 의 "Redis 큐 polling" 모델을 그대로 유지한 채 배포 가능 — 애플리케이션 코드 불변, Dockerfile 재사용 (`Execution_Engine/Dockerfile`).
-- **기각 — (B) Cloud Run Jobs + Cloud Tasks**: push 모델은 Celery 를 버리고 Cloud Tasks → Cloud Run HTTP endpoint 로 재작성 필요. ADR-003 broker 결정 (Redis Streams 기반 멱등성·리플레이·dedup) 을 폐기해야 하고, 기존 `src/dispatcher/serverless.py` Celery 태스크 구조 전면 교체. 이전 6개 세션에서 누적한 Celery 테스트·재시도 정책·스케줄러 통합 (PR #62/63/66) 이 전부 작업량이 됨. **대체 이득** (stateless per-execution 격리, push 가시성) 이 **전환 비용** (재설계 + 테스트 이관 + 이중 운영) 을 정당화하지 못함.
-- **기각 — (C) GKE Autopilot**: 1인 운영 전제에서 k8s 이해 곡선 + 노드 관리 오버헤드 과도. 2 세션 안에 돌아갈 범위 아님.
+- **Worker Pools** (2024 GA) is a Cloud Run v2 SKU for long-running containers without an HTTP listener. The Celery worker's "Redis queue polling" model can be deployed as-is — no application code change, Dockerfile reuse (`Execution_Engine/Dockerfile`).
+- **Reject — (B) Cloud Run Jobs + Cloud Tasks**: The push model requires abandoning Celery and rewriting to Cloud Tasks → Cloud Run HTTP endpoint. We would have to discard the ADR-003 broker decision (Redis Streams-based idempotency / replay / dedup) and replace the entire Celery task structure in `src/dispatcher/serverless.py`. The Celery tests / retry policies / scheduler integrations accumulated over the previous 6 sessions (PR #62/63/66) all become work. The **gain** (stateless per-execution isolation, push visibility) does not justify the **switch cost** (redesign + test migration + dual operations).
+- **Reject — (C) GKE Autopilot**: Under the 1-person ops premise, the k8s learning curve + node management overhead is excessive. Beyond the 2-session scope.
 
-### 2. 브로커 — Memorystore Redis Basic 1GB (Standard 기각)
+### 2. Broker — Memorystore Redis Basic 1GB (Standard rejected)
 
-- **Basic 티어 1GB**: 단일 노드, HA 없음. 월 ~$35 (asia-northeast3). 시연·체험 고객 규모에서 메시지 유실 발생 확률 × blast radius 가 Standard 티어 추가 비용 (~$70/mo) 대비 낮음. Celery 는 실패 시 재시도 정책 (ADR-003) 이 있어 broker reboot 으로 잃는 in-flight 메시지는 재실행 가능.
-- **기각 — Standard 티어**: HA 는 prod 상시 운영 단계에서 재고. 시연·Phase 2 단계에서는 과소비.
-- **기각 — 셀프 호스팅 Redis (Cloud Run sidecar / GCE VM)**: 재시작 내구성, 메모리 한계 관리, 보안 패치까지 운영 부담. Memorystore 월 $35 가 시간 가치보다 싸다.
-- **기각 — Cloud Pub/Sub**: Celery broker 로 direct 사용 불가 (kombu plugin 생태 미성숙). 교체는 (B) 경로와 같은 수준의 재작성.
+- **Basic tier 1GB**: Single node, no HA. ~$35/month (asia-northeast3). At demo / trial-customer scale, the message-loss probability × blast radius is low compared to the cost of Standard tier (~$70/mo). Celery has retry policies on failure (ADR-003), so in-flight messages lost on broker reboot are re-executable.
+- **Reject — Standard tier**: Reconsider HA at the always-on prod operations stage. Over-spend at demo / Phase 2 stage.
+- **Reject — Self-hosted Redis (Cloud Run sidecar / GCE VM)**: Restart durability, memory limit management, security patching all add operational burden. Memorystore at $35/month is cheaper than the time value.
+- **Reject — Cloud Pub/Sub**: Cannot be used directly as a Celery broker (kombu plugin ecosystem immature). Replacing it is the same level of rewrite as path (B).
 
-### 3. 네트워크 — Private Service Access + VPC 내부 전용
+### 3. Network — Private Service Access + VPC-internal only
 
-- Memorystore 는 **Private IP only**. ADR-020 에서 구성한 `auto-workflow-vpc` 와 `google-managed-services-*` allocated range (Service Networking) 를 그대로 재사용. 별도 subnet 할당 불필요 (Service Producer Connection 이 내부 관리).
-- Worker Pools 는 **Direct VPC Egress** 로 VPC 에 attach (API_Server 와 동일 경로, 동일 subnet `cloudrun-direct-<env>` `/26`). 이렇게 하면 Worker → Memorystore / Cloud SQL Private IP 경로가 모두 VPC 내부로 해결됨.
-- **공유 subnet 결정**: API_Server 와 Worker Pools 는 같은 `/26` subnet 공유 (`min_instance_count > 0` 조합으로 IP 32개로 부족한 사례는 Phase 4 에서 실측). 분리 필요 시 Phase 4 에서 별도 subnet `/26` 할당.
+- Memorystore is **Private IP only**. Reuses `auto-workflow-vpc` and the `google-managed-services-*` allocated range (Service Networking) configured in ADR-020 as-is. No separate subnet allocation needed (Service Producer Connection is internally managed).
+- Worker Pools attach to the VPC via **Direct VPC Egress** (same path as API_Server, same subnet `cloudrun-direct-<env>` `/26`). This way Worker → Memorystore / Cloud SQL Private IP paths all resolve inside the VPC.
+- **Shared subnet decision**: API_Server and Worker Pools share the same `/26` subnet (cases where 32 IPs are insufficient under `min_instance_count > 0` will be measured in Phase 4). If separation is needed, allocate another `/26` subnet in Phase 4.
 
-### 4. 스케일링 트리거 — min=0 + API 트리거 기반 명시 scale-up
+### 4. Scaling trigger — min=0 + explicit scale-up on API trigger
 
-- **전제**: 시연·Phase 2 규모에서 워크플로우 실행 빈도가 낮음. 상시 idle 워커 유지는 비용 낭비 → `min_instance_count = 0`. `max_instance_count = 5` 상한.
-- **기술적 제약**: Worker Pools 의 내장 autoscaling (CPU 사용률 기반) 은 "running 인스턴스 0 개 → CPU 신호 없음 → 스케일 아웃 불가" 의 dead-start 문제를 가진다. min=0 으로 pull 모델 (Celery + Redis) 을 운영하려면 **외부에서 scale-up 을 깨워줘야** 함.
-- **선택 — API 트리거에 명시 wake-up**: `workflow_service.execute_workflow()` 가 Celery 큐에 task 를 밀 때, 같은 경로에서 Cloud Run Admin API (`services.patch` 또는 Worker Pools 인스턴스 count 상향) 를 호출해 워커 1개 기동을 명령. 워커는 큐 비면 idle timeout (기본 15분) 후 자동 0 으로 회귀. API_Server SA 에 `run.workerPools.update` 권한만 추가.
-- **기각 — Custom metric 기반 queue-depth autoscaling**: Cloud Monitoring 커스텀 메트릭 (Redis LLEN) → Worker Pools 스케일링 policy 연결은 GA 가 아닌 프리뷰 경로 + 메트릭 수집 파이프라인 (sidecar 또는 pull exporter) 까지 세팅 필요. wake-up API call 이 훨씬 단순.
-- **기각 — Cloud Scheduler polling (매 1분 스케줄러가 LLEN 체크 후 깨우기)**: 폴링 1분 간격 = cold-start 외 최대 60초 레이턴시 추가. 시연 체감 저하.
-- **Cold start 비용 수용**: API trigger → Worker Pools patch API (수 초) → 컨테이너 부팅 (Celery 초기화 + DB·Redis 커넥션 ~5~10초) → pickup. 첫 task 레이턴시 10~20초. 두 번째 이후는 warm. 시연 시나리오에서 이 지연 체감되면 Frontend 쪽 "실행 큐에 배치됨" progress 표시로 UX 보정.
-- **경계 조건**: 실사용 패턴에서 trigger 빈도가 높아 매번 깨우는 오버헤드 > min=1 상시 비용 이 되는 시점 감지되면 Phase 6 재검토 — min 상향 또는 queue-depth custom metric 도입.
+- **Premise**: At demo / Phase 2 scale, workflow executions are infrequent. Always-idle workers waste cost → `min_instance_count = 0`. `max_instance_count = 5` cap.
+- **Technical constraint**: Worker Pools' built-in autoscaling (CPU-utilization-based) has a "0 running instances → no CPU signal → cannot scale out" dead-start problem. To run a pull model (Celery + Redis) with min=0, we must **wake scale-up externally**.
+- **Choice — Wake-up explicitly on API trigger**: When `workflow_service.execute_workflow()` pushes a task to the Celery queue, in the same path call the Cloud Run Admin API (`services.patch` or Worker Pools instance count up) to command starting one worker. The worker idles and goes back to 0 after the idle timeout (15 min default) when the queue empties. Add `run.workerPools.update` permission only to the API_Server SA.
+- **Reject — Custom-metric queue-depth autoscaling**: Connecting Cloud Monitoring custom metrics (Redis LLEN) → Worker Pools scaling policy is a non-GA preview path + requires a metric-collection pipeline (sidecar or pull exporter). Wake-up API call is much simpler.
+- **Reject — Cloud Scheduler polling (waker checks LLEN every 1 min and wakes)**: 1-min polling = up to 60 sec extra latency beyond cold-start. Degrades demo perception.
+- **Accept cold-start cost**: API trigger → Worker Pools patch API (a few seconds) → container boot (Celery init + DB·Redis connections ~5–10 sec) → pickup. First task latency 10–20 sec. Subsequent tasks are warm. If perceptible during demo, mitigate with frontend "queued for execution" progress UI.
+- **Boundary condition**: If actual usage triggers frequent enough that wake-up overhead exceeds the always-on min=1 cost, revisit at Phase 6 — raise min or introduce queue-depth custom metric.
 
-### 5. Inline dispatch 임시 구현 — Redis/Worker Pools 배포 완료 시 완전 제거
+### 5. Inline dispatch temporary implementation — completely removed once Redis/Worker Pools deploy is done
 
-Phase C Frontend 가 Worker Pools 배포 완료 대기로 블록되지 않도록 `workflow_service.execute_workflow()` 에 **inline 모드** 를 한시적으로 둔다:
+To prevent Phase C Frontend from being blocked waiting for Worker Pools deployment, temporarily add an **inline mode** to `workflow_service.execute_workflow()`:
 
-- `settings.execution_mode = "inline" | "celery"` (기본 `celery`, 임시 `inline` 스위치). inline 에서는 큐잉 생략, 같은 FastAPI 요청 프로세스 안에서 `runtime.executor.execute_dag(...)` 를 `await` 로 직접 호출.
-- 제약: 요청 타임아웃 (Cloud Run 기본 5분 초과 불가), 노드 병렬성은 단일 인스턴스 asyncio 제한, 대용량 데이터 노드 (Drive 업로드 등) 는 메모리 누증. 시연 워크플로우 범위 (10 노드 이내, 실행 2분 이내) 에서만 지원.
-- **수명 — Phase 6 종료 시 완전 제거**: inline 모드는 Worker Pools·Memorystore 가 없는 상황을 피하기 위한 임시 우회로. Phase 3/4 (Terraform apply + EE worker 배포) 완료 + Phase 6 E2E 검증 통과 시 `execution_mode` 스위치 + inline 분기 + 관련 테스트를 코드에서 **전부 삭제** 한다. local dev 는 docker-compose Redis + 로컬 Celery worker 경로로, 유닛 테스트는 기존 Celery eager 모드로 대체 — inline 을 영구 경로로 두지 않음.
-- **강제 장치**: Phase 6 완료 PR 의 체크리스트에 "inline 코드/설정/테스트 완전 제거" 명시 + CI 에 `grep -r "execution_mode.*inline"` guard 추가해 재도입 차단.
+- `settings.execution_mode = "inline" | "celery"` (default `celery`, temporary `inline` switch). Inline skips queueing and calls `runtime.executor.execute_dag(...)` directly with `await` inside the same FastAPI request process.
+- Constraints: cannot exceed request timeout (Cloud Run default 5 min), node parallelism limited to single-instance asyncio, large data nodes (Drive uploads etc.) accumulate memory. Supported only within the demo workflow scope (≤10 nodes, ≤2-min execution).
+- **Lifetime — completely removed at Phase 6 end**: Inline mode is a temporary workaround to avoid the situation without Worker Pools / Memorystore. After Phase 3/4 (Terraform apply + EE worker deploy) completes and Phase 6 E2E validation passes, **delete entirely** the `execution_mode` switch + inline branch + related tests from the code. Local dev moves to docker-compose Redis + local Celery worker; unit tests stay on existing Celery eager mode — inline is not made a permanent path.
+- **Enforcement**: Phase 6 completion PR's checklist includes "completely remove inline code/config/tests" + a CI guard `grep -r "execution_mode.*inline"` to block reintroduction.
 
-### 6. Idempotency + 분산 락 — 같은 Redis 재사용, DB 테이블 기각
+### 6. Idempotency + distributed lock — reuse the same Redis, reject DB tables
 
-- **execution_id 멱등**: 워크플로우 실행 시작 시 `SETNX execution:{id}` (TTL 24h). 이미 존재하면 duplicate — 재시도·클라이언트 재전송 방어. Celery task 진입점에 wrapping.
-- **OAuth refresh 분산 락** (ADR-019 §1 deferred): `credential:{uuid}:refresh` key 에 `SETNX NX EX 10`. 멀티워커가 동일 만료 감지 시 1개만 Google `/token` 호출. ADR-019 `asyncio.Lock` (단일 process) 과 2단 구성 — 같은 프로세스는 asyncio, 프로세스 경계는 Redis.
-- **OAuth state nonce** (ADR-019 §5 deferred): `oauth:state:{nonce}` → `SETNX EX 600`. 멀티 API_Server 인스턴스 간 nonce 재사용 방지. 기존 in-memory LRU 는 제거.
-- **기각 — DB 테이블 `oauth_state_nonces` / `execution_idempotency`**: SETNX 원자성을 DB 로 재구현할 이유 없음. Memorystore 가 이미 있고 TTL 자동 만료됨.
+- **execution_id idempotency**: At workflow execution start, `SETNX execution:{id}` (TTL 24h). If already present, duplicate — defends against retries / client resends. Wrap at the Celery task entry point.
+- **OAuth refresh distributed lock** (ADR-019 §1 deferred): `SETNX NX EX 10` on `credential:{uuid}:refresh` key. When multiple workers detect the same expiration, only 1 calls Google `/token`. 2-tier setup with ADR-019's `asyncio.Lock` (single process) — same process uses asyncio, process boundary uses Redis.
+- **OAuth state nonce** (ADR-019 §5 deferred): `SETNX EX 600` on `oauth:state:{nonce}`. Prevents nonce reuse between multiple API_Server instances. Existing in-memory LRU is removed.
+- **Reject — DB tables `oauth_state_nonces` / `execution_idempotency`**: No reason to reimplement SETNX atomicity in the DB. Memorystore is already there and TTL auto-expires.
 
 ### 7. Graceful shutdown — SIGTERM → Celery warm shutdown
 
-- Worker Pools 는 revision 교체 시 SIGTERM 10초 grace period. Celery worker 기본값은 warm shutdown (in-flight task 완료 대기) 이지만 10초 넘으면 SIGKILL 로 중단 — 노드 실행 중간 절단.
-- **계약**: `CELERYD_TASK_SOFT_TIME_LIMIT = 8s` 로 soft timeout → 작업 스스로 checkpoint 후 리큐. 장기 작업 (Drive 업로드 등) 은 chunked task 설계로 분할. 단기 노드 (HTTP, Condition) 는 영향 없음.
-- **기각 — preStop hook 로 shutdown 연장**: Worker Pools preStop 은 최대 10초, Cloud Run Jobs 처럼 긴 grace 불가. 애플리케이션 쪽 soft timeout 이 유일한 레버.
+- Worker Pools have a 10-sec SIGTERM grace period on revision swap. The Celery worker default is warm shutdown (waits for in-flight tasks) but past 10 sec it gets SIGKILLed — node execution cut off mid-flight.
+- **Contract**: `CELERYD_TASK_SOFT_TIME_LIMIT = 8s` for soft timeout → tasks self-checkpoint and re-queue. Long jobs (Drive uploads etc.) designed as chunked tasks. Short nodes (HTTP, Condition) unaffected.
+- **Reject — Extend shutdown via preStop hook**: Worker Pools preStop is at most 10 sec; cannot extend grace like Cloud Run Jobs. Application-side soft timeout is the only lever.
 
-### 8. 관측 — Cloud Run 기본 로그 + Error Reporting
+### 8. Observability — Cloud Run default logs + Error Reporting
 
-- Worker Pools stdout/stderr → Cloud Logging 자동 수집. Celery task 시작·완료·실패 로그를 structured JSON 으로 출력 (`logger.info({"event": "task_start", "execution_id": ..., "node_type": ...})`).
-- 별도 Grafana/Prometheus 없음. Cloud Monitoring Dashboard 1개 (Worker Pools 인스턴스 수 + Memorystore CPU/메모리 + Celery task 실패율) 만 수동 생성. 알림은 API_Server uptime (ADR-020) 과 동일 기준 — 실사용자 투입 전까지 기본만.
+- Worker Pools stdout/stderr → Cloud Logging auto-collected. Output Celery task start/finish/failure logs as structured JSON (`logger.info({"event": "task_start", "execution_id": ..., "node_type": ...})`).
+- No separate Grafana/Prometheus. Manually create one Cloud Monitoring Dashboard (Worker Pools instance count + Memorystore CPU/memory + Celery task failure rate). Alerts use the same baseline as API_Server uptime (ADR-020) — defaults only until real users come online.
 
-### 9. 비용 엔벨로프 — ADR-020 기반에 ~$35/월 + 사용량 과금
+### 9. Cost envelope — based on ADR-020 + ~$35/mo + usage billing
 
-| 품목 | 단가 (asia-northeast3) | 월 $ (idle) |
+| Item | Unit (asia-northeast3) | $/mo (idle) |
 |---|---|---|
-| Memorystore Redis Basic 1GB | ~$35/mo 상시 | 35 |
-| Worker Pools (min=0, wake-on-trigger) | vCPU·s + mem·s (실행 시만) | ~$0 idle, 실행당 과금 |
+| Memorystore Redis Basic 1GB | ~$35/mo always-on | 35 |
+| Worker Pools (min=0, wake-on-trigger) | vCPU·s + mem·s (during execution only) | ~$0 idle, billed per execution |
 | Direct VPC Egress | traffic-based | <1 |
-| **합계 추가분** | | **~35 상시 + 사용량** |
+| **Added subtotal** | | **~35 always-on + usage** |
 
-ADR-020 기반 (~$30/mo: Cloud SQL + Cloud Run API_Server min=1) 과 합쳐 **~$65/mo** 상시 + 워크플로우 실행 분 과금. Worker Pools 가 과금되는 시점은 wake-up 후 idle timeout (기본 15분) 까지이므로 "한 번 깨우면 15분간 다른 실행은 warm" 패턴. 빈번한 on/off 는 오히려 비싸질 수 있어 §4 경계 조건 모니터링 대상.
+Combined with ADR-020 baseline (~$30/mo: Cloud SQL + Cloud Run API_Server min=1) → **~$65/mo** always-on + workflow-execution-minute billing. Worker Pools is billed from wake-up until idle timeout (15 min default), so the pattern is "once woken, other executions are warm for 15 minutes." Frequent on/off can paradoxically cost more — covered by the §4 boundary monitoring.
 
-### 10. 범위 외 — 후속 ADR 분리
+### 10. Out of scope — split into follow-up ADRs
 
-- **Agent 모드 배포** (고객 VPC 설치 경량 실행기): 고객 엔터프라이즈 요구 시점에 별도 ADR. Worker Pools 결정과 독립.
-- **GPU / LLM Inference** (ADR-008 Inference_Service): Worker Pools 가 아닌 Cloud Run + L4 GPU 또는 별도 GKE. 본 ADR 범위 외.
-- **멀티 리전 / HA**: Memorystore Standard 승격 + 리전 이중화는 실사용자 SLA 요구 발생 시.
-- **스케줄러 (APScheduler) 배포**: 현재 API_Server 프로세스 내 embedded. 실사용 스케줄 증가 시 별도 Worker Pools 로 분리 가능 (본 ADR 에서 준비만 — Celery Beat 교체 검토).
+- **Agent-mode deployment** (lightweight executor installed in customer VPC): Separate ADR when customer enterprise demand emerges. Independent of the Worker Pools decision.
+- **GPU / LLM Inference** (ADR-008 Inference_Service): Cloud Run + L4 GPU or separate GKE, not Worker Pools. Out of scope here.
+- **Multi-region / HA**: Memorystore Standard promotion + region duplication when real-user SLA demand emerges.
+- **Scheduler (APScheduler) deployment**: Currently embedded in the API_Server process. Can split into its own Worker Pools when real-use scheduling grows (this ADR only prepares — Celery Beat replacement TBD).
 
 **Consequences**
 
-- (+) **전 기능 배포 달성**: API 트리거 → Redis 큐 → Worker → DB 기록 전체 경로 가용. Agent 경로 외 Serverless 경로 열림.
-- (+) **Celery / broker 결정 보존**: ADR-003 재작성 없이 Cloud Run 으로 이관 가능. 기존 테스트 (PR #62/63 Worker 버그 픽스, PR #66 psycopg3 정합) 그대로 유효.
-- (+) **OAuth 분산 락 구멍 메움**: ADR-019 deferred 항목 해소. Memorystore SETNX 로 refresh·state·execution idempotency 3용도 단일 Redis 에서 처리.
-- (+) **Frontend Phase C 해금**: inline stopgap 으로 Worker Pools 배포 대기 없이 E2E 가능. Worker Pools 는 Phase 3 에 병렬 착수.
-- (+) **Dockerfile·애플리케이션 코드 재사용**: `Execution_Engine/Dockerfile` 그대로, Celery worker 엔트리포인트 `python scripts/worker.py` 변경 없음. 배포만 추가.
-- (−) **상시 비용 ~$35 추가**: Memorystore Basic 이 고정 과금. Worker Pools 는 min=0 이라 idle 과금 없음. destroy 시 Memorystore 인스턴스 삭제는 데이터 무관 (broker TTL 24h), Worker Pools 는 revision 만.
-- (−) **First-task cold start 10~20초**: min=0 의 대가 — API trigger 가 Worker Pools wake-up API call + 컨테이너 부팅 (Celery·DB·Redis 연결) 을 거친 뒤 첫 task 를 pickup. 시연 시 Frontend progress UI 로 보정. 사용량 증가 시 §4 경계에서 min 상향 재검토.
-- (−) **API_Server → Cloud Run Admin API 호출 권한 확장**: API SA 에 `run.workerPools.update` IAM 바인딩 추가 — 자기 프로젝트의 Worker Pools 리소스 조작 권한이 생김. blast radius 제한을 위해 IAM condition 으로 특정 Worker Pools 리소스로 범위 고정.
-- (−) **Memorystore 삭제 보호 없음 (Basic)**: `lifecycle { prevent_destroy }` 로 Terraform 가드만 적용. HA 는 prod 진입 시 Standard 승격 재검토 (별도 ADR Update).
-- (−) **Celery warm shutdown 10초 상한**: 긴 노드 실행은 soft timeout + chunked 설계 의무. 기존 Drive 업로드·Slides 생성 노드 소요 시간 실측 필요 (Phase 3 회귀 체크).
-- (−) **Cloud Run Worker Pools SKU 는 신규 제품**: 2024 GA 이후 운영 사례가 적음. 문서 갱신 지연·리전별 제약·콘솔 UX 미성숙 리스크 — 실배포 과정에서 발견되는 gotcha 는 Phase 4 에서 ADR Update 섹션으로 수렴.
+- (+) **Full-stack deploy achieved**: API trigger → Redis queue → Worker → DB record full path is available. The Serverless path opens in addition to the Agent path.
+- (+) **Celery / broker decisions preserved**: Migrate to Cloud Run without rewriting ADR-003. Existing tests (PR #62/63 Worker bug fix, PR #66 psycopg3 alignment) remain valid.
+- (+) **Plugs OAuth distributed-lock holes**: Resolves ADR-019 deferred items. A single Redis (Memorystore SETNX) handles refresh / state / execution idempotency in 3 uses.
+- (+) **Frontend Phase C unblocked**: With the inline stopgap, E2E is possible without waiting for Worker Pools deploy. Worker Pools kicks off in parallel in Phase 3.
+- (+) **Dockerfile / app code reused**: `Execution_Engine/Dockerfile` as-is, Celery worker entry point `python scripts/worker.py` unchanged. Only deployment is added.
+- (−) **Adds ~$35 always-on cost**: Memorystore Basic is fixed billing. Worker Pools min=0 has no idle billing. On destroy, deleting Memorystore is data-irrelevant (broker TTL 24h); Worker Pools is just revisions.
+- (−) **First-task cold start 10–20 sec**: Price of min=0 — API trigger → Worker Pools wake-up API call + container boot (Celery / DB / Redis connections) before first task pickup. Mitigate with frontend progress UI in demos. As usage grows, revisit raising min at the §4 boundary.
+- (−) **API_Server → Cloud Run Admin API call permission expansion**: Adds `run.workerPools.update` IAM binding to API SA — gains permission to manipulate Worker Pools resources in its own project. Limit blast radius by IAM condition scoping to specific Worker Pools resources.
+- (−) **No Memorystore deletion protection (Basic)**: Apply only Terraform guard `lifecycle { prevent_destroy }`. HA review on prod entry → reconsider Standard promotion (separate ADR Update).
+- (−) **Celery warm shutdown 10-sec cap**: Long node executions require soft timeout + chunked design. Existing Drive upload / Slides creation node times need real measurement (Phase 3 regression check).
+- (−) **Cloud Run Worker Pools SKU is a new product**: Few production cases since 2024 GA. Risks around doc lag / per-region constraints / immature console UX — gotchas found during real deploy converge into the ADR Update section in Phase 4.
 
-**Phase 진행 상태**
+**Phase progress**
 
-| Phase | 범위 | 상태 |
+| Phase | Scope | Status |
 |---|---|---|
-| 1 | ADR-021 설계 문서 | ⏳ 본 PR (draft) |
-| 2 | `infra/plans/PLAN_21_worker_pools.md` — Phase 3~6 구현 분해 + 테스트 게이트 | 미착수 |
-| 3 | `infra/terraform/memorystore.tf` (Basic 1GB + Service Networking 재사용) + `worker.tf` (Cloud Run Worker Pools `min=0 max=5` + SA + IAM + Direct VPC Egress + 시크릿 주입) + API_Server SA 에 `run.workerPools.update` IAM 바인딩 추가 | 미착수 |
-| 4 | Execution_Engine: Celery broker URL → Memorystore 경로 교체 + SIGTERM 핸들러 + soft timeout 설정 + execution_id SETNX idempotency wrapping | 미착수 |
-| 5 (임시) | API_Server: `workflow_service.execute_workflow()` inline 모드 + `settings.execution_mode` + Frontend Phase C 해금용 스톱갭. Phase 6 종료 시 제거 대상 | 미착수 |
-| 5-b | API_Server: `celery` 모드에서 Worker Pools wake-up (Cloud Run Admin API `patch`) 호출 wiring + 동시 wake 방지 throttle | 미착수 |
-| 6 | E2E: staging apply → /execute trigger → wake-up → Redis 큐 → Worker pickup → DB 결과 기록 full path + Cloud Monitoring dashboard 수동 생성 + **inline 모드 코드/설정/테스트 전부 제거** (+ CI grep guard) + destroy 싸이클 검증 | 미착수 |
+| 1 | ADR-021 design doc | ⏳ This PR (draft) |
+| 2 | `infra/plans/PLAN_21_worker_pools.md` — Phase 3~6 implementation breakdown + test gates | Not started |
+| 3 | `infra/terraform/memorystore.tf` (Basic 1GB + Service Networking reuse) + `worker.tf` (Cloud Run Worker Pools `min=0 max=5` + SA + IAM + Direct VPC Egress + secret injection) + add `run.workerPools.update` IAM binding to API_Server SA | Not started |
+| 4 | Execution_Engine: Switch Celery broker URL → Memorystore path + SIGTERM handler + soft timeout settings + execution_id SETNX idempotency wrapping | Not started |
+| 5 (temporary) | API_Server: `workflow_service.execute_workflow()` inline mode + `settings.execution_mode` + Frontend Phase C unblock stopgap. Removed at Phase 6 end | Not started |
+| 5-b | API_Server: in `celery` mode, wire Worker Pools wake-up (Cloud Run Admin API `patch`) call + concurrent-wake throttle | Not started |
+| 6 | E2E: staging apply → /execute trigger → wake-up → Redis queue → Worker pickup → DB result record full path + manually create Cloud Monitoring dashboard + **completely remove inline mode code/config/tests** (+ CI grep guard) + destroy cycle validation | Not started |
 
 **Related**
 
-- Builds on: ADR-018 (Cloud SQL + VPC 기반), ADR-020 (Cloud Run 배포 패턴 + VPC + Secret Manager)
-- Resolves (deferred): ADR-019 §1 분산 refresh 락, §5 state nonce 멀티 인스턴스 — 본 ADR Memorystore SETNX 로 해소
-- Supersedes (부분): ADR-003 의 배포 경로 구체화. broker (Redis) 결정 자체는 유지.
-- Affects branches: `docs` (본 ADR), `infra` (terraform + PLAN), `Execution_Engine` (worker entrypoint 보정), `API_Server` (inline mode)
-- Next ADR (예정): `ADR-022 — Frontend 배포` (Cloud Storage + CDN vs Cloud Run 정적), `ADR-023 — Agent 배포` (고객 VPC installer)
+- Builds on: ADR-018 (Cloud SQL + VPC base), ADR-020 (Cloud Run deploy pattern + VPC + Secret Manager)
+- Resolves (deferred): ADR-019 §1 distributed refresh lock, §5 multi-instance state nonce — resolved by Memorystore SETNX in this ADR
+- Supersedes (partial): Concretizes ADR-003's deployment path. The broker (Redis) decision itself stands.
+- Affects branches: `docs` (this ADR), `infra` (terraform + PLAN), `Execution_Engine` (worker entry-point fix), `API_Server` (inline mode)
+- Next ADR (planned): `ADR-022 — Frontend deployment` (Cloud Storage + CDN vs. Cloud Run static), `ADR-023 — Agent deployment` (customer VPC installer)
 
 ---
 
-## ADR-024 — Reflective workflow → ReAct agent loop (LLM 이 도구 사용 결정)
+## ADR-024 — Reflective workflow → ReAct agent loop (LLM decides tool use)
 
-**상태**: Accepted · **날짜**: 2026-05-09
+**Status**: Accepted · **Date**: 2026-05-09
 
 **Context**
 
-PLAN_13 까지 만든 `policy_extract_reflective` 는 LangGraph StateGraph + 노드 3개 (extract / self_eval / reflect) 의 **결정론적 workflow** 다 — 노드 순서를 hand-coded conditional edge (`decide_after_eval`, `decide_after_reflect`) 가 정한다. Anthropic "Building effective agents" (2024-12) 의 분류 기준으로:
+Up to PLAN_13, `policy_extract_reflective` is a **deterministic workflow** built from a LangGraph StateGraph + 3 nodes (extract / self_eval / reflect) — node order is decided by hand-coded conditional edges (`decide_after_eval`, `decide_after_reflect`). By the classification in Anthropic's "Building effective agents" (2024-12):
 
 > Workflows are systems where LLMs and tools are orchestrated through **predefined code paths**. Agents are systems where LLMs **dynamically direct their own processes and tool usage**.
 
-본 시스템은 명백히 workflow 측. 라이브 smoke 결과 (D3, +3 cand recall delta) 가 입증한 것은 self-critique 회로의 동작이지, LLM 의 자율 선택 능력이 아니다.
+The current system is clearly on the workflow side. The live smoke result (D3, +3 cand recall delta) proved the operation of the self-critique circuit, not the LLM's autonomous selection capability.
 
-해커톤 narrative ("**시스템이 학습한다**", ADR-023 §6) 은 두 축에서 agent 자격을 요구:
+The hackathon narrative ("**the system learns**", ADR-023 §6) demands agent qualification on two axes:
 
-1. **Storytelling 30%**: 심사위원 청중 (Kaggle, 비기술 평가자 다수) 에게 "agent" 는 강한 단어. workshop 규모 자동화 ≠ agent 라는 인식이 인더스트리 전반에 정렬돼있어, workflow 라고 부르면 narrative 가 무게를 잃는다.
-2. **Impact & Vision 40%**: PLAN_14 의 자율 학습 narrative ("사용자가 시스템을 학습시키는 게 아니라 시스템이 사용자를 학습한다") 는 도구 (personal_skills retrieval) 를 LLM 이 자기 결정으로 부르는 그림에서만 자연스러움. workflow 위에 retrieval 을 hardcode 하면 "조건만 추가된 같은 자동화" 로 들린다.
+1. **Storytelling 30%**: To the audience of judges (Kaggle, with many non-technical evaluators), "agent" is a strong word. The industry-wide perception is that workshop-scale automation ≠ agent — calling it a workflow loses narrative weight.
+2. **Impact & Vision 40%**: PLAN_14's autonomous-learning narrative ("the user does not train the system; the system learns the user") is only natural in a picture where the LLM calls a tool (personal_skills retrieval) on its own decision. Hardcoding retrieval on top of a workflow sounds like "the same automation with one more condition."
 
-마감까지 9일 남음 (5/9 → 5/18). PLAN_14 의 `personal_skills` 인프라가 어차피 5/11 부터 만들어질 것이므로 — **agent 도구 카탈로그에 미리 자리를 잡으면 sunk cost 가 invest 로 전환**.
+9 days remain to the deadline (5/9 → 5/18). Since PLAN_14's `personal_skills` infrastructure will be built starting 5/11 anyway — **pre-allocating a slot in the agent tool catalog turns sunk cost into investment**.
 
 **Decision**
 
-1. **Tool dataclass + ReAct-style agent loop 신규 (PR-α, 본 ADR 도입과 함께 머지)**.
-   - `app/agents/tool.py` Tool 정의 (name / description / parameters / handler)
-   - `app/agents/agent_loop.py` `run_agent()` — LLM 의 `<tool_call>` 을 파싱 → dispatch → observation 환송 → loop
-   - `app/agents/_tool_parse.py` 와이어 포맷 파서
+1. **Add a Tool dataclass + ReAct-style agent loop (PR-α, merged with this ADR's introduction)**.
+   - `app/agents/tool.py` Tool definition (name / description / parameters / handler)
+   - `app/agents/agent_loop.py` `run_agent()` — parses the LLM's `<tool_call>` → dispatches → returns observation → loops
+   - `app/agents/_tool_parse.py` wire-format parser
 
-2. **와이어 포맷: prompt-engineered XML 태그 블록**. Native function calling 미사용 — Gemma 4 via llama.cpp 의 native tool 안정성 검증 안 됨, 추가 모델 의존성 회피. `judge.py` 의 prompt-engineered JSON 출력과 동일 posture.
+2. **Wire format: prompt-engineered XML tag block**. Native function calling not used — Gemma 4 via llama.cpp's native tool stability is unverified, and we want to avoid adding model dependencies. Same posture as `judge.py`'s prompt-engineered JSON output.
 
    ```
    <tool_call name="TOOL_NAME">
    {"arg": "value"}
    </tool_call>
    ```
-   또는
+   or
    ```
    <finish>
-   {...JSON 결과...}
+   {...JSON result...}
    </finish>
    ```
 
-   Observation 환송 (다음 user turn 에 포함):
+   Observation return (included in next user turn):
    ```
    <tool_result tool="TOOL_NAME">
    {JSON serialized return value}
    </tool_result>
    ```
 
-3. **기존 `extract_policies` / `evaluate_coverage` (deterministic + LLM judge) 를 tool 로 노출 (PR-β)**. langgraph StateGraph 제거, agent loop 으로 교체. 외부 API (`/v1/policy/extract_reflective`) 의 응답 shape 보존 — 호출자 (API_Server proxy, Frontend wizard) 무수정.
+3. **Expose existing `extract_policies` / `evaluate_coverage` (deterministic + LLM judge) as tools (PR-β)**. Remove the langgraph StateGraph and replace with the agent loop. Preserve the external API (`/v1/policy/extract_reflective`) response shape — no changes for callers (API_Server proxy, Frontend wizard).
 
-4. **추가 도구 (PR-γ/δ/ε) 로 진정한 agent capability 부여**:
-   - `search_personal_skills(user_id, query, k)` — BGE-M3 retrieval over `personal_skills` 테이블 (PLAN_14 가 채울 자리)
-   - `search_industry_baselines(domain, query, k)` — 시드 YAML 정책 위 retrieval
-   - `validate_skill_schema(draft)` — 결정론적 형식 검증
-   - `cite_source_url(draft, domain)` — 결정론적 소스 매칭 + URL 회수
+4. **Add tools (PR-γ/δ/ε) to grant true agent capability**:
+   - `search_personal_skills(user_id, query, k)` — BGE-M3 retrieval over the `personal_skills` table (slot to be filled by PLAN_14)
+   - `search_industry_baselines(domain, query, k)` — retrieval over seeded YAML policies
+   - `validate_skill_schema(draft)` — deterministic format validation
+   - `cite_source_url(draft, domain)` — deterministic source matching + URL retrieval
 
-   이 4개 도구는 LLM 이 "자기 추출 직전에 사용자의 과거 패턴 / 업계 표준 / 검증 / 인용을 자기 결정으로 부른다" 의 narrative 를 만든다 — Anthropic 정의의 agent 자격 충족.
+   These 4 tools build the narrative "the LLM, just before its own extraction, calls user past patterns / industry standards / validation / citation on its own decision" — meeting Anthropic's agent qualification.
 
-5. **Termination 사유 5종**:
-   - `finish` (정상 종료, model 의 `<finish>`)
-   - `parse_error` (model 출력 unparseable)
-   - `tool_not_found` (등록 안 된 tool 호출, 1회 obs error 로 회복 시도)
-   - `max_iter_exhausted` (기본 8)
-   - `no_progress` (같은 (tool, args) 가 연속 2회 — 모델 stuck)
+5. **5 termination reasons**:
+   - `finish` (normal end, model's `<finish>`)
+   - `parse_error` (model output unparseable)
+   - `tool_not_found` (call to unregistered tool, attempts recovery via 1 obs error)
+   - `max_iter_exhausted` (default 8)
+   - `no_progress` (same (tool, args) twice in a row — model stuck)
 
-6. **회귀 가드: D3 라이브 smoke 의 +3 cand recall delta 보존**. PR-β 머지 전 GitLab handbook 5-chunk sample 재실행. 회귀 시 system_goal 의 도구 사용 가이드 보강 또는 PR scope 축소.
+6. **Regression guard: preserve the +3 cand recall delta of D3 live smoke**. Re-run the GitLab handbook 5-chunk sample before merging PR-β. On regression, strengthen the system_goal tool-use guidance or shrink PR scope.
 
 **Consequences**
 
-- (+) **Anthropic-정의 agent 자격 충족**. Storytelling / Impact 평가축에서 narrative 정렬.
-- (+) **PLAN_14 의 retrieval 인프라가 sunk cost 로 전환**. PLAN_14 PR 수 9 → 7-8 압축 가능. 일정 net 영향 0~1일.
-- (+) **확장 가능 도구 모델**. 미래 W4 (adversarial harness) / 정책 충돌 검사 / 외부 SaaS 통합 모두 새 tool 등록만으로 흡수.
-- (+) **외부 API 무수정**. `/v1/policy/extract_reflective` 응답 shape 보존 — API_Server proxy 와 Frontend wizard 미영향.
-- (−) **Latency 증가 (turn 수 증가)**. 기존 langgraph 가 1-2 LLM call/iter 였던 것이 agent loop 에서 1 turn = 1 LLM call 로 분리 → 도구 4개 사용 시 5-6 LLM call. text-mode warm 5-25s/call 기준 실제 25-100s/chunk. **Mitigation**: 회귀 가드 통과 시 acceptable. 영상에서는 cold-start 후 warm chunk 만 시연.
-- (−) **Determinism 감소**. 같은 입력에 다른 도구 순서 가능. **Mitigation**: 회귀 측정은 같은 입력 N회 재실행으로 분산 측정. 시연 narrative 는 trace tree 로 "agent 가 자기 결정으로 도구 부른 흔적" 을 강점화.
-- (−) **PR #168 (D3 evidence) 의 NDJSON / 스크린샷 obsolete**. PR-ζ 에서 재캡처. 사용자 합의 후 진행 (이미 합의: "PR #168 머지 보류, refactor 와 합쳐서 재편").
-- (−) **Tool 호출 비용 (LLM 이 args 잘못 emit 시 재시도)**. `no_progress` brake 가 budget 보호. 실측 시 budget hit 빈번하면 system_goal 보강.
-- (−) **PLAN_13 §1-§10 본문 stale**. §11 에서 명시적으로 retrofit. PLAN_15 별도 작성 X (사용자 결정).
+- (+) **Meets Anthropic-defined agent qualification**. Aligns the narrative on the Storytelling / Impact axes.
+- (+) **PLAN_14's retrieval infrastructure converts sunk cost**. PLAN_14 PR count compresses 9 → 7-8. Schedule net impact 0–1 day.
+- (+) **Extensible tool model**. Future W4 (adversarial harness) / policy conflict checking / external SaaS integration absorbed by registering new tools.
+- (+) **External API unchanged**. `/v1/policy/extract_reflective` response shape preserved — no impact on API_Server proxy and Frontend wizard.
+- (−) **Latency increases (more turns)**. The langgraph used to be 1–2 LLM calls/iter; the agent loop becomes 1 turn = 1 LLM call → 5–6 LLM calls when 4 tools are used. At text-mode warm 5–25 sec/call, actual is 25–100 sec/chunk. **Mitigation**: acceptable if regression guard passes. The video shows only warm chunks after cold-start.
+- (−) **Determinism decreases**. The same input may yield different tool orders. **Mitigation**: regression measurement re-runs the same input N times for variance. Demo narrative leverages the trace tree as evidence of "the agent calling tools by its own decision."
+- (−) **PR #168 (D3 evidence) NDJSON / screenshots become obsolete**. Recapture in PR-ζ. Proceed after user agreement (already agreed: "hold PR #168 merge, repackage with refactor").
+- (−) **Tool call cost (LLM emits wrong args, retries)**. The `no_progress` brake protects budget. If the budget hit is frequent in measurement, strengthen system_goal.
+- (−) **PLAN_13 §1-§10 body becomes stale**. Retrofit explicitly in §11. No separate PLAN_15 (user decision).
 
-**미해결 (PR-β-ζ 에서 확정)**
+**Open (fixed in PR-β-ζ)**
 
-1. PR-β 의 회귀 측정에서 +3 cand 미달 시 fallback — agent 의 system_goal 보강으로 해소 vs PR scope 축소 (도구 일부 PR-γ 이후로 이연).
-2. agent_trace JSON shape — 기존 (langgraph iterations) vs 새 (agent steps). 외부 wire 호환성 위해 기존 shape 변환 어댑터 추가 vs Frontend `agentTrace` 타입 갱신 동시 PR. PR-β 에서 결정.
-3. cold-start chunk 의 max_iter — 기본 8 이 충분한가. 관찰 후 조정.
-4. judge 도구의 `evaluate_coverage` 통합 — 기존 self_eval 의 결정론적 룰 + LLM judge 두 단계를 한 tool 로 묶을지 / `evaluate_coverage` (룰) + `judge_extraction` (LLM judge) 두 tool 로 분리할지. 분리하면 LLM 이 비용 의식적으로 judge 호출 결정 가능 — PR-β 에서 실측.
+1. If PR-β regression measurement falls short of +3 cand, fallback — strengthen the agent's system_goal vs. shrink PR scope (defer some tools to after PR-γ).
+2. agent_trace JSON shape — existing (langgraph iterations) vs. new (agent steps). For external wire compat, add an adapter that converts to the existing shape vs. update Frontend `agentTrace` type in the same PR. Decide in PR-β.
+3. max_iter for cold-start chunks — is the default of 8 enough? Adjust after observation.
+4. Integration of the judge tool with `evaluate_coverage` — bundle the existing self_eval's deterministic rule + LLM judge stages into one tool, or split into `evaluate_coverage` (rule) + `judge_extraction` (LLM judge) two tools? With splitting the LLM can decide judge calls cost-consciously — measured in PR-β.
 
 **Related**
 
-- Builds on: PLAN_13 (workflow 골격, judge 도구화 대상), ADR-022 §11.5 (관찰 기반 skill 후보 — agent retrieval 이 실현 경로)
-- Refines: PLAN_13 §1-§10 (workflow → agent 전환을 §11 에서 retrofit)
-- Resolves (narrative): ADR-023 §6 의 "시스템이 학습한다" narrative 의 mechanism 전제 (agent + retrieval) 정렬
-- Affects branches: `AI_Agent` (agent loop / 도구 카탈로그 / langgraph 제거), `Database` (personal_skills 테이블 — PR-γ), `Frontend` (agent_trace shape 변경 시 — PR-β 에서 결정), `docs` (본 ADR + PLAN_13 §11)
-- 메모리 `feedback_no_auto_merge.md` — 본 ADR 의 모든 PR 은 명시 승인 전까지 머지 X
+- Builds on: PLAN_13 (workflow skeleton, judge tool target), ADR-022 §11.5 (observation-based skill candidates — agent retrieval is the realization path)
+- Refines: PLAN_13 §1-§10 (workflow → agent transition retrofit in §11)
+- Resolves (narrative): aligns the mechanism premise (agent + retrieval) for ADR-023 §6's "the system learns" narrative
+- Affects branches: `AI_Agent` (agent loop / tool catalog / langgraph removal), `Database` (personal_skills table — PR-γ), `Frontend` (when agent_trace shape changes — decided in PR-β), `docs` (this ADR + PLAN_13 §11)
+- Memory `feedback_no_auto_merge.md` — none of this ADR's PRs are merged before explicit approval
 
 ---
 
-## 관련 문서
+## Related documents
 
-- 전체 아키텍처: [`architecture.md`](./architecture.md)
-- 파일 맵: [`MAP.md`](./MAP.md)
+- Full architecture: [`architecture.md`](./architecture.md)
+- File map: [`MAP.md`](./MAP.md)
