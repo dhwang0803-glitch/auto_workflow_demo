@@ -1,42 +1,42 @@
-# PLAN_09 — Credential Pipeline (Database 부분)
+# PLAN_09 — Credential pipeline (Database portion)
 
-> 청사진: [`docs/context/PLAN_credential_pipeline.md`](../../docs/context/PLAN_credential_pipeline.md)
-> 선행 ADR: ADR-004 (Fernet 저장), ADR-013 (Agent 전송), ADR-016 (파이프라인 분리)
-> 후속: `API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md`
+> Blueprint: [`docs/context/PLAN_credential_pipeline.md`](../../docs/context/PLAN_credential_pipeline.md)
+> Predecessor ADRs: ADR-004 (Fernet storage), ADR-013 (Agent transport), ADR-016 (pipeline split)
+> Follow-up: `API_Server/plans/PLAN_07_CREDENTIAL_PIPELINE.md`
 
-## 목표
+## Goals
 
-BYO + Per-execution 자격증명 파이프라인의 Database 계층 구현:
+Database-layer implementation of the BYO + per-execution credential pipeline:
 
-1. `credentials.type` 컬럼 + CHECK 제약으로 credential_type 카탈로그 고정
-2. `CredentialStore.bulk_retrieve(ids, owner_id)` — execution 트리거 1회 복호화 경로
-3. `CredentialStore.store()` 가 `credential_type` 을 함께 저장
+1. `credentials.type` column + CHECK constraint to lock in the credential_type catalog
+2. `CredentialStore.bulk_retrieve(ids, owner_id)` — the single-shot decryption path on execution trigger
+3. `CredentialStore.store()` now persists `credential_type` alongside the row
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `migrations/20260601_credentials_type_column.sql` | 기존 DB 에 type 컬럼 추가 |
+| `migrations/20260601_credentials_type_column.sql` | Adds the type column to existing DBs |
 
-### 수정
-| 파일 | 변경 |
+### Modified
+| File | Change |
+|------|--------|
+| `schemas/002_credentials_agents_webhooks.sql` | Inline-add the `type` column on CREATE TABLE (for fresh installs) |
+| `auto_workflow_database/models/extras.py` | Add the `Credential.type` ORM field |
+| `auto_workflow_database/repositories/base.py` | Add `credential_type` kwarg to `CredentialStore.store`, plus the `bulk_retrieve` ABC |
+| `auto_workflow_database/repositories/credential_store.py` | Implement both methods |
+| `tests/fakes.py` | Mirror the changes on `InMemoryCredentialStore` |
+| `tests/test_credential_store.py` | Add Postgres integration tests (type / bulk_retrieve) |
+
+### New (tests)
+| File | Role |
 |------|------|
-| `schemas/002_credentials_agents_webhooks.sql` | CREATE TABLE 에 `type` 컬럼 inline 추가 (fresh install 용) |
-| `auto_workflow_database/models/extras.py` | `Credential.type` ORM 필드 추가 |
-| `auto_workflow_database/repositories/base.py` | `CredentialStore.store` 시그니처에 `credential_type` kwarg, `bulk_retrieve` ABC 추가 |
-| `auto_workflow_database/repositories/credential_store.py` | 두 메서드 구현 |
-| `tests/fakes.py` | `InMemoryCredentialStore` 미러 구현 |
-| `tests/test_credential_store.py` | Postgres 통합 테스트 추가 (type / bulk_retrieve) |
+| `tests/test_credential_bulk_fake.py` | Contract tests for `InMemoryCredentialStore.bulk_retrieve` (no DB required) |
 
-### 신규 (테스트)
-| 파일 | 역할 |
-|------|------|
-| `tests/test_credential_bulk_fake.py` | `InMemoryCredentialStore.bulk_retrieve` 계약 테스트 (DB 불필요) |
+## Implementation details
 
-## 구현 상세
-
-### 1. 마이그레이션 (`20260601_credentials_type_column.sql`)
+### 1. Migration (`20260601_credentials_type_column.sql`)
 
 ```sql
 ALTER TABLE credentials
@@ -44,14 +44,15 @@ ALTER TABLE credentials
     CHECK (type IN ('smtp', 'postgres_dsn', 'slack_webhook', 'http_bearer', 'unknown'));
 ```
 
-- Postgres 는 `ADD COLUMN` 과 함께 inline `CHECK` 허용 → 컬럼+제약 원자적 추가.
-- `IF NOT EXISTS` 로 fresh install (schemas/002 경로) 와 충돌 없음.
+- Postgres allows inline `CHECK` on `ADD COLUMN` → column + constraint added atomically.
+- `IF NOT EXISTS` keeps fresh installs (via the schemas/002 path) conflict-free.
 
-### 2. `schemas/002_credentials_agents_webhooks.sql` 갱신
+### 2. `schemas/002_credentials_agents_webhooks.sql` update
 
-credentials CREATE TABLE 에 `type` 컬럼 inline 추가. fresh install 시 마이그레이션이 no-op 이 되도록.
+Inline-add the `type` column to the credentials CREATE TABLE so that on a
+fresh install the migration becomes a no-op.
 
-### 3. `CredentialStore.store` 시그니처 확장
+### 3. `CredentialStore.store` signature extension
 
 ```python
 async def store(
@@ -64,10 +65,10 @@ async def store(
 ) -> UUID: ...
 ```
 
-- **위치 인자 순서 유지** — 기존 `store(owner_id, name, plaintext)` 호출 깨지지 않음
-- `credential_type` 은 kwarg, 기본값 `"unknown"` — 레거시/마이그레이션 호환
+- **Positional argument order is preserved** — existing `store(owner_id, name, plaintext)` callers don't break
+- `credential_type` is a kwarg defaulting to `"unknown"` — legacy / migration compatible
 
-### 4. `CredentialStore.bulk_retrieve` ABC + 구현
+### 4. `CredentialStore.bulk_retrieve` ABC + implementation
 
 ```python
 async def bulk_retrieve(
@@ -76,55 +77,55 @@ async def bulk_retrieve(
     *,
     owner_id: UUID,
 ) -> dict[UUID, dict]:
-    """ownership 필터 후 평문 dict 를 credential_id 로 매핑해 반환.
-    요청한 id 중 하나라도 결과에 없으면 KeyError — partial success 금지.
-    credential_ids 가 빈 리스트면 빈 dict 반환.
+    """Apply the ownership filter and return plaintext dicts keyed by credential_id.
+    If any requested id is missing from the result, raise KeyError — no partial success.
+    An empty credential_ids list returns an empty dict.
     """
 ```
 
-**Postgres 구현** (`credential_store.py`):
-- 한 번의 `SELECT id, encrypted_data FROM credentials WHERE owner_id = :owner AND id = ANY(:ids)` 로 fetch
-- 결과 행 개수 < 요청 id 개수 → `KeyError(f"missing credential(s): {diff}")`
-- 각 row 의 `encrypted_data` 를 Fernet 복호화 후 `json.loads`
+**Postgres implementation** (`credential_store.py`):
+- Single fetch: `SELECT id, encrypted_data FROM credentials WHERE owner_id = :owner AND id = ANY(:ids)`
+- If the result row count is less than the requested id count → `KeyError(f"missing credential(s): {diff}")`
+- Fernet-decrypt each row's `encrypted_data` and `json.loads` it
 
-**InMemory 구현** (`fakes.py`):
-- 동일 semantic: ownership 필터 + partial-fail-raises + empty-list-allowed
+**InMemory implementation** (`fakes.py`):
+- Same semantics: ownership filter + partial-fail-raises + empty-list-allowed
 
-### 5. 보안 불변식
+### 5. Security invariants
 
-- `bulk_retrieve` 반환값은 호출자 스코프에서만 존재 — 캐시/로그 금지 (docstring 에 명시)
-- ownership 미스매치시 *어느 id 가 자기 것이 아닌지* 에러에 노출하지 않는다 (열거 공격 방지) — 포괄 메시지 `"missing credential(s)"` 로 통일
+- The return value of `bulk_retrieve` only lives in the caller's scope — never cache or log it (called out in the docstring)
+- On ownership mismatch, do *not* leak which id wasn't yours (enumeration-attack defense) — the catch-all message `"missing credential(s)"` keeps it uniform
 
-## 테스트 전략
+## Test strategy
 
-### Postgres 통합 (`tests/test_credential_store.py` 추가, DATABASE_URL 없으면 skip)
-1. `test_store_with_type` — `store(..., credential_type="smtp")` 후 직접 SELECT 로 `type='smtp'` 검증
-2. `test_store_default_type_is_unknown` — kwarg 생략 → `type='unknown'`
-3. `test_store_rejects_invalid_type` — `credential_type="bogus"` → IntegrityError (CHECK 위반)
-4. `test_bulk_retrieve_happy` — 3개 저장 후 bulk_retrieve → 3개 plaintext 일치
-5. `test_bulk_retrieve_ownership_filter` — owner A 의 credential 을 owner B 로 조회 → KeyError
-6. `test_bulk_retrieve_missing_id_raises` — 존재하지 않는 UUID 섞어서 요청 → KeyError
-7. `test_bulk_retrieve_empty_list` — 빈 리스트 → 빈 dict
+### Postgres integration (`tests/test_credential_store.py`, skip without DATABASE_URL)
+1. `test_store_with_type` — `store(..., credential_type="smtp")`, then verify via direct SELECT that `type='smtp'`
+2. `test_store_default_type_is_unknown` — omit the kwarg → `type='unknown'`
+3. `test_store_rejects_invalid_type` — `credential_type="bogus"` → IntegrityError (CHECK violation)
+4. `test_bulk_retrieve_happy` — store 3, bulk_retrieve → 3 plaintexts match
+5. `test_bulk_retrieve_ownership_filter` — owner B asking for owner A's credentials → KeyError
+6. `test_bulk_retrieve_missing_id_raises` — mix in a non-existent UUID → KeyError
+7. `test_bulk_retrieve_empty_list` — empty list → empty dict
 
-### InMemory fake (`tests/test_credential_bulk_fake.py`, DB 불필요)
-1. `test_fake_store_preserves_type` — credential_type kwarg 저장 확인
+### InMemory fake (`tests/test_credential_bulk_fake.py`, no DB required)
+1. `test_fake_store_preserves_type` — verify the credential_type kwarg is stored
 2. `test_fake_bulk_retrieve_happy`
 3. `test_fake_bulk_retrieve_ownership_filter`
 4. `test_fake_bulk_retrieve_missing_raises`
 5. `test_fake_bulk_retrieve_empty_list`
 
-## 체크리스트
+## Checklist
 
-- [ ] 마이그레이션 SQL + schemas/002 동기 업데이트
-- [ ] `Credential` ORM 에 `type` 컬럼
-- [ ] `CredentialStore` ABC + Fernet/InMemory 구현
-- [ ] Postgres 통합 테스트 7개 (skip on no DB)
-- [ ] fake 단위 테스트 5개 (항상 실행)
-- [ ] 기존 테스트 호환 (`store(owner_id, name, plaintext)` 호출부 깨지지 않음)
-- [ ] 커밋 → push → PR
+- [ ] Migration SQL + schemas/002 kept in sync
+- [ ] `Credential` ORM gains the `type` column
+- [ ] `CredentialStore` ABC + Fernet/InMemory implementations
+- [ ] 7 Postgres integration tests (skip on no DB)
+- [ ] 5 fake unit tests (always run)
+- [ ] Backward compatibility (`store(owner_id, name, plaintext)` callers don't break)
+- [ ] Commit → push → PR
 
 ## Out of scope
 
-- credential rotation / 만료 (Phase 2)
-- credential type 별 schema 강제 validation (API_Server 책임)
-- audit 테이블 (후속 결정 — 청사진 §1.6 불변식은 로그 기록 형식 아님)
+- Credential rotation / expiry (Phase 2)
+- Per-credential-type schema validation enforcement (API_Server's responsibility)
+- An audit table (TBD — blueprint §1.6 invariants are not log-format prescriptions)

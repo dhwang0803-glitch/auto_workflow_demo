@@ -1,98 +1,101 @@
-# PLAN_04 — Approval 알림 발송 이력 (audit trail)
+# PLAN_04 — Approval notification audit trail
 
-> **브랜치**: `Database` · **작성일**: 2026-04-15 · **완료일**: 2026-04-15 · **상태**: Done
+> **Branch**: `Database` · **Drafted**: 2026-04-15 · **Completed**: 2026-04-15 · **Status**: Done
 >
-> ADR-007 의 `ApprovalNode` 2-track 알림(email + slack) 이 실제로 어디에
-> 언제 어떤 결과로 발송됐는지를 영속화한다. PLAN_04 는 "발송 로직" 이 아니라
-> **"발송 이력을 어떻게 저장할지"** 만 다룬다. 실제 발송은 `API_Server` 또는
-> 별도 워커의 책임이며 이 PLAN 의 Repository 를 통해 기록한다.
+> Persists where / when / with what outcome ADR-007's `ApprovalNode` 2-track
+> notifications (email + slack) were actually dispatched. PLAN_04 does not
+> cover "dispatch logic" — only **"how to store dispatch history"**. Actual
+> dispatch is owned by `API_Server` or a separate worker, which records its
+> attempts through this PLAN's Repository.
 
-## 1. 목표
+## 1. Goals
 
-1. `approval_notifications` 테이블 신규 — 시도당 1행 append-only audit trail
-2. `ApprovalNotificationRepository` ABC + Postgres/InMemory 구현
-3. 미도달(`queued`/`failed`) 대시보드 쿼리 경로를 부분 인덱스로 확보
-4. **인박스(읽기 경로)는 이 PLAN 범위 밖** — 인박스는 `executions WHERE status='paused'` 쿼리일 뿐 독립 테이블이 아님
+1. New `approval_notifications` table — one append-only row per attempt as an audit trail
+2. `ApprovalNotificationRepository` ABC + Postgres/InMemory implementations
+3. A partial-index path to power the undelivered (`queued`/`failed`) dashboard query
+4. **The inbox (read path) is out of scope** — the inbox is just an `executions WHERE status='paused'` query, not its own table
 
-## 2. 범위
+## 2. Scope
 
 **In**
-- DDL: `approval_notifications` (단순 테이블, 파티셔닝 없음)
-- Repository ABC + DTO + ORM + Postgres 구현 + InMemory 더블
-- 통합 테스트: 시도 append / 미도달 리스트 / execution 단위 조회
-- ADR-007 의 채널(`email`, `slack`) 과 일치하는 CHECK 제약
+- DDL: `approval_notifications` (simple table, no partitioning)
+- Repository ABC + DTO + ORM + Postgres implementation + InMemory double
+- Integration tests: append attempt / list undelivered / list by execution
+- CHECK constraint matching ADR-007's channels (`email`, `slack`)
 
-**Out (후속/타 브랜치)**
-- **실제 발송 로직** — `API_Server` 또는 별도 워커. 이 PLAN 은 기록 경로만
-- **`NotificationChannel` 어댑터** — SMTP/Slack API 호출. `API_Server` 책임
-- **발송 재시도 정책** — 어느 브랜치가 소유할지는 별도 논의
-- **운영 대시보드 UI** — Frontend 책임. 본 PLAN 은 쿼리 경로만 확보
-- **파티셔닝** — 볼륨 분석 결과 불요 (§3 참조)
-- **이메일/Slack ID 재사용 / GDPR 삭제 정책** — 운영 PLAN 에서 별도 논의
+**Out (follow-up / other branches)**
+- **Actual dispatch logic** — `API_Server` or a separate worker. This PLAN owns only the recording path
+- **`NotificationChannel` adapters** — SMTP / Slack API calls. `API_Server` responsibility
+- **Dispatch retry policy** — which branch owns it is a separate discussion
+- **Operations dashboard UI** — Frontend responsibility. This PLAN only secures the query path
+- **Partitioning** — not needed per the volume analysis (see §3)
+- **Email / Slack ID reuse / GDPR delete policy** — discussed separately in an ops PLAN
 
-## 3. 볼륨 분석 (파티셔닝 결정 근거)
+## 3. Volume analysis (basis for the partitioning decision)
 
-| 축 | 가정 | 값 |
+| Axis | Assumption | Value |
 |---|---|---|
-| 고객 수 (MVP~Phase 1) | | 100 |
-| 고객당 워크플로우 | | 30 |
-| ApprovalNode 사용 비율 | | 15% |
-| 승인 노드당 일 실행 | | 평균 5회 |
-| **일간 승인 이벤트** | | ~2K |
-| 이벤트당 평균 알림 행 | email + slack + 1회 재시도 | 3 |
-| **연간 `approval_notifications` 행** | | ~2.2M |
-| 행당 크기 (JSONB 포함) | | ~300 B |
-| **연간 테이블 부피** | | ~0.7 GB |
+| Customers (MVP–Phase 1) | | 100 |
+| Workflows per customer | | 30 |
+| ApprovalNode adoption ratio | | 15% |
+| Daily executions per approval node | | ~5 on average |
+| **Daily approval events** | | ~2K |
+| Avg notification rows per event | email + slack + 1 retry | 3 |
+| **Annual `approval_notifications` rows** | | ~2.2M |
+| Row size (incl. JSONB) | | ~300 B |
+| **Annual table volume** | | ~0.7 GB |
 
-**결론**: 파티셔닝 없이 단순 테이블 + 인덱스로 충분. ADR-011 의 "선제
-파티셔닝" 철학은 `execution_node_logs` (노드당 N 행으로 곱해짐) 처럼 볼륨이
-실제로 커지는 테이블에 한정한다. 본 테이블은 이벤트당 O(1~5) 규모라 수천만
-행 도달 시점(≈10년 이상 누적) 까지 단순 구조로 감당 가능.
+**Conclusion**: a simple table + indexes (no partitioning) is enough.
+ADR-011's "partition pre-emptively" philosophy applies to tables whose
+volume actually balloons — like `execution_node_logs`, which multiplies
+by N nodes per execution. This table is O(1–5) per event, so a simple
+structure handles it until row counts reach the tens of millions
+(≈10+ years of accumulation).
 
-## 4. 테이블 설계
+## 4. Table design
 
 ### 4.1 `approval_notifications`
 
-| 컬럼 | 타입 | 비고 |
-|------|------|------|
+| Column | Type | Notes |
+|--------|------|-------|
 | `id` | `uuid PK DEFAULT gen_random_uuid()` | |
 | `execution_id` | `uuid NOT NULL REFERENCES executions(id) ON DELETE CASCADE` | |
-| `node_id` | `text NOT NULL` | `paused_at_node` 와 동일 값이 들어옴 |
-| `recipient` | `text NOT NULL` | 평문 이메일 주소 또는 Slack user id. **조회 병목 회피 목적으로 평문 저장** (GDPR 삭제는 별도 PLAN) |
+| `node_id` | `text NOT NULL` | Same value as `paused_at_node` |
+| `recipient` | `text NOT NULL` | Plain email address or Slack user id. **Stored in plaintext for query-throughput reasons** (GDPR deletion is a separate PLAN) |
 | `channel` | `text NOT NULL` | CHECK `IN ('email','slack')` — ADR-007 2-track |
 | `status` | `text NOT NULL` | CHECK `IN ('queued','sent','failed','bounced')` |
-| `attempt` | `integer NOT NULL DEFAULT 1` | 호출자 명시 전달 (재시도 루프 소유) |
-| `error` | `jsonb NULL` | 실패 시 provider 응답/에러 메시지 |
-| `sent_at` | `timestamptz NULL` | `status='sent'` 일 때만 채워짐 |
-| `created_at` | `timestamptz NOT NULL DEFAULT now()` | 행 생성 (시도 시작) 시각 |
+| `attempt` | `integer NOT NULL DEFAULT 1` | Explicitly passed in by the caller (which owns the retry loop) |
+| `error` | `jsonb NULL` | Provider response / error message on failure |
+| `sent_at` | `timestamptz NULL` | Only populated when `status='sent'` |
+| `created_at` | `timestamptz NOT NULL DEFAULT now()` | Row-creation (attempt-start) timestamp |
 
-### 4.2 인덱스
+### 4.2 Indexes
 
 ```sql
--- (a) execution 상세 조회: 특정 실행/노드의 모든 알림 이력
+-- (a) Execution detail lookup: all notification history for a given execution / node
 CREATE INDEX idx_approval_notif_execution
     ON approval_notifications (execution_id, node_id, created_at DESC);
 
--- (b) 미도달 대시보드: queued 나 failed 로 남아 있는 것만 추적
+-- (b) Undelivered dashboard: track only rows still in queued or failed
 CREATE INDEX idx_approval_notif_undelivered
     ON approval_notifications (created_at)
     WHERE status IN ('queued', 'failed');
 ```
 
-부분 인덱스 (b) 가 핵심: "미도달 상태 로우만" 인덱스에 포함되어 대시보드
-쿼리(`WHERE status IN ('queued','failed') AND created_at < now() - interval`) 가
-매우 작은 인덱스 스캔으로 끝남.
+The partial index (b) is the key: it only contains "still-undelivered" rows,
+so the dashboard query (`WHERE status IN ('queued','failed') AND created_at < now() - interval`)
+finishes with a very small index scan.
 
-### 4.3 발송 실패 ↔ Approval 상태머신 분리
+### 4.3 Dispatch failure ↔ Approval state-machine separation
 
-발송 실패가 `executions.status` 에 영향을 주지 **않는다**. 근거:
-- (+) 일시적 SMTP/Slack 장애가 워크플로우 실행 상태로 전파되면 알림 인프라
-  장애가 곧 자동화 장애로 확대된다.
-- (+) 발송 실패는 이 테이블의 `status='failed'` 로 기록되고, 미도달
-  대시보드(부분 인덱스 경로) 를 통해 운영팀이 별도로 대응한다.
-- (−) 극단적 시나리오(모든 채널 영구 실패) 에서 Approval 대기가 사람 눈에
-  띄지 않음 → 운영 대시보드의 "24시간+ 미도달 알림" 알람을 에스컬레이션
-  루트로 사용. 이 알람 자체는 본 PLAN 범위 밖.
+Dispatch failure does **not** affect `executions.status`. Reasoning:
+- (+) If a transient SMTP / Slack outage propagated into workflow-execution state,
+  notification-infra failures would balloon into automation failures.
+- (+) Dispatch failures are recorded as this table's `status='failed'`, and ops
+  handle them out-of-band through the undelivered dashboard (partial-index path).
+- (−) Extreme scenario (every channel permanently fails) → approval waits go
+  unnoticed → the ops dashboard's "undelivered notifications older than 24 h"
+  alarm is the escalation route. That alarm itself is out of scope for this PLAN.
 
 ## 5. Repository
 
@@ -131,47 +134,48 @@ class ApprovalNotificationRepository(ABC):
     ) -> list[ApprovalNotification]: ...
 ```
 
-- `record` — append-only. 호출자는 매 시도마다 새 id 를 만들어 호출.
-- `list_for_execution` — execution 상세 뷰/감사 로그용. `(node_id, created_at DESC)` 순.
-- `list_undelivered(older_than=timedelta(hours=24))` — 운영 대시보드. 부분 인덱스 경로.
+- `record` — append-only. The caller mints a fresh id per attempt.
+- `list_for_execution` — for the execution detail view / audit log. Ordered by `(node_id, created_at DESC)`.
+- `list_undelivered(older_than=timedelta(hours=24))` — ops dashboard. Partial-index path.
 
-## 6. 산출물
+## 6. Deliverables
 
-| 경로 | 내용 |
-|------|------|
-| `schemas/004_approval_notifications.sql` | 테이블 + CHECK + 인덱스 2개 |
-| `migrations/20260515_approval_notifications.sql` | 004 포함 마이그레이션 |
+| Path | Content |
+|------|---------|
+| `schemas/004_approval_notifications.sql` | Table + CHECK + 2 indexes |
+| `migrations/20260515_approval_notifications.sql` | Migration that includes 004 |
 | `src/models/notifications.py` | SQLAlchemy ORM |
-| `src/repositories/base.py` | ABC + DTO 추가 |
-| `src/repositories/approval_notification_repository.py` | Postgres 구현 |
-| `tests/fakes.py` | `InMemoryApprovalNotificationRepository` 추가 |
-| `tests/test_approval_notifications.py` | 통합 테스트 (append / list / undelivered 필터) |
-| `tests/test_schema_loads.py` | 기대 테이블 집합에 `approval_notifications` 추가 |
+| `src/repositories/base.py` | Adds the ABC + DTO |
+| `src/repositories/approval_notification_repository.py` | Postgres implementation |
+| `tests/fakes.py` | Adds `InMemoryApprovalNotificationRepository` |
+| `tests/test_approval_notifications.py` | Integration tests (append / list / undelivered filter) |
+| `tests/test_schema_loads.py` | Adds `approval_notifications` to the expected-tables set |
 
-## 7. 수용 기준
+## 7. Acceptance criteria
 
-- [x] 004 마이그레이션이 깨끗이 적용 *(2026-04-15)*
-- [x] `record()` append + `list_for_execution()` DESC 순 반환 *(test_append_and_list_for_execution)*
-- [x] `list_undelivered(older_than=timedelta(hours=1))` 가 fresh / sent 를 제외하고 오래된 queued/failed 만 반환 *(test_list_undelivered_filters_by_age_and_status)*
-- [x] CHECK 제약이 잘못된 `channel`/`status` 값을 거부 *(test_check_constraints_reject_bad_values)*
-- [x] `test_schema_loads` 가 004 포함 전체 스키마 복원 후 `approval_notifications` 확인
+- [x] The 004 migration applies cleanly *(2026-04-15)*
+- [x] `record()` appends and `list_for_execution()` returns DESC-ordered rows *(test_append_and_list_for_execution)*
+- [x] `list_undelivered(older_than=timedelta(hours=1))` excludes fresh / sent rows and returns only old queued/failed *(test_list_undelivered_filters_by_age_and_status)*
+- [x] CHECK constraints reject bad `channel` / `status` values *(test_check_constraints_reject_bad_values)*
+- [x] `test_schema_loads` re-applies the full schema with 004 included and verifies `approval_notifications` exists
 
-## 8. 오픈 이슈
+## 8. Open issues
 
-1. **`recipient` 의 GDPR 대응** — 평문 이메일 저장은 성능 최우선 결정.
-   삭제 요청 처리 경로는 운영 PLAN 에서 정의. 현재 DDL 은 삭제를 위해
-   `DELETE FROM ... WHERE recipient = ?` 만으로 충분.
-2. **Slack user id vs 이메일 구분** — 같은 `recipient` 컬럼에 두 형식이 섞임.
-   쿼리 시 `channel` 로 분기하는 것이 현재 규칙. 구조화가 필요하면 다음 PLAN
-   에서 JSONB 로 승격.
-3. **`attempt` 카운터 소유** — ADR-011 과 동일 원칙: 호출자(= 발송 워커) 가
-   자기 루프에서 관리. DB 는 명시 전달된 값을 저장만.
-4. **보존 삭제 정책** — 무제한 누적. 연간 0.7 GB 수준이라 당분간 무시 가능.
-   볼륨 10GB 초과 시점에 별도 PLAN.
+1. **GDPR handling for `recipient`** — plaintext email storage is a
+   performance-first decision. The deletion-request handling path is defined
+   in the ops PLAN. The current DDL is sufficient for
+   `DELETE FROM ... WHERE recipient = ?` alone.
+2. **Slack user id vs email distinction** — the same `recipient` column mixes
+   two formats. The current rule is to branch on `channel` at query time;
+   if more structure is needed, promote it to JSONB in a future PLAN.
+3. **Ownership of the `attempt` counter** — same principle as ADR-011: the
+   caller (the dispatch worker) manages it in its own loop. The DB merely
+   stores the value as supplied.
+4. **Retention / deletion policy** — unbounded accumulation. At ~0.7 GB/year
+   this is ignorable for now. A separate PLAN once volume crosses 10 GB.
 
-## 9. 후속 PLAN 영향
+## 9. Downstream PLAN impact
 
-- **PLAN_05 (Agent 재암호화)** — 무관.
-- **운영/대시보드 PLAN** — 이 테이블의 `list_undelivered` 를 폴링해 알람 생성.
-- **실제 발송 로직** — `API_Server` 또는 워커. 본 Repository 를 DI 로 주입받아
-  매 발송 시도마다 `record()` 호출.
+- **PLAN_05 (Agent re-encryption)** — unrelated.
+- **Operations / dashboard PLAN** — polls `list_undelivered` on this table to fire alarms.
+- **Actual dispatch logic** — `API_Server` or a worker. Receives this Repository via DI and calls `record()` on every dispatch attempt.

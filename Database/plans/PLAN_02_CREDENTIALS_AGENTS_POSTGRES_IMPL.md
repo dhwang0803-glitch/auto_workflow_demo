@@ -1,87 +1,89 @@
-# PLAN_02 — Credentials + Agents + Webhooks + Postgres Repository 구현
+# PLAN_02 — Credentials + Agents + Webhooks + Postgres Repository implementations
 
-> **브랜치**: `Database` · **작성일**: 2026-04-15 · **완료일**: 2026-04-15 · **상태**: Done
+> **Branch**: `Database` · **Drafted**: 2026-04-15 · **Completed**: 2026-04-15 · **Status**: Done
 >
-> PLAN_01 이 4개 코어 테이블 + Repository ABC + InMemory 더블까지 고정했다.
-> PLAN_02 는 (1) 남은 3개 테이블, (2) 실제 Postgres Repository 구현체,
-> (3) Fernet 자격증명 암호화까지 채워서 `API_Server` 가 테스트 더블이 아닌
-> 실제 DB 로 플랜 라우팅과 Webhook 수신을 돌릴 수 있게 만든다.
+> PLAN_01 nailed down the 4 core tables + Repository ABCs + InMemory doubles.
+> PLAN_02 fills in (1) the remaining 3 tables, (2) the real Postgres
+> Repository implementations, and (3) Fernet credential encryption — so
+> `API_Server` can run plan routing and Webhook receipt against a real DB
+> rather than a test double.
 
-## 1. 목표
+## 1. Goals
 
-1. `credentials` / `agents` / `webhook_registry` DDL 추가 (ADR-004, ADR-009)
-2. `PostgresWorkflowRepository`, `PostgresExecutionRepository`, `FernetCredentialStore` 구현
-3. `users.gpu_info` 는 설계상 `agents` 로 이동 — Agent 부팅 시 수집하여 `agents.gpu_info` JSONB 로 저장 (ADR-009)
-4. `NodeRegistry → nodes` upsert 경로 정의 (Execution_Engine 기동 시)
-5. Webhook 동적 경로 해상: `webhook_registry.path → workflow_id` 조회 인터페이스 추가
+1. Add the `credentials` / `agents` / `webhook_registry` DDL (ADR-004, ADR-009)
+2. Implement `PostgresWorkflowRepository`, `PostgresExecutionRepository`, `FernetCredentialStore`
+3. By design `users.gpu_info` moves to `agents` — collected at Agent boot and stored as `agents.gpu_info` JSONB (ADR-009)
+4. Define the `NodeRegistry → nodes` upsert path (run at Execution_Engine startup)
+5. Webhook dynamic-path resolution: add a `webhook_registry.path → workflow_id` lookup interface
 
-## 2. 범위
+## 2. Scope
 
 **In**
 - DDL: `credentials`, `agents`, `webhook_registry`
-- `agents.gpu_info jsonb` — ADR-009 하드웨어 라우팅 근거
-- `FernetCredentialStore` — `CREDENTIAL_MASTER_KEY` 환경변수, AES-256(Fernet)
-- Postgres 구현 3종 (`asyncpg` + SQLAlchemy 2.0 async session)
-- `WebhookRegistry` Repository ABC 1종 + InMemory/Postgres 구현
-- `NodeCatalogRepository` ABC + upsert_many 경로
-- 통합 테스트 (`DATABASE_URL` 필수): Repository 각각 happy path
+- `agents.gpu_info jsonb` — basis for ADR-009 hardware routing
+- `FernetCredentialStore` — `CREDENTIAL_MASTER_KEY` env var, AES-256 (Fernet)
+- 3 Postgres implementations (`asyncpg` + SQLAlchemy 2.0 async session)
+- 1 `WebhookRegistry` Repository ABC + InMemory / Postgres implementations
+- `NodeCatalogRepository` ABC + upsert_many path
+- Integration tests (`DATABASE_URL` required): happy path for each Repository
 
-**Out (후속)**
-- Agent 공개키 관리 + 자격증명 재암호화 (RSA) → PLAN_03 또는 별도
-- Approval 알림 발송 이력 → PLAN_03
-- Agent heartbeat → Agent 쪽 PLAN
+**Out (follow-up)**
+- Agent public-key management + credential re-encryption (RSA) → PLAN_03 or separate
+- Approval notification dispatch history → PLAN_03
+- Agent heartbeat → Agent-side PLAN
 
-## 3. 테이블 설계
+## 3. Table design
 
 ### 3.1 `credentials` — ADR-004 Fernet
 
-| 컬럼 | 타입 | 비고 |
-|------|------|------|
+| Column | Type | Notes |
+|--------|------|-------|
 | `id` | `uuid PK DEFAULT gen_random_uuid()` | |
 | `owner_id` | `uuid REFERENCES users(id) ON DELETE CASCADE` | |
-| `name` | `text NOT NULL` | 사용자 지정 이름 (예: `"slack-bot-token"`) |
-| `encrypted_data` | `bytea NOT NULL` | Fernet ciphertext. **평문 절대 저장 금지** |
+| `name` | `text NOT NULL` | User-assigned name (e.g., `"slack-bot-token"`) |
+| `encrypted_data` | `bytea NOT NULL` | Fernet ciphertext. **Never store plaintext** |
 | `created_at` | `timestamptz NOT NULL DEFAULT now()` | |
 
 `UNIQUE (owner_id, name)`.
 
-> 평문 자격증명은 `FernetCredentialStore.retrieve()` 반환값으로만 존재하며,
-> 로그/응답 바디에 포함 금지. Agent 모드 전송 시 Agent 공개키로 재암호화
-> 하는 경로는 PLAN_03 범위.
+> Plaintext credentials exist only as the return value of
+> `FernetCredentialStore.retrieve()` — they must not be included in logs
+> or response bodies. The re-encryption-with-Agent-public-key path for
+> Agent-mode transport is PLAN_03's scope.
 
-### 3.2 `agents` — ADR-009 하드웨어 라우팅
+### 3.2 `agents` — ADR-009 hardware routing
 
-| 컬럼 | 타입 | 비고 |
-|------|------|------|
+| Column | Type | Notes |
+|--------|------|-------|
 | `id` | `uuid PK DEFAULT gen_random_uuid()` | |
 | `owner_id` | `uuid REFERENCES users(id) ON DELETE CASCADE` | |
-| `public_key` | `text NOT NULL` | RSA PEM. 자격증명 재암호화용 |
-| `gpu_info` | `jsonb NOT NULL DEFAULT '{}'::jsonb` | Agent 부팅 시 1회 수집 — ADR-009 |
+| `public_key` | `text NOT NULL` | RSA PEM. Used for credential re-encryption |
+| `gpu_info` | `jsonb NOT NULL DEFAULT '{}'::jsonb` | Collected once at Agent boot — ADR-009 |
 | `last_heartbeat` | `timestamptz NULL` | |
 | `registered_at` | `timestamptz NOT NULL DEFAULT now()` | |
 
-인덱스: `CREATE INDEX idx_agents_owner ON agents(owner_id);`
+Index: `CREATE INDEX idx_agents_owner ON agents(owner_id);`
 
-> **`gpu_info` 스키마 합의 필요** — 최소한 `{"vendor": "nvidia"|"amd"|"cpu_only",
-> "vram_gb": number, "backend": "vllm"|"ktransformers"|null}` 3개 키는 고정.
-> ADR-009 KTransformers CPU-only 경로 판단에 `backend=="ktransformers"` 가
-> 직접 사용된다.
+> **`gpu_info` schema must be agreed upon** — at minimum the 3 keys
+> `{"vendor": "nvidia"|"amd"|"cpu_only", "vram_gb": number, "backend":
+> "vllm"|"ktransformers"|null}` are fixed. ADR-009's
+> KTransformers CPU-only routing decision uses `backend=="ktransformers"` directly.
 
-### 3.3 `webhook_registry` — 동적 Webhook 라우팅
+### 3.3 `webhook_registry` — dynamic webhook routing
 
-| 컬럼 | 타입 | 비고 |
-|------|------|------|
+| Column | Type | Notes |
+|--------|------|-------|
 | `id` | `uuid PK` | |
 | `workflow_id` | `uuid REFERENCES workflows(id) ON DELETE CASCADE` | |
-| `path` | `text UNIQUE NOT NULL` | `/webhooks/<uuid>` 형태 |
-| `secret` | `text NULL` | HMAC 검증용 |
+| `path` | `text UNIQUE NOT NULL` | `/webhooks/<uuid>` shape |
+| `secret` | `text NULL` | For HMAC verification |
 | `created_at` | `timestamptz NOT NULL DEFAULT now()` | |
 
-인덱스: `CREATE INDEX idx_webhook_path ON webhook_registry(path);`
+Index: `CREATE INDEX idx_webhook_path ON webhook_registry(path);`
 
-## 4. Repository 구현
+## 4. Repository implementations
 
-### 4.1 추가 ABC
+### 4.1 Additional ABCs
 
 ```python
 class WebhookRegistry(ABC):
@@ -99,22 +101,22 @@ class NodeCatalogRepository(ABC):
     async def list_all(self) -> list[NodeDefinition]: ...
 ```
 
-### 4.2 Postgres 구현체
+### 4.2 Postgres implementations
 
-| 파일 | 클래스 |
-|------|--------|
+| File | Class |
+|------|-------|
 | `src/repositories/workflow_repository.py` | `PostgresWorkflowRepository` |
 | `src/repositories/execution_repository.py` | `PostgresExecutionRepository` |
 | `src/repositories/credential_store.py` | `FernetCredentialStore` |
 | `src/repositories/webhook_registry.py` | `PostgresWebhookRegistry` + `InMemoryWebhookRegistry` |
 | `src/repositories/node_catalog.py` | `PostgresNodeCatalog` + `InMemoryNodeCatalog` |
 
-공통 패턴:
-- 생성자 인자: `sessionmaker: async_sessionmaker[AsyncSession]` — 엔진은 `API_Server` 가 주입
-- 모든 메서드 async, 내부 트랜잭션 자동 커밋 (`async with session.begin():`)
-- ORM 객체 ↔ `base.py` 의 dataclass DTO 변환은 private 헬퍼로 분리
+Shared pattern:
+- Constructor arg: `sessionmaker: async_sessionmaker[AsyncSession]` — the engine is injected by `API_Server`
+- All methods async; transactions auto-commit internally (`async with session.begin():`)
+- ORM-object ↔ `base.py` dataclass DTO conversion factored into private helpers
 
-### 4.3 Fernet 키 로딩
+### 4.3 Fernet key loading
 
 ```python
 # src/repositories/credential_store.py
@@ -124,59 +126,62 @@ class FernetCredentialStore(CredentialStore):
         self._sm = sessionmaker
 ```
 
-`master_key` 는 `API_Server` 부팅 시 `os.environ["CREDENTIAL_MASTER_KEY"]`
-로부터 로드. 테스트는 `Fernet.generate_key()` 로 임시키 사용.
+`master_key` is loaded from `os.environ["CREDENTIAL_MASTER_KEY"]` at
+`API_Server` boot. Tests use ephemeral keys from `Fernet.generate_key()`.
 
-## 5. 산출물
+## 5. Deliverables
 
-| 경로 | 내용 |
-|------|------|
-| `schemas/002_credentials_agents_webhooks.sql` | 위 3 테이블 DDL |
-| `migrations/20260420_credentials_agents_webhooks.sql` | 002 포함 마이그레이션 |
+| Path | Content |
+|------|---------|
+| `schemas/002_credentials_agents_webhooks.sql` | DDL for the 3 tables above |
+| `migrations/20260420_credentials_agents_webhooks.sql` | Migration including 002 |
 | `src/models/extras.py` | SQLAlchemy ORM (`Credential`, `Agent`, `WebhookRegistry`, `NodeDefinition`) |
-| `src/repositories/{workflow,execution,credential_store,webhook_registry,node_catalog}.py` | Postgres 구현체 |
-| `src/repositories/base.py` 갱신 | `WebhookRegistry`, `NodeCatalogRepository` ABC 추가 |
-| `tests/test_postgres_repositories.py` | `DATABASE_URL` 필수 통합 테스트 |
-| `tests/test_credential_store.py` | Fernet 왕복 + 키 없음 실패 케이스 |
+| `src/repositories/{workflow,execution,credential_store,webhook_registry,node_catalog}.py` | Postgres implementations |
+| `src/repositories/base.py` updates | Adds `WebhookRegistry`, `NodeCatalogRepository` ABCs |
+| `tests/test_postgres_repositories.py` | Integration tests requiring `DATABASE_URL` |
+| `tests/test_credential_store.py` | Fernet round-trip + missing-key failure case |
 
-## 6. 수용 기준
+## 6. Acceptance criteria
 
-- [x] `python scripts/migrate.py` 가 002 마이그레이션을 깨끗이 적용 *(2026-04-15)*
-- [x] `PostgresExecutionRepository` 로 PLAN_01 상태머신 시나리오가 실제 DB 에서 통과 *(test_postgres_repositories)*
-- [x] `FernetCredentialStore.store → retrieve` 왕복이 평문 동등 *(test_credential_store)*
-- [x] 잘못된 키로 로드 시 `InvalidToken` 발생 *(test_wrong_key_rejects_ciphertext)*
-- [x] `PostgresWebhookRegistry.resolve` 가 인덱스 경로로 조회 *(unique index on `webhook_registry.path`)*
-- [x] `PostgresNodeCatalog.upsert_many` 가 `(type, version)` 기준 멱등 *(test_node_catalog_upsert_idempotent)*
+- [x] `python scripts/migrate.py` applies the 002 migration cleanly *(2026-04-15)*
+- [x] PLAN_01 state-machine scenarios pass against a real DB via `PostgresExecutionRepository` *(test_postgres_repositories)*
+- [x] `FernetCredentialStore.store → retrieve` round-trip yields the same plaintext *(test_credential_store)*
+- [x] Loading with the wrong key raises `InvalidToken` *(test_wrong_key_rejects_ciphertext)*
+- [x] `PostgresWebhookRegistry.resolve` reads via the index *(unique index on `webhook_registry.path`)*
+- [x] `PostgresNodeCatalog.upsert_many` is idempotent on `(type, version)` *(test_node_catalog_upsert_idempotent)*
 
-## 7. 오픈 이슈
+## 7. Open issues
 
-1. ~~**`agents.gpu_info` JSONB 키 스펙**~~ → **MVP 확정 (2026-04-15)**
-   `{vendor, vram_gb, backend}` 3키를 002 DDL 주석에 명시. Agent 쪽 PLAN 이
-   추가 필드를 요구하면 포워드 호환 확장 (미정의 키는 저장 허용).
-2. **Fernet 키 로테이션** — MVP 는 단일 키. MultiFernet 로의 전환 경로는
-   PLAN_03 이후. 지금은 `CREDENTIAL_MASTER_KEY` 가 바뀌면 기존 자격증명 복호화
-   실패 — 배포 노트로 명시.
-3. **`webhook_registry.secret` 없는 레코드** — HMAC 검증을 강제할지 말지는
-   `API_Server` 의 Webhook 수신 PLAN 에서 결정. 지금은 NULL 허용.
-4. **`NodeRegistry ↔ nodes` 싱크 시점** — `Execution_Engine` 기동 시 1회로
-   합의. 런타임 중 노드 플러그인 핫스왑은 지원하지 않음.
+1. ~~**`agents.gpu_info` JSONB key spec**~~ → **MVP locked in (2026-04-15)**
+   The 3 keys `{vendor, vram_gb, backend}` are documented in a comment on
+   the 002 DDL. The Agent-side PLAN can extend the schema forward-compatibly
+   (undefined keys are allowed on storage).
+2. **Fernet key rotation** — MVP uses a single key. The transition path to
+   MultiFernet is post-PLAN_03. Today, swapping `CREDENTIAL_MASTER_KEY`
+   breaks decryption of existing credentials — call this out in deployment notes.
+3. **Records without `webhook_registry.secret`** — whether HMAC verification
+   is mandatory is decided in `API_Server`'s Webhook-receipt PLAN. For now,
+   NULL is allowed.
+4. **When `NodeRegistry ↔ nodes` syncs** — agreed: once at `Execution_Engine`
+   startup. Hot-swapping node plugins at runtime is not supported.
 
-## 8. 구현 노트 (2026-04-15)
+## 8. Implementation notes (2026-04-15)
 
-- **`test_schema_loads` 파괴성 주의**: 이 테스트는 `DROP SCHEMA public CASCADE`
-  후 모든 `schemas/*.sql` 을 재적용한다. 새 DDL 파일을 추가하면 이 테스트의
-  `expected` 테이블 집합을 반드시 갱신해야 한다 — 그렇지 않으면 후속 통합
-  테스트에서 "테이블 없음" 로 깨진다 (실제로 PLAN_02 구현 중 한 번 겪음).
-- **JSONB in-place 변이**: `PostgresExecutionRepository.append_node_result` 는
-  `flag_modified()` 로 변경 마킹. 누락 시 SQLAlchemy 가 UPDATE 를 발행하지
-  않아 조용히 사라진다.
+- **`test_schema_loads` is destructive**: this test runs `DROP SCHEMA public CASCADE`
+  and reapplies every `schemas/*.sql`. When you add a new DDL file you must
+  also update this test's `expected` table set — otherwise subsequent
+  integration tests break with "table not found" (we actually hit this once
+  during PLAN_02 implementation).
+- **In-place JSONB mutation**: `PostgresExecutionRepository.append_node_result`
+  marks changes with `flag_modified()`. Without it, SQLAlchemy never issues
+  an UPDATE and the change silently disappears.
 
-## 9. 후속 PLAN 예고
+## 9. Follow-up PLAN preview
 
-기존 "PLAN_03 통합 범위" 를 관심사별로 3개 작은 PLAN 으로 분리 (2026-04-15):
+The original "PLAN_03 integration scope" is being split by concern into 3
+smaller PLANs (2026-04-15):
 
-- **PLAN_03** — 실행 관측 상세: 노드별 로그 분리 저장 (`execution_node_logs`)
-- **PLAN_04** — Approval 알림 발송 이력: 누구에게 / 언제 / 어떤 채널로
-- **PLAN_05** — Agent 공개키 기반 자격증명 재암호화 전송 (ADR-004 Agent 경로)
-- **PLAN_06** — RAG: 사용자 워크플로우/템플릿 임베딩 컬럼 (pgvector 이미
-  설치됨, 마이그레이션만 필요)
+- **PLAN_03** — Execution observability detail: per-node log storage (`execution_node_logs`)
+- **PLAN_04** — Approval notification dispatch history: to whom / when / which channel
+- **PLAN_05** — Agent-public-key-based credential re-encryption transport (ADR-004 Agent path)
+- **PLAN_06** — RAG: embedding columns for user workflows / templates (pgvector is already installed; only the migration is needed)

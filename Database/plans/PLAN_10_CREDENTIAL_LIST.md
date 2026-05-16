@@ -1,29 +1,30 @@
 # PLAN_10 — CredentialStore.list_by_owner (metadata-only)
 
-> 선행: PLAN_09 (PR #47, 머지) — `credentials.type` 컬럼 + `bulk_retrieve`
-> 후속 소비자: API_Server `GET /api/v1/credentials` + `GET /credentials/{id}` (다음 PR)
+> Predecessor: PLAN_09 (PR #47, merged) — `credentials.type` column + `bulk_retrieve`
+> Downstream consumer: API_Server `GET /api/v1/credentials` + `GET /credentials/{id}` (next PR)
 
-## 목적
+## Purpose
 
-API_Server PLAN_07 에서 `GET`/`LIST` 엔드포인트가 `CredentialStore` ABC 미지원으로
-deferred 됐다. 본 PR 은 **평문 복호화 없이 메타데이터만** 반환하는 `list_by_owner`
-를 추가하여 후속 API 가 credential 선택 UI/프로그래매틱 조회를 만들 수 있게 한다.
+In API_Server PLAN_07 the `GET`/`LIST` endpoints were deferred because the
+`CredentialStore` ABC didn't support them. This PR adds `list_by_owner`,
+returning **metadata only — no plaintext decryption** — so the follow-up API
+can build credential-picker UI and programmatic lookups.
 
-## 파일 변경
+## File changes
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `auto_workflow_database/repositories/base.py` | `CredentialMetadata` dataclass + `CredentialStore.list_by_owner` ABC 추가 |
-| `auto_workflow_database/repositories/credential_store.py` | Fernet 구현 — metadata-only SELECT |
-| `tests/fakes.py` | `InMemoryCredentialStore` 에 `created_at` 보관 + `list_by_owner` |
-| `tests/test_credential_store.py` | Postgres 통합 테스트 3개 추가 |
-| `tests/test_credential_bulk_fake.py` | fake 단위 테스트 3개 추가 |
+### Modified
+| File | Change |
+|------|--------|
+| `auto_workflow_database/repositories/base.py` | Add the `CredentialMetadata` dataclass + the `CredentialStore.list_by_owner` ABC |
+| `auto_workflow_database/repositories/credential_store.py` | Fernet implementation — metadata-only SELECT |
+| `tests/fakes.py` | Track `created_at` on `InMemoryCredentialStore` + add `list_by_owner` |
+| `tests/test_credential_store.py` | 3 new Postgres integration tests |
+| `tests/test_credential_bulk_fake.py` | 3 new fake unit tests |
 
-### 신규
-없음 (기존 파일 확장만).
+### New
+None (existing files extended only).
 
-## 구현 상세
+## Implementation details
 
 ### 1. `CredentialMetadata` DTO (`base.py`)
 
@@ -39,7 +40,7 @@ class CredentialMetadata:
     created_at: datetime
 ```
 
-### 2. ABC 확장
+### 2. ABC extension
 
 ```python
 @abstractmethod
@@ -49,7 +50,7 @@ async def list_by_owner(self, owner_id: UUID) -> list[CredentialMetadata]:
     Empty list when the owner has no credentials."""
 ```
 
-### 3. Fernet 구현
+### 3. Fernet implementation
 
 ```python
 async def list_by_owner(self, owner_id: UUID) -> list[CredentialMetadata]:
@@ -68,13 +69,15 @@ async def list_by_owner(self, owner_id: UUID) -> list[CredentialMetadata]:
     ]
 ```
 
-- `encrypted_data` 컬럼은 SELECT 에서 빠져도 무방 (필요 없음). SQLAlchemy ORM
-  기본은 전체 컬럼 로드지만 metadata 만 투영하므로 불필요한 bytes 반환은 무시 가능.
-  성능 최적화 (deferred load) 는 후속.
+- It's fine to leave `encrypted_data` out of the SELECT (not needed). The
+  SQLAlchemy ORM defaults to loading all columns; the extra bytes are
+  harmless here since we only project the metadata. Performance tuning
+  (deferred load) is follow-up work.
 
-### 4. InMemory fake 확장
+### 4. InMemory fake extension
 
-기존 tuple `(owner_id, name, credential_type, plaintext)` 에 `created_at` 추가:
+Extend the existing tuple `(owner_id, name, credential_type, plaintext)`
+with `created_at`:
 ```python
 # (owner_id, name, credential_type, plaintext, created_at)
 self._store: dict[UUID, tuple[UUID, str, str, dict, datetime]] = {}
@@ -95,38 +98,40 @@ async def list_by_owner(self, owner_id):
     return rows
 ```
 
-`datetime.now(timezone.utc)` 로 memory rule "datetime timezone 통일" 준수.
+Using `datetime.now(timezone.utc)` honors the "datetime timezone unified"
+memory rule.
 
-## 보안 불변식
+## Security invariants
 
-- 반환 DTO 에 `encrypted_data` 도 plaintext 도 없음 — 후속 API 에서 그대로
-  응답 직렬화 해도 안전.
-- `owner_id` 필터 강제 — cross-tenant 유출 차단 (bulk_retrieve 와 동일 정책).
+- The returned DTO contains neither `encrypted_data` nor plaintext — safe to
+  serialize directly in the follow-up API response.
+- `owner_id` filtering is enforced — blocks cross-tenant leakage (same
+  policy as `bulk_retrieve`).
 
-## 테스트 전략
+## Test strategy
 
-### Postgres 통합 (`tests/test_credential_store.py` 추가, skipif DATABASE_URL)
-1. `test_list_by_owner_happy` — 3개 저장 후 list 하면 3개 반환 + created_at DESC 정렬 + plaintext 없음
-2. `test_list_by_owner_empty` — 등록한 적 없는 user_id → 빈 리스트
-3. `test_list_by_owner_ownership_filter` — user A 의 credential 은 user B 조회시 안 보임
+### Postgres integration (`tests/test_credential_store.py`, skipif DATABASE_URL)
+1. `test_list_by_owner_happy` — store 3, list returns 3, sorted by created_at DESC, no plaintext
+2. `test_list_by_owner_empty` — never-registered user_id → empty list
+3. `test_list_by_owner_ownership_filter` — user A's credential is invisible to user B
 
-### InMemory fake (`tests/test_credential_bulk_fake.py` 추가)
+### InMemory fake (`tests/test_credential_bulk_fake.py`)
 4. `test_fake_list_by_owner_happy`
 5. `test_fake_list_by_owner_ordered_by_created_at_desc`
 6. `test_fake_list_by_owner_empty`
 
-## 체크리스트
+## Checklist
 
-- [ ] `CredentialMetadata` DTO + ABC 메서드
-- [ ] Fernet 구현
-- [ ] Fake 구현 + created_at 저장
-- [ ] Postgres 통합 테스트 3개
-- [ ] Fake 단위 테스트 3개
-- [ ] 전체 52→58 유지
-- [ ] 커밋 → push → PR
+- [ ] `CredentialMetadata` DTO + ABC method
+- [ ] Fernet implementation
+- [ ] Fake implementation + `created_at` storage
+- [ ] 3 Postgres integration tests
+- [ ] 3 fake unit tests
+- [ ] Overall test count stays 52→58
+- [ ] Commit → push → PR
 
 ## Out of scope
 
-- deferred column load 성능 최적화
-- pagination / keyset cursor (현재 사용자당 credentials 수 적을 것으로 기대. 수백 개 도달시 후속)
-- `CredentialMetadata` 에 `updated_at` — 현재 UPDATE 흐름 없음 (DELETE + 재등록)
+- Deferred column-load performance tuning
+- Pagination / keyset cursor (current per-user credential counts are expected to be small; revisit on hitting hundreds)
+- A `updated_at` field on `CredentialMetadata` — there is no UPDATE flow today (DELETE + re-register)

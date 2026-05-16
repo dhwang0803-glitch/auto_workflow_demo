@@ -1,19 +1,20 @@
 # PLAN_08 — AgentRepository (Database)
 
-> **브랜치**: `Database` · **작성일**: 2026-04-16 · **상태**: Draft
+> **Branch**: `Database` · **Drafted**: 2026-04-16 · **Status**: Draft
 >
-> API_Server PLAN_06 (Agent 관리)이 소비할 `AgentRepository` ABC,
-> Postgres 구현, InMemory fake 를 Database 계층에서 제공한다.
-> `Agent` DTO 와 ORM 은 이미 존재 — 레포지토리만 추가.
+> Provides the `AgentRepository` ABC consumed by API_Server PLAN_06
+> (Agent management), along with the Postgres implementation and the
+> in-memory fake — all delivered from the Database layer.
+> The `Agent` DTO and ORM already exist; only the repository is new.
 
-## 범위
+## Scope
 
 - `repositories/base.py` — `AgentRepository` ABC (`register`, `get`, `update_heartbeat`, `list_by_owner`)
-- `repositories/agent_repository.py` 신규 — Postgres 구현
-- `tests/fakes.py` — InMemory fake
-- `tests/test_agent_repository.py` 신규 — 4 테스트
+- `repositories/agent_repository.py` (new) — Postgres implementation
+- `tests/fakes.py` — In-memory fake
+- `tests/test_agent_repository.py` (new) — 4 tests
 
-## 수용 기준
+## Acceptance criteria
 
-- [ ] 신규 4 테스트 통과
-- [ ] 기존 테스트 회귀 없음
+- [ ] The 4 new tests pass
+- [ ] No regression in existing tests
