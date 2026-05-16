@@ -93,20 +93,20 @@ test("Skill library: lists active skills by default with markdown rendering", as
 
   await expect(page.getByTestId("skills-library")).toBeVisible();
   // Default tab is Active — surfaces both fixtures.
-  const list = page.getByTestId("library-list");
+  const list = page.getByTestId("marketplace-list");
   await expect(list).toBeVisible();
-  const rows = page.locator('[data-testid^="library-row-"]');
+  const rows = page.locator('[data-testid^="marketplace-row-"]');
   await expect(rows).toHaveCount(2);
 
   // First row exposes condition + action prose extracted from the JSONB
   // dict, plus the active status pill.
-  const row1 = page.getByTestId(`library-row-${ACTIVE_SKILLS[0].id}`);
+  const row1 = page.getByTestId(`marketplace-row-${ACTIVE_SKILLS[0].id}`);
   await expect(row1).toContainText(
     "Customer requests refund AND amount > $500",
   );
   await expect(row1).toContainText("Forward to manager via #refunds");
   await expect(
-    page.getByTestId(`library-status-${ACTIVE_SKILLS[0].id}`),
+    page.getByTestId(`marketplace-status-${ACTIVE_SKILLS[0].id}`),
   ).toContainText("active");
 
   // Source-kind pill renders for the industry-baseline skill with the
@@ -121,7 +121,7 @@ test("Skill library: lists active skills by default with markdown rendering", as
   ).toHaveAttribute("href", "https://stripe.com/docs/refunds");
 
   // The second skill has source_kind=null → no pill rendered.
-  const row2 = page.getByTestId(`library-row-${ACTIVE_SKILLS[1].id}`);
+  const row2 = page.getByTestId(`marketplace-row-${ACTIVE_SKILLS[1].id}`);
   await expect(
     row2.locator('[data-testid^="source-kind-"]'),
   ).toHaveCount(0);
@@ -141,14 +141,16 @@ test("Skill library: status tab switches the query", async ({ page }) => {
   });
 
   await page.goto("/skills");
-  // Switch to pending_review — list re-fetches and the consulting fixture
-  // appears.
-  await page.getByTestId("library-tab-pending_review").click();
+  // pending_review skills live under the "Other status" disclosure now —
+  // expand it, then switch to the pending_review tab and assert the
+  // fixture renders in the compact other-status list.
+  await page.getByTestId("other-status-disclosure").click();
+  await page.getByTestId("other-status-tab-pending_review").click();
   await expect(
-    page.getByTestId(`library-row-${PENDING_SKILLS[0].id}`),
+    page.getByTestId(`other-status-row-${PENDING_SKILLS[0].id}`),
   ).toBeVisible();
   await expect(
-    page.locator('[data-testid^="library-row-"]'),
+    page.locator('[data-testid^="other-status-row-"]'),
   ).toHaveCount(1);
 });
 
@@ -163,9 +165,9 @@ test("Skill library: empty state offers wizard link", async ({ page }) => {
   );
 
   await page.goto("/skills");
-  await expect(page.getByTestId("library-empty")).toBeVisible();
+  await expect(page.getByTestId("marketplace-empty")).toBeVisible();
   await expect(
-    page.getByTestId("library-empty").getByRole("link", { name: "Run the wizard" }),
+    page.getByTestId("marketplace-empty-cta"),
   ).toHaveAttribute("href", "/skills/new");
 });
 

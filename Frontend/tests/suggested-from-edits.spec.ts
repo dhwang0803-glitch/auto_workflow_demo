@@ -56,7 +56,7 @@ test("Suggested from your edits: empty state when no candidates", async ({
   );
 
   await page.goto("/skills");
-  await expect(page.getByTestId("suggested-from-edits")).toBeVisible();
+  await expect(page.getByTestId("your-patterns")).toBeVisible();
   await expect(page.getByTestId("suggested-empty")).toBeVisible();
   await expect(page.getByTestId("suggested-count")).toContainText(
     "0 pending",
