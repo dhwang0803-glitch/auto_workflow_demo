@@ -1,87 +1,87 @@
-# Frontend — Claude Code 브랜치 지침
+# Frontend — Claude Code branch guide
 
-> 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
+> Applied alongside the root `CLAUDE.md` security rules.
 
-## 관련 문서
+## Related documents
 
-- 전체 아키텍처 / REST+WebSocket 흐름: [`docs/context/architecture.md`](../docs/context/architecture.md)
-- 설계 결정 배경: [`docs/context/decisions.md`](../docs/context/decisions.md)
-- 파일 맵: [`docs/context/MAP.md`](../docs/context/MAP.md)
-- 하류 의존 (API 소비): [`CLAUDE_API_Server.md`](./CLAUDE_API_Server.md)
+- Full architecture / REST + WebSocket flow: [`docs/context/architecture.md`](../docs/context/architecture.md)
+- Decision rationale: [`docs/context/decisions.md`](../docs/context/decisions.md)
+- File map: [`docs/context/MAP.md`](../docs/context/MAP.md)
+- Downstream dependency (API consumer): [`CLAUDE_API_Server.md`](./CLAUDE_API_Server.md)
 
-## 모듈 역할
+## Module role
 
-**워크플로우 에디터 UI** — 사용자가 캔버스에 노드를 배치하고 선으로 연결하여
-자동화 워크플로우를 시각적으로 구성하는 웹 클라이언트.
-생성된 워크플로우는 JSON으로 직렬화되어 `API_Server`로 전송된다.
+**Workflow editor UI** — a web client where the user places nodes on a canvas and connects
+them with lines to visually compose automation workflows.
+The result is serialized to JSON and sent to `API_Server`.
 
-4-레이어 아키텍처 중 **Frontend Layer**를 담당.
+Owns the **Frontend Layer** of the 4-layer architecture.
 
-## 파일 위치 규칙 (MANDATORY)
+## File layout rules (MANDATORY)
 
 ```
 Frontend/
 ├── src/
-│   ├── components/   ← 재사용 UI 컴포넌트 (직접 실행 X)
-│   ├── pages/        ← 페이지 라우트
-│   └── services/     ← API_Server 클라이언트 (REST + WebSocket)
-├── public/           ← 정적 에셋
+│   ├── components/   ← reusable UI components (not directly executed)
+│   ├── pages/        ← page routes
+│   └── services/     ← API_Server client (REST + WebSocket)
+├── public/           ← static assets
 └── tests/            ← Jest / Playwright
 ```
 
-| 파일 종류 | 저장 위치 |
-|-----------|-----------|
-| 캔버스/노드 컴포넌트 (`WorkflowCanvas`, `NodePalette` 등) | `src/components/` |
-| 페이지 (`editor/[id].tsx`, `executions/index.tsx` 등) | `src/pages/` |
-| API 클라이언트 (`workflowApi.ts`, `executionApi.ts`) | `src/services/` |
-| 실행 상태 실시간 구독 훅 | `src/services/useExecutionStream.ts` |
-| Jest 단위 테스트 | `tests/` |
+| File kind | Storage location |
+|-----------|------------------|
+| Canvas / node components (`WorkflowCanvas`, `NodePalette`, etc.) | `src/components/` |
+| Pages (`editor/[id].tsx`, `executions/index.tsx`, etc.) | `src/pages/` |
+| API clients (`workflowApi.ts`, `executionApi.ts`) | `src/services/` |
+| Real-time execution-state subscription hook | `src/services/useExecutionStream.ts` |
+| Jest unit tests | `tests/` |
 
-**`Frontend/` 루트 또는 프로젝트 루트에 소스 파일 직접 생성 금지.**
+**Do not create source files directly under `Frontend/` or the project root.**
 
-## 기술 스택
+## Tech stack
 
 ```typescript
-// 프레임워크
+// Framework
 Next.js 14 (App Router) + TypeScript + Tailwind CSS
 
-// 핵심 라이브러리
-import ReactFlow from 'reactflow';         // 노드 기반 캔버스
-import { useWebSocket } from 'src/services/useExecutionStream';  // 실시간 로그
+// Core libraries
+import ReactFlow from 'reactflow';         // node-based canvas
+import { useWebSocket } from 'src/services/useExecutionStream';  // real-time logs
 ```
 
-## 핵심 컴포넌트
+## Core components
 
-| 컴포넌트 | 역할 |
-|----------|------|
-| `WorkflowCanvas` | React Flow 기반 노드/엣지 편집 캔버스 |
-| `NodePalette` | 드래그 가능한 노드 목록 (NodeRegistry에서 조회) |
-| `NodeConfigPanel` | 선택된 노드의 파라미터 편집 |
-| `ExecutionMonitor` | 실행 이력 + 노드별 실시간 상태 |
-| `CredentialManager` | 자격증명 등록/관리 UI (평문 저장 금지) |
-| `AgentStatus` | 고객 VPC Agent 연결 상태 대시보드 |
+| Component | Role |
+|-----------|------|
+| `WorkflowCanvas` | React Flow-based node/edge editing canvas |
+| `NodePalette` | Draggable node list (queried from NodeRegistry) |
+| `NodeConfigPanel` | Parameter editing for the selected node |
+| `ExecutionMonitor` | Execution history + per-node real-time state |
+| `CredentialManager` | Credential registration / management UI (no plaintext storage) |
+| `AgentStatus` | Customer VPC Agent connection-state dashboard |
 
-## 주요 플로우
+## Main flows
 
 ```
-워크플로우 편집:
-  NodePalette → WorkflowCanvas 드래그
-    → NodeConfigPanel로 파라미터 설정
-    → [저장] POST /api/v1/workflows (JSON 직렬화)
-    → [실행] POST /api/v1/workflows/{id}/execute
+Workflow editing:
+  NodePalette → drag onto WorkflowCanvas
+    → configure parameters in NodeConfigPanel
+    → [Save] POST /api/v1/workflows (JSON serialization)
+    → [Run]  POST /api/v1/workflows/{id}/execute
 
-실행 모니터링:
-  WebSocket /api/v1/executions/{id}/stream 구독
-    → 노드별 상태(pending/running/success/failed) 실시간 갱신
-    → <ExecutionMonitor> 타임라인 표시
+Execution monitoring:
+  Subscribe to WebSocket /api/v1/executions/{id}/stream
+    → real-time per-node state updates (pending/running/success/failed)
+    → render in <ExecutionMonitor> timeline
 ```
 
-## 인터페이스
+## Interfaces
 
-- **업스트림**: `API_Server` — REST API(CRUD, 실행 트리거) + WebSocket(실행 로그 스트림)
-- **다운스트림**: 사용자 브라우저
+- **Upstream**: `API_Server` — REST API (CRUD, execution triggers) + WebSocket (execution log stream)
+- **Downstream**: the user's browser
 
-## 보안 주의사항
+## Security notes
 
-- 자격증명 입력 폼은 **값을 프론트엔드 상태에 장기 보존 금지**. 전송 후 즉시 초기화.
-- API 토큰(JWT)은 `httpOnly` 쿠키 또는 메모리에만 보관. `localStorage` 사용 금지.
+- Credential input forms must **not retain values in frontend state long-term**. Reset immediately after submission.
+- Keep API tokens (JWT) only in `httpOnly` cookies or memory. Do not use `localStorage`.
