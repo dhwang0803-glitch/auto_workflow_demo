@@ -1,42 +1,44 @@
-# PLAN_10 — Agent daemon credential 복호화 + 주입
+# PLAN_10 — Agent daemon credential decrypt + inject
 
-> 선행: API_Server PLAN_08 (PR #52, 머지) — execute WS 메시지에 `credential_payloads` 동봉
-> 근거 ADR: ADR-013 (하이브리드 전송), ADR-016 (파이프라인 deferral)
-> 이후: docs 브랜치 PR — Agent WS 프로토콜 구체 필드 문서화 (이 PR 과 묶어 한 번에)
+> Predecessor: API_Server PLAN_08 (PR #52, merged) — bundles `credential_payloads` into the execute WS message
+> Reference ADRs: ADR-013 (hybrid transport), ADR-016 (pipeline deferral)
+> Then: docs branch PR — document the Agent WS protocol fields in detail (bundled with this PR)
 
-## 목적
+## Purpose
 
-Agent 데몬이 서버로부터 받은 `credential_payloads` 를 **VPC 내부의 RSA 개인키**로
-복호화하여 워크플로우 실행 직전에 `resolve_credential_refs` 로 config 에 평문 주입.
-이로써 Heavy 세그먼트 Agent 경로의 credential 파이프라인 end-to-end 완결.
+The Agent daemon decrypts the `credential_payloads` received from the
+server using the **RSA private key inside the VPC** and, right before
+workflow execution, injects plaintext into config via
+`resolve_credential_refs`. This closes the credential pipeline
+end-to-end for the Heavy-segment Agent path.
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `src/agent/credential_client.py` | `decrypt_payloads(payloads, private_key)` + `PreDecryptedCredentialStore` (CredentialStore 래퍼) |
-| `tests/test_agent_credentials.py` | PreDecryptedStore + decrypt_payloads 단위 + handle_execute E2E |
+| `src/agent/credential_client.py` | `decrypt_payloads(payloads, private_key)` + `PreDecryptedCredentialStore` (CredentialStore wrapper) |
+| `tests/test_agent_credentials.py` | PreDecryptedStore + decrypt_payloads units + handle_execute E2E |
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `src/agent/command_handler.py` | `handle_execute` 가 `agent_private_key_pem` 키워드 인자 받음. `credential_payloads` 있으면 복호화 → `resolve_credential_refs` 로 graph 해소. 실패시 generic `failed`. |
-| `src/agent/main.py` | `run_agent` 에 `agent_private_key_pem` 주입 + execute 메시지 라우팅에 전달 |
-| `scripts/agent_run.py` | `--agent-private-key <PEM path>` CLI 인자. 파일 없으면 None — credential_ref 있는 그래프에선 실패. |
+### Modified
+| File | Change |
+|------|--------|
+| `src/agent/command_handler.py` | `handle_execute` accepts `agent_private_key_pem` kwarg. If `credential_payloads` is present, decrypt → resolve graph via `resolve_credential_refs`. On failure, generic `failed`. |
+| `src/agent/main.py` | `run_agent` accepts `agent_private_key_pem` and passes it through to the execute-message routing |
+| `scripts/agent_run.py` | `--agent-private-key <PEM path>` CLI arg. Missing file → None — graphs with credential_ref fail. |
 
-### 범위 밖
-- Agent 개인키 생성/프로비저닝 자동화 (현재는 수동 키페어 생성 + 공개키 등록)
-- credential_payloads 단위 개별 실패 처리 (모두 성공 or 전체 실패)
-- docs/context 갱신 (별도 docs PR — API_Server PLAN_08 과 이 PR 의 필드명/플로우를 한 번에)
+### Out of scope
+- Automating Agent private-key generation / provisioning (currently manual keypair generation + public-key registration)
+- Per-payload failure handling for `credential_payloads` (all succeed or all fail)
+- docs/context updates (separate docs PR — covers the field names/flow of API_Server PLAN_08 and this PR at once)
 
-## 구현 상세
+## Implementation details
 
-### 1. `credential_client.py` — 복호화 + PreDecryptedStore
+### 1. `credential_client.py` — decrypt + PreDecryptedStore
 
 ```python
 def decrypt_payloads(payloads, private_key_pem) -> dict[UUID, dict]:
-    """credential_id 로 키잉된 평문 dict 맵."""
+    """Plaintext dict map keyed by credential_id."""
     out: dict[UUID, dict] = {}
     for p in payloads:
         envelope = AgentCredentialPayload(
@@ -50,17 +52,18 @@ def decrypt_payloads(payloads, private_key_pem) -> dict[UUID, dict]:
 
 
 class PreDecryptedCredentialStore(CredentialStore):
-    """Agent 측 CredentialStore 구현. owner_id 필터 무시
-    (서버가 이미 검증함). resolve_credential_refs 호환용."""
+    """Agent-side CredentialStore implementation. Ignores the owner_id filter
+    (the server already validated it). For resolve_credential_refs compatibility."""
     ...
 ```
 
-- `PreDecryptedCredentialStore.bulk_retrieve` 는 owner_id 를 받지만 무시한다 —
-  docstring 에 명시. 서버가 이미 credential 발급 시점에 ownership 필터링을 수행했기
-  때문에 Agent 가 받은 payload 는 정의상 해당 user 소유.
-- 다른 ABC 메서드 (`store`, `retrieve`, `delete`, `retrieve_for_agent`) 는 `NotImplementedError`.
+- `PreDecryptedCredentialStore.bulk_retrieve` accepts owner_id but ignores it —
+  document this in the docstring. The server already filtered by ownership when
+  issuing the credentials, so any payload the Agent received is, by definition,
+  owned by that user.
+- The other ABC methods (`store`, `retrieve`, `delete`, `retrieve_for_agent`) raise `NotImplementedError`.
 
-### 2. `command_handler.handle_execute` 확장
+### 2. `command_handler.handle_execute` extension
 
 ```python
 async def handle_execute(
@@ -86,7 +89,7 @@ async def handle_execute(
         try:
             decrypted = decrypt_payloads(payloads, agent_private_key_pem)
             store = PreDecryptedCredentialStore(decrypted)
-            # owner_id 는 PreDecryptedStore 가 무시 → dummy 전달
+            # owner_id is ignored by PreDecryptedStore → pass a dummy
             graph = await resolve_credential_refs(graph, store, owner_id=uuid4())
         except Exception:
             await ws_repo.update_status(
@@ -98,9 +101,9 @@ async def handle_execute(
     await run_workflow(graph, execution, ws_repo, node_registry)
 ```
 
-- 에러 메시지는 PLAN_08 Worker 와 동일한 `"credential resolution failed"` (generic) — credential_id 미노출.
+- Error message matches the PLAN_08 Worker: `"credential resolution failed"` (generic) — no credential_id leakage.
 
-### 3. `main.py` + `agent_run.py` 배선
+### 3. `main.py` + `agent_run.py` wiring
 
 ```python
 # scripts/agent_run.py
@@ -117,41 +120,41 @@ asyncio.run(run_agent(
 ))
 ```
 
-### 4. 보안 불변식
+### 4. Security invariants
 
-- 개인키 파일 경로는 고객 VPC 내부 파일 시스템 전제 — Agent 외부에 노출되지 않음.
-- `hybrid_decrypt` 실패 (wrong key, tampered ciphertext) → `cryptography.exceptions.InvalidKey` / `InvalidTag` 등 전파 → try/except 로 잡아서 generic `failed`.
-- 복호화된 평문은 `decrypt_payloads` 반환 후 `PreDecryptedCredentialStore` 필드에 보관되나 `handle_execute` 스코프 종료 시 GC.
-- `resolve_credential_refs` 의 deep copy 특성으로 원본 graph 는 평문 없음 유지 (PLAN_08 Worker 와 동일 성질).
+- The private-key file path lives on the customer-VPC filesystem — not exposed outside the Agent.
+- `hybrid_decrypt` failures (wrong key, tampered ciphertext) → propagate `cryptography.exceptions.InvalidKey` / `InvalidTag` etc. → caught by try/except as generic `failed`.
+- Decrypted plaintext sits in the `PreDecryptedCredentialStore` field after `decrypt_payloads` returns, but is GC'd when `handle_execute` scope ends.
+- Thanks to the deep copy in `resolve_credential_refs`, the original graph stays plaintext-free (same property as the PLAN_08 Worker).
 
-## 테스트 전략
+## Test strategy
 
 ### `test_agent_credentials.py`
 
-**단위 — PreDecryptedStore + decrypt_payloads (DB 불필요):**
-1. `test_decrypt_payloads_roundtrip` — 테스트 키페어 생성 → hybrid_encrypt → b64 → decrypt_payloads → 원본 복원
-2. `test_pre_decrypted_store_bulk_retrieve` — 2개 credential 저장 → bulk 조회 시 dict 반환
-3. `test_pre_decrypted_store_missing_raises` — 없는 id → KeyError
-4. `test_pre_decrypted_store_ignores_owner_id` — 임의 owner_id 와도 동작 (서버 필터 전제)
+**Unit — PreDecryptedStore + decrypt_payloads (no DB):**
+1. `test_decrypt_payloads_roundtrip` — generate a test keypair → hybrid_encrypt → b64 → decrypt_payloads → restores the original
+2. `test_pre_decrypted_store_bulk_retrieve` — store two credentials → bulk lookup returns dict
+3. `test_pre_decrypted_store_missing_raises` — unknown id → KeyError
+4. `test_pre_decrypted_store_ignores_owner_id` — works with an arbitrary owner_id (server-filter premise)
 
-**E2E — handle_execute + 가짜 WS (DB 불필요):**
-5. `test_handle_execute_decrypts_and_runs` — credential_payloads 동봉 → 노드가 평문 config 수신 → success
-6. `test_handle_execute_no_refs_ignores_payloads` — graph 에 ref 없으면 payloads 가 있어도 그냥 실행 (회귀)
-7. `test_handle_execute_refs_without_private_key_fails` — refs 있지만 private_key None → failed + generic message
-8. `test_handle_execute_refs_without_payloads_fails` — refs 있지만 credential_payloads 누락 → failed
+**E2E — handle_execute + fake WS (no DB):**
+5. `test_handle_execute_decrypts_and_runs` — credential_payloads attached → node receives plaintext config → success
+6. `test_handle_execute_no_refs_ignores_payloads` — graph without refs → run anyway even if payloads are present (regression)
+7. `test_handle_execute_refs_without_private_key_fails` — refs present but private_key is None → failed + generic message
+8. `test_handle_execute_refs_without_payloads_fails` — refs present but credential_payloads missing → failed
 
-## 체크리스트
+## Checklist
 
 - [ ] `src/agent/credential_client.py`
-- [ ] `src/agent/command_handler.py` — 확장 + credential 경로
-- [ ] `src/agent/main.py` — run_agent 에 private_key 주입
+- [ ] `src/agent/command_handler.py` — extension + credential path
+- [ ] `src/agent/main.py` — inject private_key into run_agent
 - [ ] `scripts/agent_run.py` — `--agent-private-key` CLI
-- [ ] 테스트 8 pass, 전체 54→62
-- [ ] 기존 test_agent.py 회귀 없음 (handle_execute kwarg default None)
-- [ ] 커밋 → push → PR
+- [ ] 8 tests pass, overall 54→62
+- [ ] No regression in existing test_agent.py (handle_execute kwarg defaults to None)
+- [ ] Commit → push → PR
 
 ## Out of scope
 
-- Agent 키 프로비저닝 / 회전 자동화 (Phase 2)
-- credential_payloads 부분 실패 (전부-성공 or 전체-실패)
-- docs/context 갱신 — docs PR 로 분리 (이 PR 머지 후)
+- Automating Agent key provisioning / rotation (Phase 2)
+- Partial failures within `credential_payloads` (all-or-nothing)
+- docs/context updates — split into a docs PR (after this PR merges)

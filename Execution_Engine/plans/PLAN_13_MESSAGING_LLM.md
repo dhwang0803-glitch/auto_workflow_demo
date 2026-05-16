@@ -1,31 +1,32 @@
-# PLAN_13 — Messaging/LLM 확장 (discord_notify + anthropic_chat)
+# PLAN_13 — Messaging/LLM expansion (discord_notify + anthropic_chat)
 
-> 선행: ADR-017 (노드 카탈로그 최소 사양) — Messaging 카테고리 3개 최소 /
-> LLM 카테고리 2개 최소 기준 충족. 본 PLAN 은 PR B (2 노드).
+> Predecessor: ADR-017 (node-catalog minimum spec) — meets the Messaging
+> category's 3-node minimum / LLM category's 2-node minimum. This PLAN
+> is PR B (2 nodes).
 
-## 목적
+## Purpose
 
-ADR-017 §1 에서 결정된 카테고리별 최소 수량 중:
-- **Messaging (3 최소, 현 2)** → `discord_notify` 로 Slack 금지 고객군 (금융/공공) 커버
-- **LLM (2 최소, 현 1)** → `anthropic_chat` 으로 벤더 다양화 및 Claude 사용 고객 대응
+Among ADR-017 §1's category minimums:
+- **Messaging (3 min, currently 2)** → cover customers that ban Slack (finance/public sector) with `discord_notify`
+- **LLM (2 min, currently 1)** → vendor diversification + support for Claude customers via `anthropic_chat`
 
-## 스코프
+## Scope
 
-| node_type | 엔드포인트 | credential |
+| node_type | Endpoint | credential |
 |---|---|---|
-| `discord_notify` | `POST https://discord.com/api/webhooks/{id}/{token}` | 없음 (webhook URL 자체가 인증) |
-| `anthropic_chat` | `POST https://api.anthropic.com/v1/messages` | `http_bearer` → `x-api-key` 헤더 |
+| `discord_notify` | `POST https://discord.com/api/webhooks/{id}/{token}` | none (the webhook URL itself authenticates) |
+| `anthropic_chat` | `POST https://api.anthropic.com/v1/messages` | `http_bearer` → `x-api-key` header |
 
-## 노드 스펙
+## Node specs
 
 ### 1. DiscordNotifyNode
 
-Discord Incoming Webhook — Slack `slack_notify` 패턴과 구조 동일:
+Discord Incoming Webhook — same structural pattern as Slack `slack_notify`:
 
 ```
 config:
   webhook_url: str
-  content: str           # 메시지 본문
+  content: str           # message body
   username?: str         # override bot name
   timeout_seconds?: int (default 10)
 
@@ -34,82 +35,86 @@ response:
   ok: true
 ```
 
-**credential 없음** — webhook_url 자체가 secret 역할 (Slack 과 동일 패턴). 단, URL 을 credential 로 등록하고 싶으면 `slack_webhook` credential_type 재사용 가능 (ADR-017 §4 트랙 외).
+**No credential** — the webhook_url itself is the secret (same pattern
+as Slack). If you do want the URL registered as a credential, the
+`slack_webhook` credential_type can be reused (outside ADR-017 §4
+track).
 
 ### 2. AnthropicChatNode
 
-Anthropic Messages API — OpenAI Chat Completions 와 포맷 유사하나 헤더/body 구조 상이:
+Anthropic Messages API — similar format to OpenAI Chat Completions, but
+the header / body structure differs:
 
 ```
 config:
-  api_token: str         # http_bearer → x-api-key 헤더 주입
+  api_token: str         # http_bearer → injected into x-api-key header
   model: str             # "claude-opus-4-7" / "claude-sonnet-4-6" / "claude-haiku-4-5-20251001"
   messages: list[{role, content}]
-  system?: str           # Anthropic 은 system 을 top-level 필드 (OpenAI 는 messages 내 role=system)
-  max_tokens: int        # Anthropic 필수
+  system?: str           # Anthropic puts system at the top level (OpenAI puts it inside messages as role=system)
+  max_tokens: int        # required for Anthropic
   temperature?: float
   timeout_seconds?: int (default 60)
 
 headers:
-  x-api-key: <api_token>       # Bearer 아님
+  x-api-key: <api_token>       # not Bearer
   anthropic-version: 2023-06-01
   content-type: application/json
 
 response:
   content: str                 # content[0].text
   model: str
-  stop_reason: str             # "end_turn", "max_tokens" 등
+  stop_reason: str             # "end_turn", "max_tokens", etc.
   usage: {input_tokens, output_tokens}
 ```
 
-**OpenAI 와의 형식 차이 주의:**
-- 인증: `Authorization: Bearer` (OpenAI) vs `x-api-key` (Anthropic)
-- system 메시지: messages 배열 내 (OpenAI) vs top-level `system` (Anthropic)
-- max_tokens: 선택 (OpenAI) vs 필수 (Anthropic)
-- usage: `total_tokens` (OpenAI) vs `input_tokens`/`output_tokens` 분리 (Anthropic)
+**Watch the format differences with OpenAI:**
+- Auth: `Authorization: Bearer` (OpenAI) vs `x-api-key` (Anthropic)
+- system message: inside messages array (OpenAI) vs top-level `system` (Anthropic)
+- max_tokens: optional (OpenAI) vs required (Anthropic)
+- usage: `total_tokens` (OpenAI) vs separate `input_tokens` / `output_tokens` (Anthropic)
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
 | `src/nodes/discord_notify.py` | DiscordNotifyNode |
 | `src/nodes/anthropic_chat.py` | AnthropicChatNode |
-| `tests/test_discord_notify_node.py` | 단위 테스트 |
-| `tests/test_anthropic_chat_node.py` | 단위 테스트 |
+| `tests/test_discord_notify_node.py` | Unit tests |
+| `tests/test_anthropic_chat_node.py` | Unit tests |
 
-수정: 없음.
+Modified: none.
 
-## 테스트 전략 (각 노드 3개, 총 6개)
+## Test strategy (3 per node, 6 total)
 
-httpx_mock 기반.
+httpx_mock based.
 
 ### test_discord_notify_node.py (3)
-1. `test_discord_notify_success` — 200 응답, `{status_code, ok}` 반환
-2. `test_discord_notify_sends_content_payload` — body 에 `content` 필드 정확
+1. `test_discord_notify_success` — 200 response, returns `{status_code, ok}`
+2. `test_discord_notify_sends_content_payload` — body's `content` field is exact
 3. `test_discord_notify_error_raises` — 4xx → HTTPStatusError
 
 ### test_anthropic_chat_node.py (3)
-1. `test_anthropic_chat_success` — 응답에서 `content[0].text`, `usage` 추출
-2. `test_anthropic_chat_headers_and_body` — `x-api-key` 헤더 (Bearer 아님), `anthropic-version`, system top-level 전송
+1. `test_anthropic_chat_success` — extract `content[0].text`, `usage` from the response
+2. `test_anthropic_chat_headers_and_body` — `x-api-key` header (not Bearer), `anthropic-version`, system sent at the top level
 3. `test_anthropic_chat_error_raises` — 401 → HTTPStatusError
 
-## 보안 불변식
+## Security invariants
 
-- `api_token` 은 config 경유 평문만 수용 — 노드 내부 로깅 금지
-- Discord webhook_url 은 config 경유 직접 사용 — 저장 시 credential 테이블 사용 권장이지만 현 PLAN 범위 외
+- `api_token` is accepted only as plaintext via config — no node-internal logging
+- Discord `webhook_url` is used directly via config — when persisted, using the credential table is recommended, but that's outside this PLAN's scope
 
-## 체크리스트
+## Checklist
 
-- [ ] `src/nodes/discord_notify.py` + 테스트 3
-- [ ] `src/nodes/anthropic_chat.py` + 테스트 3
-- [ ] 전체 테스트 pass (기존 + 6)
-- [ ] feature/plan-13-messaging-llm 브랜치 push
+- [ ] `src/nodes/discord_notify.py` + 3 tests
+- [ ] `src/nodes/anthropic_chat.py` + 3 tests
+- [ ] All tests pass (existing + 6)
+- [ ] Push the feature/plan-13-messaging-llm branch
 - [ ] PR → main
 
 ## Out of scope
 
-- Discord 의 embed/attachment/reaction — content 텍스트만
-- Anthropic streaming / tool use / vision — 단순 메시지만
-- Claude 모델 라우팅 / 폴백 — ADR-008 의 Inference_Service 에서 다룸 (Phase 2)
-- MS Teams / WeChat — 수요 확인 후 개별 노드
+- Discord embed/attachment/reaction — content text only
+- Anthropic streaming / tool use / vision — plain messages only
+- Claude model routing / fallback — handled in ADR-008's Inference_Service (Phase 2)
+- MS Teams / WeChat — separate nodes after demand validation
