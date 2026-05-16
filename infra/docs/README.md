@@ -1,115 +1,140 @@
 # Database Deploy — GCP Cloud SQL
 
-> ADR-018 구현. Terraform 으로 Cloud SQL for PostgreSQL 16 인스턴스 + Secret Manager 시크릿 3종을 프로비저닝한다.
+> Implements ADR-018. Provisions a Cloud SQL for PostgreSQL 16
+> instance and three Secret Manager entries via Terraform.
 
-## 사전 준비 (1회)
+## Prerequisites (one-time)
 
-1. **GCP 프로젝트 생성** — staging 과 prod 용 별도 프로젝트 권장.
+1. **Create the GCP project** — separate projects for staging and prod
+   are recommended.
    ```bash
    gcloud projects create auto-workflow-staging-xxx --name="Auto Workflow Staging"
    gcloud config set project auto-workflow-staging-xxx
    ```
-2. **결제 계정 연결** — Cloud SQL 은 free tier 아님. 콘솔 또는:
+2. **Link the billing account** — Cloud SQL is not in the free tier.
+   Console, or:
    ```bash
    gcloud billing projects link auto-workflow-staging-xxx --billing-account=YOUR-BILLING-ID
    ```
-3. **도구 설치**
+3. **Install the tools**
    - `terraform` >= 1.6
-   - `gcloud` CLI — `gcloud auth application-default login` 완료
-4. **본인 공인 IP 확인** (dev 접속용): https://whatismyipaddress.com/
+   - `gcloud` CLI — run `gcloud auth application-default login`
+4. **Find your public IP** (for dev access):
+   <https://whatismyipaddress.com/>
 
-## 인스턴스 생성
+## Create the instance
 
 ```bash
 cd infra/terraform
 
-# 1. tfvars 작성 (gitignore 됨)
+# 1. Author tfvars (git-ignored)
 cp environments/staging.tfvars.example environments/staging.tfvars
-# environments/staging.tfvars 편집:
-#   - project_id 를 실제 GCP 프로젝트 ID 로
-#   - authorized_networks 에 본인 IP /32 추가
+# Edit environments/staging.tfvars:
+#   - set project_id to your real GCP project ID
+#   - add your IP /32 to authorized_networks
 
 terraform init
 terraform plan  -var-file=environments/staging.tfvars
 terraform apply -var-file=environments/staging.tfvars
 ```
 
-최초 apply 는 5~8 분 (Cloud SQL 인스턴스 기동 + API enablement).
+The first apply takes 5–8 min (Cloud SQL instance boot + API
+enablement).
 
-## 시크릿 R/W 패턴
+## Secret R/W patterns
 
-**규칙 한 줄**: 시크릿 값을 **사람 눈에 보이는 stdout 에 절대 내보내지 않는다**. 쓸 때는 파이프, 읽을 때는 쉘 변수 캡처.
+**One-line rule**: never let secret values reach **visible stdout**.
+Write via pipe, read by capturing into a shell variable.
 
-### 쓰기 — 시크릿 실값 주입
+### Write — inject real secret values
 
-Terraform 은 credential 마스터 키와 JWT 시크릿을 **valid-but-placeholder 로** 생성한다 (이전에는 `REPLACE_ME_*` 평문이었으나 컨테이너 Fernet 초기화가 실패해서 base64-valid 더미로 전환). 실제 값을 넣어야 한다.
+Terraform creates the credential master key and JWT secret as
+**valid-but-placeholder** values (it used to use the plaintext
+`REPLACE_ME_*` strings, but the container's Fernet init failed, so
+we switched to base64-valid dummies). Real values must be set:
 
 ```bash
-# Fernet 마스터 키 (ADR-004) — 생성 결과를 절대 print/echo 하지 말고 바로 파이프
+# Fernet master key (ADR-004) — never print/echo the generated value, pipe straight in
 python -c "from cryptography.fernet import Fernet; import sys; sys.stdout.write(Fernet.generate_key().decode())" | \
   gcloud secrets versions add credential-master-key-staging --data-file=-
 
-# JWT 서명 키 (ADR-015)
+# JWT signing key (ADR-015)
 python -c "import secrets, sys; sys.stdout.write(secrets.token_urlsafe(48))" | \
   gcloud secrets versions add jwt-secret-staging --data-file=-
 ```
 
-**주의**: 이 두 시크릿을 이후 재발급하면 기존 저장 자격증명이 전부 복호화 불가, 기존 JWT 전부 무효. prod 에서는 rotate 시 의도적 downtime 계획 필요.
+**Caveat**: rotating either of these later breaks decryption of all
+stored credentials and invalidates all existing JWTs. On prod, plan
+deliberate downtime when rotating.
 
-### 읽기 — 시크릿 재사용 시
+### Read — reuse a secret value
 
-`gcloud secrets versions access latest --secret=<id>` 의 **stdout 을 터미널에 그대로 뿌리면** 평문이 스크롤백, 셸 히스토리, 에이전트 대화 로그(JSONL) 까지 모두 잔존한다. 무조건 `$(...)` 로 쉘 변수에 캡처해서 바로 다음 명령의 env 로 넘긴다.
+`gcloud secrets versions access latest --secret=<id>` printed to the
+terminal leaves the cleartext in scrollback, shell history, and
+agent conversation logs (JSONL). Always `$(...)`-capture into a
+shell variable and feed it directly into the next command's env.
 
 ```bash
-# ❌ 나쁜 패턴 — 비밀번호가 스크롤백에 남는다
+# ❌ Bad — the password ends up in scrollback
 gcloud secrets versions access latest --secret=db-password-prod
-# → gsAW6wOy4dgugAKCrhqunqT27tIMENu8   ← 영구 보존
+# → gsAW6wOy4dgugAKCrhqunqT27tIMENu8   ← persists forever
 
-# ✅ 좋은 패턴 — 변수에만 담고 바로 소비
+# ✅ Good — capture into a variable, consume immediately
 PW="$(gcloud secrets versions access latest --secret=db-password-prod --project=$P)"
 export DATABASE_URL_SYNC="postgresql://auto_workflow:${PW}@127.0.0.1:15432/auto_workflow"
 python Database/scripts/migrate.py
 unset PW
 ```
 
-migrate 는 래퍼 스크립트를 쓰면 위 패턴이 이미 물리화돼 있다:
+For migrations, the wrapper script already implements this pattern:
 ```bash
 infra/scripts/migrate_via_proxy.sh prod --status
 infra/scripts/migrate_via_proxy.sh prod          # apply pending
 ```
-이 래퍼는 proxy 기동 → 시크릿 변수 캡처 → migrate 실행 → proxy cleanup 을 모두 처리하며 DB 비밀번호를 stdout/argv/로그 어디에도 남기지 않는다.
+The wrapper handles proxy startup → secret-variable capture →
+migration → proxy cleanup, and the DB password never appears in
+stdout, argv, or logs.
 
-### 개발자 workstation 위생
+### Developer workstation hygiene
 
-시크릿 값이 터미널에 한 번이라도 찍혔다면 다음을 고려:
-- **PowerShell**: `Clear-History` + `Remove-Item (Get-PSReadlineOption).HistorySavePath`
-- **bash/zsh**: `history -c && history -w` + `shred -u ~/.bash_history ~/.zsh_history`
-- **터미널 스크롤백**: 터미널 종료/재시작
-- **에이전트 로그**: Claude Code / Copilot 등은 JSONL 에 full transcript 보존 — 해당 세션 파일 삭제 필요 (동기화 폴더에 걸려 있으면 그쪽도)
-- **노출이 prod 시크릿이었으면**: 즉시 rotate. Cloud Run 은 `value_source.secret_key_ref` 의 `version = "latest"` 를 cold start 에서 픽업하므로 새 버전 추가 후 revision 강제 재배포.
+If a secret value reached the terminal even once, consider:
+- **PowerShell**: `Clear-History` +
+  `Remove-Item (Get-PSReadlineOption).HistorySavePath`
+- **bash / zsh**: `history -c && history -w` +
+  `shred -u ~/.bash_history ~/.zsh_history`
+- **Terminal scrollback**: close & restart the terminal
+- **Agent logs**: Claude Code / Copilot etc. retain full transcripts
+  as JSONL — delete that session file (and the sync folder if it's
+  synced)
+- **If it was a prod secret**: rotate immediately. Cloud Run picks
+  up new versions of `value_source.secret_key_ref` with
+  `version = "latest"` on cold start, so add a new version, then
+  force a revision redeploy.
 
-## 애플리케이션 접속 설정
+## App connection setup
 
-### 경로 A — Cloud SQL Auth Proxy (권장)
+### Path A — Cloud SQL Auth Proxy (recommended)
 
 ```bash
-# cloud-sql-proxy 다운로드 (한 번만)
+# Download cloud-sql-proxy once
 # https://cloud.google.com/sql/docs/postgres/sql-proxy#install
 
 INSTANCE_CONN=$(cd infra/terraform && terraform output -raw instance_connection_name)
 cloud-sql-proxy --port=5433 "$INSTANCE_CONN" &
 ```
 
-이후 `DATABASE_URL="postgresql+asyncpg://<user>:<pw>@localhost:5433/auto_workflow"`.
+Then
+`DATABASE_URL="postgresql+asyncpg://<user>:<pw>@localhost:5433/auto_workflow"`.
 
-패스워드 가져오기:
+Fetch the password:
 ```bash
 gcloud secrets versions access latest --secret=db-password-staging
 ```
 
-### 경로 B — 직접 Public IP 접속 (개발만)
+### Path B — Direct public-IP access (dev only)
 
-`environments/staging.tfvars` 의 `authorized_networks` 에 본인 IP 를 추가해야 연결 가능.
+You must add your IP to `authorized_networks` in
+`environments/staging.tfvars` to connect.
 
 ```bash
 IP=$(cd infra/terraform && terraform output -raw instance_public_ip)
@@ -118,66 +143,95 @@ export DATABASE_URL="postgresql+asyncpg://auto_workflow:${PW}@${IP}:5432/auto_wo
 export DATABASE_URL_SYNC="postgresql://auto_workflow:${PW}@${IP}:5432/auto_workflow"
 ```
 
-## 스키마 + 마이그레이션 적용
+## Apply schema + migrations
 
-기존 `migrate.py` 재사용. Cloud SQL 인스턴스에 대해 동일하게 동작.
+Reuses the existing `migrate.py`. Works identically against the
+Cloud SQL instance.
 
 ```bash
 DATABASE_URL_SYNC="postgresql://auto_workflow:<pw>@<host>:5432/auto_workflow" \
   python Database/scripts/migrate.py
 ```
 
-`schemas/001_core.sql` 이 `CREATE EXTENSION IF NOT EXISTS vector` 를 실행 — Cloud SQL Postgres 16 은 pgvector 내장 지원이라 별도 활성화 불필요.
+`schemas/001_core.sql` runs `CREATE EXTENSION IF NOT EXISTS vector`
+— Cloud SQL Postgres 16 supports pgvector natively, no extra
+enablement step.
 
-## API_Server / Execution_Engine 연결
+## Wiring API_Server / Execution_Engine
 
-`DATABASE_URL` 한 줄만 위 Cloud SQL DSN 으로 바꾸면 나머지 코드 변경 없음 (이미 env-based).
+Just replace `DATABASE_URL` with the Cloud SQL DSN — everything is
+already env-based, no code changes needed.
 
-Cloud Run 배포 시 (후속 ADR) 는 `--set-secrets=DATABASE_URL=...,CREDENTIAL_MASTER_KEY=credential-master-key-staging:latest,JWT_SECRET=jwt-secret-staging:latest` 로 주입.
+For Cloud Run deployment (later ADR), inject via
+`--set-secrets=DATABASE_URL=...,CREDENTIAL_MASTER_KEY=credential-master-key-staging:latest,JWT_SECRET=jwt-secret-staging:latest`.
 
-## 비용 관리
+## Cost management
 
-- **시연 끝난 뒤 staging 내리기**:
+- **Tear down staging after the demo**:
   ```bash
-  # staging.tfvars 에 deletion_protection = false 설정 후:
+  # First set deletion_protection = false in staging.tfvars, then:
   terraform destroy -var-file=environments/staging.tfvars
   ```
-- **prod 는 deletion_protection = true 기본** — `terraform destroy` 가 거부됨. 의도적으로 내릴 때만 변수 flip.
-- 사용 안 할 때 인스턴스 stop 가능:
+- **Prod defaults to deletion_protection = true** — `terraform
+  destroy` is refused. Flip the variable only when you intentionally
+  want to tear it down.
+- Stop the instance when idle:
   ```bash
   gcloud sql instances patch auto-workflow-staging --activation-policy=NEVER
   ```
 
-### Destroy 소요 시간 예산
+### Destroy time budget
 
-`terraform destroy` 는 과금 리소스 (Cloud SQL, Cloud Run, AR, secrets) 는 2~5분이면 끝나지만 **Cloud Run Direct VPC Egress 가 남기는 `serverless-ipv4-*` 주소 예약 GC 때문에 VPC/subnet/service-networking 해제가 10~30분 걸린다** (GCP 내부 reconciler 의존, CLI 강제 해제 경로 없음). 시연 중간에 destroy 를 끼워넣지 말 것 — 라이브 데모 직전 또는 직후 시간 예산 **45분** 잡고 진행.
+`terraform destroy` finishes the billable resources (Cloud SQL,
+Cloud Run, AR, secrets) in 2–5 min, but **the
+`serverless-ipv4-*` address reservations left behind by Cloud Run
+Direct VPC Egress make VPC / subnet / service-networking removal
+take 10–30 min** (GCP's internal reconciler, no CLI to force it).
+Don't slot a destroy mid-demo — schedule it just before or just
+after a live demo with a **45-minute** budget.
 
-증상: `subnetwork ... is already being used by .../addresses/serverless-ipv4-*` 또는 `Service Networking Connection: Producer services are still using this connection`.
+Symptoms: `subnetwork ... is already being used by
+.../addresses/serverless-ipv4-*` or
+`Service Networking Connection: Producer services are still using
+this connection`.
 
-우회: 폴링 스크립트로 재시도.
+Workaround: a polling retry script.
 ```bash
-# 주소가 해제될 때까지 재시도 (최대 ~40분)
+# Retry until the address is released (up to ~40 min)
 for i in $(seq 1 40); do
   gcloud compute addresses delete "serverless-ipv4-*" \
     --region="$REGION" --project="$PROJECT" --quiet 2>/dev/null && break
   sleep 60
 done
-terraform destroy -var-file=environments/prod.tfvars  # 남은 VPC/peering 마감
+terraform destroy -var-file=environments/prod.tfvars  # finalize the remaining VPC / peering
 ```
 
-## 트러블슈팅
+## Troubleshooting
 
-- **`terraform apply` 첫 실행에 API 미활성 에러**: `terraform apply` 한 번 더. API 활성화는 비동기라 첫 plan 에서 race 가능.
-- **`ERROR: permission denied for schema public`**: `auto_workflow` 유저가 DB 생성 시점에 아직 없음. Terraform 이 순서 (instance → db → user) 를 보장하지만 migrate.py 를 너무 일찍 돌리면 발생. `google_sql_user.app` 가 Ready 된 뒤 실행.
-- **pgvector 미발견**: `CREATE EXTENSION vector` 가 superuser 권한 필요 — `cloudsqlsuperuser` 는 이를 가지지만 `auto_workflow` 는 권한 없음. `migrate.py` 를 `postgres` 유저 DSN 으로 한 번 돌려 extension 을 먼저 설치.
+- **First `terraform apply` errors that APIs aren't enabled**: run
+  `terraform apply` again. API enablement is async, so the first
+  plan may race.
+- **`ERROR: permission denied for schema public`**: the
+  `auto_workflow` user didn't exist yet at DB-creation time.
+  Terraform enforces the order (instance → db → user), but running
+  migrate.py too early can trip this. Wait until
+  `google_sql_user.app` is Ready.
+- **pgvector not found**: `CREATE EXTENSION vector` needs
+  superuser. `cloudsqlsuperuser` has it, but `auto_workflow` doesn't.
+  Run `migrate.py` once with the `postgres` user DSN to install the
+  extension first.
 
-## Cloud Run 배포 (ADR-020)
+## Cloud Run deployment (ADR-020)
 
-ADR-020 에서 API_Server 를 Cloud Run 으로 배포한다. Terraform 이 인프라(VPC + Cloud Run 서비스 + AR + SA + IAM + Auth Proxy 사이드카)를 모두 찍고, 이미지 갱신만 CI / 수동 `gcloud` 에서 담당.
+ADR-020 deploys API_Server on Cloud Run. Terraform provisions the
+full infra (VPC + Cloud Run service + AR + SA + IAM + Auth Proxy
+sidecar); only image updates flow through CI or a manual `gcloud`
+push.
 
-### 사전 준비 — Workload Identity Federation (WIF, 1회)
+### Prerequisite — Workload Identity Federation (WIF, one-time)
 
-GH Actions → GCP 인증은 **서비스 계정 키 JSON 없이** WIF OIDC 로만. 키 파일 유출·순환 이슈 제거.
+GH Actions → GCP auth runs **without service-account JSON keys**,
+via WIF OIDC. Eliminates key leak / rotation issues.
 
 ```bash
 PROJECT_ID=auto-workflow-prod-REPLACE
@@ -197,7 +251,7 @@ gcloud iam workload-identity-pools providers create-oidc "$PROVIDER" \
   --attribute-condition="assertion.repository == '${REPO}'" \
   --issuer-uri="https://token.actions.githubusercontent.com"
 
-# 2. CI 용 SA (Cloud Run admin + AR writer + impersonate Cloud Run runtime SA)
+# 2. CI service account (Cloud Run admin + AR writer + impersonate Cloud Run runtime SA)
 SA_CI=auto-workflow-ci@${PROJECT_ID}.iam.gserviceaccount.com
 gcloud iam service-accounts create auto-workflow-ci --project="$PROJECT_ID"
 
@@ -206,7 +260,7 @@ for role in roles/run.admin roles/artifactregistry.writer roles/iam.serviceAccou
     --member="serviceAccount:${SA_CI}" --role="$role"
 done
 
-# 3. release 브랜치에서만 이 SA 를 가장할 수 있게 binding
+# 3. Allow only the release branch to impersonate this SA
 POOL_ID=$(gcloud iam workload-identity-pools describe "$POOL" \
   --project="$PROJECT_ID" --location=global --format='value(name)')
 gcloud iam service-accounts add-iam-policy-binding "$SA_CI" \
@@ -215,19 +269,21 @@ gcloud iam service-accounts add-iam-policy-binding "$SA_CI" \
   --member="principalSet://iam.googleapis.com/${POOL_ID}/attribute.repository/${REPO}"
 ```
 
-결과로 얻는 값 2개를 GitHub 저장소에 등록:
+Register the two resulting values on the GitHub repo:
 
 - **Settings → Secrets → Actions**:
-  - `GCP_WIF_PROVIDER` = `${POOL_ID}/providers/${PROVIDER}` (전체 resource 경로)
-  - `GCP_WIF_SERVICE_ACCOUNT` = `auto-workflow-ci@<project>.iam.gserviceaccount.com`
+  - `GCP_WIF_PROVIDER` =
+    `${POOL_ID}/providers/${PROVIDER}` (full resource path)
+  - `GCP_WIF_SERVICE_ACCOUNT` =
+    `auto-workflow-ci@<project>.iam.gserviceaccount.com`
 - **Settings → Variables → Actions**:
   - `GCP_PROJECT_ID_PROD` = `auto-workflow-prod-…`
   - `GCP_REGION` = `asia-northeast3`
 
-### 배포 브랜치 + 보호 규칙 (1회)
+### Deploy branches + protection rules (one-time)
 
 ```bash
-# main 기준으로 두 브랜치 생성
+# Create two branches from main
 git checkout main && git pull
 git push origin main:development
 git push origin main:release
@@ -235,45 +291,51 @@ git push origin main:release
 
 GitHub → Settings → Branches → Add rule:
 
-| 브랜치 | 규칙 |
-|---|---|
+| Branch | Rules |
+|--------|-------|
 | `release` | Require a pull request before merging · **Require linear history** · Require status checks to pass · Do not allow force pushes · Do not allow deletions |
 | `development` | Require a pull request before merging · Do not allow force pushes |
 
-`release` 의 PR merge 옵션은 **Rebase and merge** 또는 **Squash and merge** 만 허용(`Allow merge commits` OFF) 하면 linear history 가 강제됨.
+For `release`, allowing only **Rebase and merge** or **Squash and
+merge** (with `Allow merge commits` OFF) enforces linear history.
 
-### 부트스트랩 — 첫 `terraform apply` (Phase 4 기준)
+### Bootstrap — first `terraform apply` (Phase 4 baseline)
 
-`api_image_uri` 는 필수 변수 (ADR-020 §6-a). AR 이 먼저 있어야 이미지 푸시가 되고, 이미지가 있어야 `/health` probe 가 통과하므로 2-단계로 진행한다.
+`api_image_uri` is a required variable (ADR-020 §6-a). AR must
+exist before any image push, and the image must exist before the
+`/health` probe can pass — so do this in two stages:
 
 ```bash
 cd infra/terraform
 
-# 1) API enablement + Artifact Registry 만 먼저 apply
+# 1) Apply API enablement + Artifact Registry only
 terraform apply -var-file=environments/staging.tfvars \
   -target=google_project_service.runtime_apis \
   -target=google_artifact_registry_repository.images
 
-# 2) 이미지 빌드 + 푸시 (로컬)
+# 2) Build + push the image (locally)
 AR="asia-northeast3-docker.pkg.dev/${PROJECT_ID}/auto-workflow/api"
 TAG=bootstrap-$(date +%Y%m%d)
 gcloud auth configure-docker asia-northeast3-docker.pkg.dev --quiet
 docker build -f API_Server/Dockerfile -t "${AR}:${TAG}" .
 docker push "${AR}:${TAG}"
 
-# 3) staging.tfvars 의 api_image_uri 를 "${AR}:${TAG}" 로 바꾸고 전체 apply
+# 3) Set api_image_uri = "${AR}:${TAG}" in staging.tfvars and full apply
 terraform apply -var-file=environments/staging.tfvars
 ```
 
-이후 apply 는 단일 단계로 끝남. `lifecycle.ignore_changes` 덕분에 CI 나 수동 `gcloud run deploy` 로 바뀐 이미지는 다음 apply 에서 revert 되지 않는다.
+Subsequent applies are single-step. Thanks to
+`lifecycle.ignore_changes`, image updates pushed by CI or a manual
+`gcloud run deploy` are not reverted on the next apply.
 
-### 개발 서버 수동 배포 (`development` 브랜치)
+### Manual deploy to dev (`development` branch)
 
-staging GCP 프로젝트의 Cloud Run 서비스 (`auto-workflow-api-staging`) 로 사람이 직접 배포.
+A human deploys to the Cloud Run service
+(`auto-workflow-api-staging`) in the staging GCP project.
 
 ```bash
 git checkout development && git pull
-git merge --ff-only main        # main 에서 올라온 변경만 먼저 받기
+git merge --ff-only main        # bring in only what was promoted from main
 
 SHA=$(git rev-parse HEAD)
 PROJECT=auto-workflow-staging-REPLACE
@@ -290,110 +352,130 @@ gcloud run deploy auto-workflow-api-staging \
   --project="$PROJECT" \
   --quiet
 
-git push origin development      # 브랜치 포인터 업데이트
+git push origin development      # advance the branch pointer
 ```
 
-이 단계에서 로그·에러·응답을 확인. 통과하면 `release` 로 승격.
+Inspect logs / errors / responses here. If it passes, promote to
+`release`.
 
-### 운영 서버 자동 배포 (`release` 브랜치 + GH Actions)
+### Auto-deploy to prod (`release` branch + GH Actions)
 
-`development` 에서 검증된 커밋을 `release` 로 ff-only 승격.
+Promote a validated commit from `development` to `release`, ff-only.
 
 ```bash
 git checkout release && git pull
 git merge --ff-only development
-git push origin release          # ff-only 가 아니면 protection 이 거부함
+git push origin release          # protection refuses a non-ff push
 ```
 
-push 가 성공하면 `.github/workflows/deploy-prod.yml` 이 자동 실행:
-1. linearity guard (merge commit 이면 실패)
-2. WIF 로 GCP 인증
-3. AR 로그인 → `docker build/push` (태그 = `${{ github.sha }}`)
+A successful push triggers `.github/workflows/deploy-prod.yml`:
+1. linearity guard (fails on a merge commit)
+2. WIF auth to GCP
+3. AR login → `docker build / push` (tag = `${{ github.sha }}`)
 4. `gcloud run deploy auto-workflow-api-prod --image=<tag>`
-5. Cloud Run 이 새 revision 을 `/health` probe 까지 확인하고 트래픽 스위치. probe 실패 시 gcloud 가 non-zero 로 종료 → workflow 실패 → 이전 revision 유지.
+5. Cloud Run rolls a new revision, runs `/health`, and swaps
+   traffic. On probe failure, `gcloud` returns non-zero → the
+   workflow fails → the previous revision stays live.
 
-### 롤백
+### Rollback
 
-prod 에서 회귀 발견 시:
+When a regression surfaces in prod:
 
 ```bash
 git checkout release
-git revert <bad-sha>             # revert 커밋 생성
-git push origin release          # 같은 workflow 가 이전 상태를 다시 배포
+git revert <bad-sha>             # creates a revert commit
+git push origin release          # the same workflow re-deploys the prior state
 ```
 
-또는 Cloud Run 콘솔 · `gcloud run services update-traffic auto-workflow-api-prod --to-revisions=<prev>=100` 로 즉시 트래픽만 이전 revision 으로 돌린 뒤 git revert 를 따로 진행해도 됨.
+Or, immediately swing traffic with the Cloud Run Console / `gcloud
+run services update-traffic auto-workflow-api-prod
+--to-revisions=<prev>=100`, then file the `git revert` separately.
 
-### 긴급 hotfix
+### Emergency hotfix
 
-`main` 리뷰/머지 과정을 단축할 필요가 있으면 `hotfix/*` 브랜치에서 `release` 로 ff-only 머지 후 바로 `main` 과 `development` 로 역방향 동기화. 이 경우에도 `release` 는 linear 를 유지한다.
+When you need to shortcut the `main` review / merge cycle, ff-only
+merge a `hotfix/*` branch into `release`, then sync backwards into
+`main` and `development`. `release` still stays linear.
 
-## Worker Pools 배포 runbook (ADR-021)
+## Worker Pools deploy runbook (ADR-021)
 
-Execution_Engine 을 Cloud Run Worker Pools 로 띄우고 Memorystore 를 broker 로 쓰는 경로. API_Server 는 `execute` 트리거 시 Cloud Run Admin API `services.patch` 로 이 풀을 wake-up 한다.
+The path that runs Execution_Engine as Cloud Run Worker Pools with
+Memorystore as the broker. API_Server wakes the pool on `execute` by
+calling the Cloud Run Admin API `services.patch`.
 
-### 첫 apply (staging)
+### First apply (staging)
 
 ```bash
-# 1) EE 이미지 빌드 + AR push
+# 1) Build + push the EE image to AR
 AR="asia-northeast3-docker.pkg.dev/${PROJECT_ID}/auto-workflow/worker"
 TAG=bootstrap-$(date +%Y%m%d)
 docker build -f Execution_Engine/Dockerfile -t "${AR}:${TAG}" .
 docker push "${AR}:${TAG}"
 
-# 2) staging.tfvars 에 ee_image_uri = "${AR}:${TAG}" 설정 후 apply
+# 2) Set ee_image_uri = "${AR}:${TAG}" in staging.tfvars and apply
 cd infra/terraform
 terraform apply -var-file=environments/staging.tfvars
-#   → Memorystore 1GB BASIC 프로비저닝 ~5분, Worker Pool 생성 ~1분
+#   → Memorystore 1GB BASIC provisions in ~5 min; Worker Pool creation ~1 min
 ```
 
-첫 apply 때 `google_redis_instance.broker` 의 `host` 는 private IP 한 개가 할당되고, `WORKER_POOL_NAME` + `CELERY_BROKER_URL` env 가 API revision 에 반영된다. API Cloud Run 은 새 revision 이 `/health` 통과하면 자동 트래픽 스위치.
+On the first apply, `google_redis_instance.broker.host` is assigned a
+private IP, and `WORKER_POOL_NAME` + `CELERY_BROKER_URL` env vars
+land on the API revision. API Cloud Run flips traffic automatically
+once the new revision passes `/health`.
 
-### Wake-up 확인
+### Wake-up check
 
 ```bash
-# /execute 한 번 호출 후 API 로그에서 wake 확인
+# Call /execute once, then check the wake log in API logs
 gcloud logging read \
   'resource.type="cloud_run_revision" AND jsonPayload.message~"worker pool .* woken"' \
   --limit=5 --freshness=5m
 
-# Worker Pool 인스턴스 개수 확인 (patch 직후 1 로 올라감)
+# Worker Pool instance count (jumps to 1 right after patch)
 gcloud run worker-pools describe auto-workflow-ee-staging \
   --region=asia-northeast3 --format='value(scaling.minInstanceCount)'
 ```
 
-15분 task 미수신 시 GCP 가 자동으로 0 으로 되돌린다. 우리 쪽 sleep 코드 없음.
+GCP returns the pool to 0 automatically after 15 min of no tasks. We
+have no sleep code on our side.
 
-### 이미지 갱신 (steady state)
+### Image update (steady state)
 
 ```bash
 gcloud run worker-pools update auto-workflow-ee-staging \
   --image="${AR}:${NEW_TAG}" --region=asia-northeast3
 ```
 
-`lifecycle.ignore_changes = [template[0].containers[0].image]` 가 Terraform 이 이전 이미지로 revert 하는 것을 막는다.
+`lifecycle.ignore_changes = [template[0].containers[0].image]`
+prevents Terraform from reverting to the old image.
 
-### destroy
+### Destroy
 
 ```bash
-# broker 는 prevent_destroy 가드. 내릴 때만 한 번 풀어주기:
-#   memorystore.tf 의 lifecycle.prevent_destroy 를 false 로 잠깐 바꾸고
+# The broker is guarded by prevent_destroy. Lift it momentarily when intentionally tearing down:
+#   set lifecycle.prevent_destroy = false in memorystore.tf temporarily
 terraform destroy -var-file=environments/staging.tfvars \
   -target=google_cloud_run_v2_worker_pool.ee \
   -target=google_redis_instance.broker
-# 완료 후 prevent_destroy 를 원복, 커밋
+# Restore prevent_destroy afterwards and commit.
 ```
 
-Memorystore 삭제 후 같은 이름 재생성은 API 제약 없음 (Cloud SQL 과 달리 이름 재사용 가능).
+Recreating Memorystore with the same name has no API constraint
+(unlike Cloud SQL, the name is reusable).
 
-## 관련 문서
+## Related docs
 
 - `docs/context/decisions.md` ADR-018 — Cloud SQL + Secret Manager
-- `docs/context/decisions.md` ADR-019 — Google OAuth2 credential_type. 시크릿 3종 주입 절차는 [`README_oauth.md`](README_oauth.md)
-- `docs/context/decisions.md` ADR-020 — Cloud Run 배포 (§1-10) + §6-a `api_image_uri` 정책 + §7 브랜치 전략
-- `docs/context/decisions.md` ADR-021 — Cloud Run Worker Pools + Memorystore Redis
-- `infra/plans/PLAN_21_worker_pools.md` — 구현 분해
-- `Database/scripts/migrate.py` — 마이그레이션 러너
-- `Database/schemas/` — 스키마 SQL 원본
-- `Database/migrations/` — 증분 변경 이력
-- `.github/workflows/deploy-prod.yml` — release 자동 배포 파이프라인
+- `docs/context/decisions.md` ADR-019 — Google OAuth2
+  credential_type. The three secrets' injection procedure is in
+  [`README_oauth.md`](README_oauth.md)
+- `docs/context/decisions.md` ADR-020 — Cloud Run deployment
+  (§1–10) + §6-a `api_image_uri` policy + §7 branch strategy
+- `docs/context/decisions.md` ADR-021 — Cloud Run Worker Pools +
+  Memorystore Redis
+- `infra/plans/PLAN_21_worker_pools.md` — implementation breakdown
+- `Database/scripts/migrate.py` — migration runner
+- `Database/schemas/` — schema SQL sources
+- `Database/migrations/` — incremental change history
+- `.github/workflows/deploy-prod.yml` — release auto-deploy
+  pipeline

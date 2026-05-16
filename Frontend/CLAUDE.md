@@ -1,158 +1,188 @@
-# Frontend — Claude Code 브랜치 지침
+# Frontend — Claude Code branch guide
 
-> 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
+> Applied alongside the security rules in the root `CLAUDE.md`.
 
-## 관련 문서
+## Related docs
 
-- 상류 의존: `API_Server` — REST 콘트랙트 + (예정) WebSocket 실시간 스트림
-- 설계 결정 배경: `docs/context/decisions.md`
-- PLAN 문서: `Frontend/plans/PLAN_01_*.md`, `PLAN_02_*.md` (+ AI_Agent `PLAN_12` 의 Frontend 작업 항목)
+- Upstream dependency: `API_Server` — REST contract + (planned) WebSocket
+  realtime stream
+- Decision rationale: `docs/context/decisions.md`
+- PLAN docs: `Frontend/plans/PLAN_01_*.md`, `PLAN_02_*.md` (+ Frontend
+  work items inside `AI_Agent/PLAN_12`)
 
-## 모듈 역할
+## Module role
 
-**Workflow Editor + AI 인터페이스 UI** — 사용자가 다음 두 흐름을 수행하는 Next.js 14 (App Router) 웹 클라이언트:
+**Workflow Editor + AI interface UI** — a Next.js 14 (App Router) web
+client where users do three things:
 
-1. **워크플로우 편집** (PLAN_01) — React Flow 캔버스에서 노드를 드래그/연결, 파라미터 편집, 저장, 수동 실행 후 결과 확인
-2. **AI Composer 채팅** (PLAN_02) — 자연어 입력 → SSE 스트리밍으로 rationale 토큰 + 제안된 DAG 수신 → Apply 시 캔버스에 반영
-3. **Skill Bootstrap Wizard** (PLAN_12 W2-5/W2-6) — 도메인 칩 선택 → 인터뷰 질문 → SkillDraft 생성 → SkillCard 검토 (Approve / Reject / Answer follow-up)
+1. **Edit workflows** (PLAN_01) — drag / connect nodes on the React Flow
+   canvas, edit parameters, save, run manually, and inspect results
+2. **AI Composer chat** (PLAN_02) — natural-language input → SSE stream
+   of rationale tokens + a proposed DAG → Apply commits to the canvas
+3. **Skill Bootstrap Wizard** (PLAN_12 W2-5 / W2-6) — pick a domain chip →
+   interview questions → produce SkillDrafts → review SkillCards
+   (Approve / Reject / Answer follow-up)
 
-4-레이어 아키텍처 중 **Frontend Layer**. 자체 비즈니스 상태 머신은 Zustand store 에 두고, 서버 캐시는 React Query (TanStack Query) 가 담당한다.
+This is the **Frontend Layer** in the 4-layer architecture. Business
+state machines live in Zustand stores; server cache lives in React Query
+(TanStack Query).
 
-## 파일 위치 규칙 (MANDATORY)
+## File-location rules (MANDATORY)
 
 ```
 Frontend/
 ├── src/
-│   ├── app/                ← Next.js App Router 라우트 (RSC + client component)
-│   │   ├── layout.tsx          ← 루트 레이아웃 (QueryProvider 포함)
-│   │   ├── page.tsx            ← 홈 (`/`) — workflows 리스트
+│   ├── app/                ← Next.js App Router routes (RSC + client components)
+│   │   ├── layout.tsx          ← root layout (includes QueryProvider)
+│   │   ├── page.tsx            ← home (`/`) — workflows list
 │   │   ├── workflows/[id]/page.tsx
-│   │   └── skills/new/page.tsx ← Skill wizard 진입
-│   ├── components/         ← UI 컴포넌트 (직접 실행 X)
-│   │   ├── editor/             ← 캔버스/팔레트/속성 패널 (PLAN_01)
+│   │   └── skills/new/page.tsx ← Skill wizard entry
+│   ├── components/         ← UI components (no direct execution)
+│   │   ├── editor/             ← canvas / palette / property panel (PLAN_01)
 │   │   ├── skills/             ← skill-card, skill-wizard (PLAN_12)
-│   │   └── workflows-list.tsx  ← 홈 리스트
-│   ├── lib/                ← API 클라이언트 + 도메인 유틸 (NOT services/)
-│   │   ├── api.ts              ← apiFetch 래퍼 + workflows/executions/nodes
-│   │   ├── composer.ts         ← compose JSON + SSE 스트림
+│   │   └── workflows-list.tsx  ← home list
+│   ├── lib/                ← API client + domain utils (NOT services/)
+│   │   ├── api.ts              ← apiFetch wrapper + workflows / executions / nodes
+│   │   ├── composer.ts         ← compose JSON + SSE stream
 │   │   ├── skills.ts           ← bootstrap / answer / approve / reject
-│   │   ├── dag.ts              ← DAG 직렬화 유틸
-│   │   └── auto-layout.ts      ← dagre 자동 배치
+│   │   ├── dag.ts              ← DAG serialization utils
+│   │   └── auto-layout.ts      ← dagre auto-layout
 │   ├── store/              ← Zustand (composer-store, editor-store, skill-wizard-store)
-│   └── providers/          ← React Query Provider 등 cross-cutting
-├── public/                 ← 정적 에셋
+│   └── providers/          ← React Query Provider, other cross-cutting
+├── public/                 ← static assets
 ├── plans/                  ← `PLAN_NN_*.md`
 └── tests/                  ← Playwright (`*.spec.ts`)
 ```
 
-| 파일 종류 | 저장 위치 |
-|-----------|-----------|
-| 라우트/페이지 | `src/app/<route>/page.tsx` (App Router — `pages/` 사용 X) |
-| 재사용 UI 컴포넌트 | `src/components/<domain>/*.tsx` |
-| API 클라이언트 + 도메인 유틸 | `src/lib/*.ts` |
-| Zustand store | `src/store/*-store.ts` (한 도메인당 1 파일) |
+| File kind | Location |
+|-----------|----------|
+| Routes / pages | `src/app/<route>/page.tsx` (App Router — never `pages/`) |
+| Reusable UI components | `src/components/<domain>/*.tsx` |
+| API client + domain utils | `src/lib/*.ts` |
+| Zustand store | `src/store/*-store.ts` (one file per domain) |
 | Cross-cutting Provider | `src/providers/*.tsx` |
-| Playwright 스펙 | `tests/*.spec.ts` |
+| Playwright specs | `tests/*.spec.ts` |
 
-**`Frontend/` 루트 또는 `src/` 루트에 직접 `.ts`/`.tsx` 파일 생성 금지.**
+**Do not create `.ts` / `.tsx` files directly at `Frontend/` or `src/`
+root.**
 
-## 기술 스택
+## Tech stack
 
 ```typescript
-// 프레임워크 / 언어
+// framework / language
 Next.js 14 (App Router) · TypeScript 5 · Tailwind CSS 3
 
-// 핵심 라이브러리
-import ReactFlow from "reactflow";           // 워크플로우 캔버스
-import { create } from "zustand";            // 클라이언트 상태
-import { useQuery } from "@tanstack/react-query"; // 서버 캐시
-import dagre from "dagre";                   // 자동 레이아웃
-import zundo from "zundo";                   // undo/redo (editor)
+// core libraries
+import ReactFlow from "reactflow";           // workflow canvas
+import { create } from "zustand";            // client state
+import { useQuery } from "@tanstack/react-query"; // server cache
+import dagre from "dagre";                   // auto-layout
+import zundo from "zundo";                   // undo / redo (editor)
 
-// 테스트
+// testing
 import { test, expect } from "@playwright/test";
 ```
 
-## 핵심 컴포넌트 / 페이지
+## Key components / pages
 
-| 컴포넌트 / 페이지 | 역할 | PLAN |
-|------------------|------|------|
-| `app/page.tsx` (`WorkflowsList`) | 홈 — workflows 목록 + skill wizard 링크 | PLAN_01 |
-| `app/workflows/[id]/page.tsx` | 단일 워크플로우 에디터 | PLAN_01 |
-| `app/skills/new/page.tsx` | Skill wizard 진입 | PLAN_12 W2-5 |
-| `components/editor/workflow-canvas.tsx` | React Flow 캔버스 (노드/엣지 편집) | PLAN_01 |
-| `components/editor/node-palette.tsx` | 노드 카탈로그 드래그 소스 (`/api/v1/nodes/catalog`) | PLAN_01 |
-| `components/editor/property-panel.tsx` + `property-form.tsx` | 선택 노드 파라미터 편집 | PLAN_01 |
-| `components/editor/result-drawer.tsx` | 실행 결과 (`ExecutionResponse.node_results`) 노드별 표시 | PLAN_01 |
-| `components/editor/chat-panel.tsx` | AI Composer SSE 채팅 + Apply draft | PLAN_02 |
-| `components/skills/skill-wizard.tsx` | 도메인 칩 → 인터뷰 → 카드 검토 | PLAN_12 W2-5/6 |
-| `components/skills/skill-card.tsx` | CONDITION/ACTION/RATIONALE + Approve/Reject/Follow-up | PLAN_12 W2-6 |
+| Component / page | Role | PLAN |
+|-------------------|------|------|
+| `app/page.tsx` (`WorkflowsList`) | Home — workflows list + skill-wizard link | PLAN_01 |
+| `app/workflows/[id]/page.tsx` | Single-workflow editor | PLAN_01 |
+| `app/skills/new/page.tsx` | Skill wizard entry | PLAN_12 W2-5 |
+| `components/editor/workflow-canvas.tsx` | React Flow canvas (node / edge editing) | PLAN_01 |
+| `components/editor/node-palette.tsx` | Node catalog drag source (`/api/v1/nodes/catalog`) | PLAN_01 |
+| `components/editor/property-panel.tsx` + `property-form.tsx` | Edit the selected node's parameters | PLAN_01 |
+| `components/editor/result-drawer.tsx` | Display `ExecutionResponse.node_results` per node | PLAN_01 |
+| `components/editor/chat-panel.tsx` | AI Composer SSE chat + Apply draft | PLAN_02 |
+| `components/skills/skill-wizard.tsx` | Domain chips → interview → card review | PLAN_12 W2-5 / W2-6 |
+| `components/skills/skill-card.tsx` | CONDITION / ACTION / RATIONALE + Approve / Reject / Follow-up | PLAN_12 W2-6 |
 
-## 데이터 흐름
+## Data flow
 
 ```
-워크플로우 편집 (PLAN_01):
+Workflow editor (PLAN_01):
   NodePalette (catalog from /api/v1/nodes/catalog)
     → drag onto WorkflowCanvas (React Flow)
-    → PropertyPanel 로 NodeConfig 편집
-    → editor-store 가 dirty 추적 + zundo undo/redo
+    → edit NodeConfig in PropertyPanel
+    → editor-store tracks dirty + zundo undo/redo
     → [Save]   POST /api/v1/workflows  | PUT /api/v1/workflows/{id}
     → [Execute] POST /api/v1/workflows/{id}/execute
-    → ResultDrawer 가 ExecutionResponse 폴링 (TERMINAL_STATUSES 도달 시 정지)
+    → ResultDrawer polls ExecutionResponse (stops on TERMINAL_STATUSES)
 
 AI Composer (PLAN_02):
   ChatPanel → composer-store
     → composeStream (POST /api/v1/ai/compose?stream=true)
     → SSE frames: session / rationale_delta / result / error
     → result.intent ∈ {clarify, draft, refine}
-    → draft|refine: pendingDraft 저장 → [Apply] 시 editor-store.applyComposerDraft
+    → draft|refine: pendingDraft saved → [Apply] calls editor-store.applyComposerDraft
 
 Skill Wizard (PLAN_12 W2-5/6):
   DomainPicker → POST /api/v1/skills/bootstrap
     → flat queue of (policy_id, question)
     → AskingTurn ↔ wizard-input → POST /api/v1/skills/answer
-    → WizardDraft 누적 → done phase 진입
-    → SkillCard 리스트 → POST /skills/{id}/approve|reject
-    → needs_clarification → pushFollowUpQuestion → wizard 재진입
+    → accumulate WizardDraft → reach "done" phase
+    → SkillCard list → POST /skills/{id}/approve|reject
+    → needs_clarification → pushFollowUpQuestion → re-enter wizard
 ```
 
-## 인터페이스
+## Interfaces
 
-- **업스트림**: `API_Server`
-  - REST: `/api/v1/workflows` · `/executions` · `/nodes/catalog` · `/ai/compose` (SSE) · `/skills/*` · `/auth`
-  - 인증: `NEXT_PUBLIC_DEV_TOKEN` (로컬 dev) → `Authorization: Bearer <token>` 헤더
-  - dev rewrite: `next.config.mjs` 가 `/api/*` → `http://127.0.0.1:8000/api/*`
-- **다운스트림**: 사용자 브라우저
+- **Upstream**: `API_Server`
+  - REST: `/api/v1/workflows` · `/executions` · `/nodes/catalog` ·
+    `/ai/compose` (SSE) · `/skills/*` · `/auth`
+  - Auth: `NEXT_PUBLIC_DEV_TOKEN` (local dev) → `Authorization: Bearer
+    <token>` header
+  - Dev rewrite: `next.config.mjs` proxies `/api/*` →
+    `http://127.0.0.1:8000/api/*`
+- **Downstream**: the user's browser
 
-## 보안 주의사항
+## Security notes
 
-- 자격증명 입력 폼은 **상태에 장기 보존 금지**. 전송 후 즉시 초기화. 비밀번호/토큰을 store/로컬스토리지/세션스토리지에 두지 않는다.
-- API 토큰(JWT)은 메모리 또는 `httpOnly` 쿠키. **`localStorage` 사용 금지** (XSS 노출).
-- `NEXT_PUBLIC_*` 환경변수는 **클라이언트 번들에 인라인됨** — API 키/시크릿을 절대 넣지 않는다. Dev token 만 가능 (게다가 운영에선 OAuth + 서버 세션으로 교체).
-- `.env.local` 은 git 추적 금지 (`.gitignore` 에 포함). `.env.example` 만 커밋.
-- AI Composer / Skill Wizard 가 LLM 응답을 그대로 렌더할 때 **HTML/마크다운 raw 삽입 금지** — React 의 기본 escape 만 신뢰하고, `dangerouslySetInnerHTML` 사용 금지.
-- 사용자 워크플로우 JSON 에 사용자 자격증명이 포함된 채로 전송되지 않도록 한다 (입력 폼이 즉시 redaction → API 가 CredentialStore 로 저장).
+- **Do not retain credential-input fields in state.** Clear them
+  immediately after submit. Never put passwords / tokens in stores,
+  `localStorage`, or `sessionStorage`.
+- API tokens (JWT) live in memory or in an `httpOnly` cookie.
+  **Never use `localStorage`** (XSS exposure).
+- `NEXT_PUBLIC_*` env vars are **inlined into the client bundle** —
+  never put API keys / secrets there. The dev token is the one
+  exception (and in production it is replaced by OAuth + a server
+  session anyway).
+- `.env.local` is git-ignored. Commit only `.env.example`.
+- When the AI Composer / Skill Wizard renders LLM output, **do not
+  raw-inject HTML or markdown** — trust React's default escaping; do
+  not use `dangerouslySetInnerHTML`.
+- Never send user credentials inside the workflow JSON. Input forms
+  redact immediately, and the API persists the value into
+  `CredentialStore`.
 
-## 검증 명령
+## Validation commands
 
 ```bash
-# 타입 체크 + 린트 + 빌드 (PR 오픈 전 필수)
+# Typecheck + lint + build (mandatory before opening a PR)
 npx tsc --noEmit
 npx next lint
 npx next build
 
-# Playwright (mock 기반 — API_Server 없이 통과)
+# Playwright (mock-based — passes without API_Server)
 npx playwright test tests/ai-composer.spec.ts tests/skill-wizard.spec.ts
 
-# Live 통합 (API_Server uvicorn :8000 필요)
+# Live integration (requires API_Server uvicorn on :8000)
 npx playwright test tests/smoke.spec.ts
 ```
 
-## 관련 PLAN / 메모리
+## Related PLANs / memory
 
-- `Frontend/plans/PLAN_01_WORKFLOW_EDITOR_MVP.md` — React Flow 캔버스 + 실행 트리거 + ResultDrawer
-- `Frontend/plans/PLAN_02_AI_COMPOSER.md` — AI Composer 4 PR (non-stream / SSE / Apply)
-- `AI_Agent/plans/PLAN_12_skill_bootstrap.md` — Frontend 작업 항목 W2-5 (인터뷰) / W2-6 (검토 카드) / W3-1 (문서 업로드 — 미착수)
-- 메모리 `feedback_hackathon_ui_english.md` — UI 텍스트 영어 통일 (Kaggle 심사위원 대응)
-- 메모리 `feedback_no_merge_commits_in_branch.md` — 브랜드 브랜치 main 동기화는 `merge` X / `rebase` O
-- 메모리 `feedback_test_before_pr.md` — PR 오픈 전 외부 검증 (typecheck/lint/build/playwright) 모두 green
+- `Frontend/plans/PLAN_01_WORKFLOW_EDITOR_MVP.md` — React Flow canvas +
+  execution trigger + ResultDrawer
+- `Frontend/plans/PLAN_02_AI_COMPOSER.md` — AI Composer 4 PRs
+  (non-stream / SSE / Apply)
+- `AI_Agent/plans/PLAN_12_skill_bootstrap.md` — Frontend work items
+  W2-5 (interview) / W2-6 (review cards) / W3-1 (document upload —
+  not started)
+- Memory `feedback_hackathon_ui_english.md` — keep UI text in English
+  (Kaggle judges)
+- Memory `feedback_no_merge_commits_in_branch.md` — sync brand branches
+  with `rebase`, never `merge`
+- Memory `feedback_test_before_pr.md` — before opening a PR, all
+  external checks (typecheck / lint / build / playwright) must be green

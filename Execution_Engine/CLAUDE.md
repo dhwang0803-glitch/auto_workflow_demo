@@ -1,68 +1,71 @@
-# Execution_Engine — Claude Code 브랜치 지침
+# Execution_Engine — Claude Code branch guide
 
-> 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
+> Applied alongside the security rules in the root `CLAUDE.md`.
 
-## 모듈 역할
+## Module role
 
-**Execution Layer** — 실제로 워크플로우의 노드를 실행하는 엔진.
-두 가지 실행 모드를 모두 지원한다:
+**Execution Layer** — the engine that actually runs workflow nodes.
+Supports two execution modes:
 
-1. **Serverless Worker**: Celery + Redis 큐 → Cloud Run 컨테이너에서 실행 (Light/Middle 유저)
-2. **Agent**: 고객 VPC에 설치되는 경량 실행기. 중앙 서버와 WebSocket으로 연결 (Heavy 유저)
+1. **Serverless Worker**: Celery + Redis queue → Cloud Run container
+   (Light / Middle users)
+2. **Agent**: a lightweight runner installed in the customer's VPC,
+   connected to the central server over WebSocket (Heavy users)
 
-두 모드 모두 동일한 `BaseNode` 플러그인 인터페이스와 `NodeRegistry`를 공유한다.
+Both modes share the same `BaseNode` plugin interface and `NodeRegistry`.
 
-## 파일 위치 규칙 (MANDATORY)
+## File-location rules (MANDATORY)
 
 ```
 Execution_Engine/
 ├── src/
-│   ├── nodes/            ← BaseNode 구현체 (플러그인, import 전용)
+│   ├── nodes/            ← BaseNode implementations (plugins, import-only)
 │   │   ├── base.py           ← BaseNode ABC
 │   │   ├── http_request.py   ← HttpRequestNode
 │   │   ├── condition.py      ← ConditionNode
-│   │   ├── code.py           ← CodeExecutionNode (샌드박스 필수)
+│   │   ├── code.py           ← CodeExecutionNode (sandbox required)
 │   │   └── registry.py       ← NodeRegistry
-│   ├── dispatcher/       ← 실행 디스패처
-│   │   ├── serverless.py     ← Celery 태스크 디스패치
-│   │   └── agent_client.py   ← WebSocket 클라이언트 (Agent → 서버)
-│   ├── runtime/          ← DAG 실행 런타임
-│   │   ├── executor.py       ← 단계별 노드 실행 (asyncio.gather 병렬)
-│   │   └── sandbox.py        ← RestrictedPython/Docker 격리
-│   └── agent/            ← Agent 데몬 (고객 VPC 설치용)
-│       ├── main.py           ← Agent 진입점
-│       ├── heartbeat.py      ← 생존 신호 송신
-│       └── command_handler.py ← 서버 명령 수신/실행
-├── scripts/      ← worker.py, agent_run.py (직접 실행)
-├── tests/        ← pytest (노드별 단위 테스트 + 통합)
-├── config/       ← Celery 설정, 노드 기본 파라미터
-└── docs/         ← 노드 개발 가이드, 샌드박스 설계 문서
+│   ├── dispatcher/       ← execution dispatchers
+│   │   ├── serverless.py     ← Celery task dispatch
+│   │   └── agent_client.py   ← WebSocket client (Agent → server)
+│   ├── runtime/          ← DAG execution runtime
+│   │   ├── executor.py       ← per-level node execution (parallel via asyncio.gather)
+│   │   └── sandbox.py        ← RestrictedPython / Docker isolation
+│   └── agent/            ← Agent daemon (installed inside the customer VPC)
+│       ├── main.py           ← Agent entrypoint
+│       ├── heartbeat.py      ← liveness signal
+│       └── command_handler.py ← receive / execute server commands
+├── scripts/      ← worker.py, agent_run.py (run directly)
+├── tests/        ← pytest (per-node unit + integration)
+├── config/       ← Celery config, default node parameters
+└── docs/         ← node-development guide, sandbox design notes
 ```
 
-| 파일 종류 | 저장 위치 |
-|-----------|-----------|
-| 노드 구현 (`BaseNode` 상속) | `src/nodes/` |
-| Celery 태스크 / Agent 클라이언트 | `src/dispatcher/` |
-| DAG 실행 런타임 | `src/runtime/` |
-| Agent 데몬 (고객 VPC 배포) | `src/agent/` |
-| Celery Worker 실행 | `scripts/worker.py` |
-| Agent 실행 | `scripts/agent_run.py` |
+| File kind | Location |
+|-----------|----------|
+| Node implementations (subclass `BaseNode`) | `src/nodes/` |
+| Celery tasks / Agent client | `src/dispatcher/` |
+| DAG execution runtime | `src/runtime/` |
+| Agent daemon (deployed to the customer VPC) | `src/agent/` |
+| Celery worker entrypoint | `scripts/worker.py` |
+| Agent entrypoint | `scripts/agent_run.py` |
 | pytest | `tests/` |
 
-**`Execution_Engine/` 루트 또는 프로젝트 루트에 `.py` 파일 직접 생성 금지.**
+**Do not create `.py` files directly at the `Execution_Engine/` root or
+the project root.**
 
-## 기술 스택
+## Tech stack
 
 ```python
 from celery import Celery
 import redis.asyncio as redis
-import httpx                      # HTTP 노드
+import httpx                      # HTTP node
 import websockets                 # Agent ↔ Server
-from RestrictedPython import compile_restricted  # 코드 노드 샌드박스
-from cryptography.hazmat.primitives.asymmetric import rsa  # Agent 키페어
+from RestrictedPython import compile_restricted  # code-node sandbox
+from cryptography.hazmat.primitives.asymmetric import rsa  # Agent keypair
 ```
 
-## 플러그인 확장 (새 노드 추가)
+## Plugin extension (adding a new node)
 
 ```python
 from src.nodes.base import BaseNode
@@ -79,60 +82,68 @@ class SlackSendMessageNode(BaseNode):
 registry.register(SlackSendMessageNode)
 ```
 
-노드 추가 시 `tests/nodes/test_{노드명}.py` 작성 필수.
+Adding a node requires a matching `tests/nodes/test_{node_name}.py`.
 
-## 실행 모드별 진입점
+## Entrypoints per run mode
 
 ```bash
-# Serverless Worker (우리 클라우드)
+# Serverless worker (our cloud)
 python scripts/worker.py --queue workflow_tasks --concurrency 10
 
-# Agent (고객 VPC에 배포)
+# Agent (deployed inside the customer VPC)
 python scripts/agent_run.py --agent-key <KEY> --server-url wss://api.example.com/agents/ws
 ```
 
-## 샌드박스 (CodeExecutionNode)
+## Sandbox (CodeExecutionNode)
 
-**절대 `eval()` / `exec()` 직접 사용 금지.**
+**Never call `eval()` / `exec()` directly.**
 
-- 1차 방어: `RestrictedPython`으로 AST 검사 + 내장 함수 화이트리스트
-- 2차 방어: 격리된 Docker 컨테이너 (네트워크/FS 제한)에서 실행
-- 실행 타임아웃 필수 (기본 30초)
+- 1st defense: `RestrictedPython` for AST inspection + builtin allowlist
+- 2nd defense: run inside an isolated Docker container (network / FS
+  restricted)
+- A timeout is mandatory (default 30 s)
 
-## Agent 통신 프로토콜
+## Agent communication protocol
 
-| 방향 | 메시지 | 용도 |
-|------|--------|------|
-| Agent → Server | `register` | 최초 연결 (agent_key → JWT) |
-| Agent → Server | `heartbeat` | 10~30초 주기 생존 신호 |
-| Server → Agent | `execute` | AgentCommand (workflow JSON + encrypted creds) |
-| Agent → Server | `status_update` | 노드별 실행 상태 |
-| Agent → Server | `execution_result` | 최종 결과 (메타데이터만, 대용량 데이터는 VPC 내 유지) |
+| Direction | Message | Purpose |
+|-----------|---------|---------|
+| Agent → Server | `register` | Initial handshake (agent_key → JWT) |
+| Agent → Server | `heartbeat` | Liveness signal every 10–30 s |
+| Server → Agent | `execute` | `AgentCommand` (workflow JSON + encrypted creds) |
+| Agent → Server | `status_update` | Per-node execution state |
+| Agent → Server | `execution_result` | Final result (metadata only — bulk data stays in the VPC) |
 
-**멱등성**: 모든 `execute` 메시지는 `execution_id`로 중복 실행을 방지해야 한다.
+**Idempotency**: every `execute` message must guard against duplicate
+execution via its `execution_id`.
 
-## 인터페이스
+## Interfaces
 
-- **업스트림**: `API_Server` — Celery 큐 또는 WebSocket으로 실행 명령 수신
-- **다운스트림**:
-  - `Database` — 실행 결과 메타데이터 저장 (ExecutionRepository 경유)
-  - 외부 서비스 — 노드가 호출하는 실제 API들
+- **Upstream**: `API_Server` — receives execution commands via the
+  Celery queue or WebSocket
+- **Downstream**:
+  - `Database` — store execution metadata (via `ExecutionRepository`)
+  - External services — the actual APIs that nodes call
 
-## 테스트 실행 규칙 (MANDATORY)
+## Test-execution rules (MANDATORY)
 
-1. **테스트 프로세스는 항상 1개만 유지** — 새 테스트 실행 전 이전 프로세스를 반드시 kill
+1. **Keep exactly one test process at a time** — kill the previous one
+   before starting a new run:
    ```bash
    taskkill //F //IM python.exe 2>/dev/null; python -m pytest tests/ -v
    ```
-2. **실패 분석 → 코드 수정 → 재실행** 사이클에서 이전 실패 프로세스를 kill하지 않으면
-   좀비 프로세스가 누적되어 CPU/메모리를 점유하고 후속 테스트가 느려진다
-3. **background 실행(`run_in_background`) 금지** — 테스트 결과를 즉시 확인해야 하므로
-   foreground에서 실행하고 결과를 바로 읽는다
-4. **무한루프 테스트 주의** — `while True: pass` 등 CPU-bound 무한루프는 Python 스레드에서
-   kill 불가. 유한 루프(`range(10**8)`)로 대체하여 스레드가 자연 종료되도록 한다
+2. In the **fail → fix → rerun** loop, leaving the previous failure
+   running stacks up zombie processes that hog CPU / memory and slow
+   later tests.
+3. **No background execution (`run_in_background`)** — we want results
+   immediately, so run in the foreground and read output directly.
+4. **Beware infinite-loop tests** — CPU-bound infinite loops like
+   `while True: pass` cannot be killed from a Python thread. Replace with
+   a bounded loop (`range(10**8)`) so the thread exits on its own.
 
-## 보안 주의사항
+## Security notes
 
-- 자격증명은 **실행 시점에만** 복호화, 노드 파라미터로 주입 후 즉시 폐기
-- Agent는 고객 VPC의 내부 데이터를 외부로 유출하지 않아야 함 (메타데이터만 전송)
-- 커스텀 코드 노드는 반드시 샌드박스 통과 후 실행
+- Decrypt credentials **only at execution time**, inject them as node
+  parameters, then drop them immediately.
+- The Agent must **not** leak internal customer-VPC data outward
+  (metadata only over the wire).
+- Custom code nodes always run through the sandbox.

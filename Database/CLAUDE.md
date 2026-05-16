@@ -1,28 +1,30 @@
-# Database — Claude Code 브랜치 지침
+# Database — Claude Code branch guide
 
-> 루트 `CLAUDE.md` 보안 규칙과 함께 적용된다.
+> Applied alongside the security rules in the root `CLAUDE.md`.
 
-## 모듈 역할
+## Module role
 
-**Data Layer** — 워크플로우 자동화 엔진의 영속성 계층.
-PostgreSQL 스키마 설계, Repository 구현체, 자격증명 암호화 저장소를 담당한다.
+**Data Layer** — the persistence layer of the workflow-automation engine.
+Owns PostgreSQL schema design, repository implementations, and the encrypted
+credential store.
 
-`API_Server`와 `Execution_Engine`이 이 브랜치의 Repository 인터페이스를
-통해서만 DB에 접근한다 (직접 SQL 금지).
+`API_Server` and `Execution_Engine` reach the database **only** through the
+Repository interfaces published by this branch (direct SQL is forbidden).
 
-## 파일 위치 규칙 (MANDATORY)
+## File-location rules (MANDATORY)
 
-**PLAN_00 이후 Database 는 `auto-workflow-database` 파이썬 패키지로 배포**
-된다. 타 브랜치(`API_Server`, `Execution_Engine`)는 `pip install -e Database/`
-로 editable 설치하고 `from auto_workflow_database.repositories.base import ...`
-로 참조한다. Phase 2 에서 GitHub Packages wheel 게시로 전환 예정.
+**Since PLAN_00, `Database` ships as the `auto-workflow-database` Python
+package.** Other branches (`API_Server`, `Execution_Engine`) install it
+editable with `pip install -e Database/` and import via
+`from auto_workflow_database.repositories.base import ...`.
+Phase 2 will switch to publishing a wheel through GitHub Packages.
 
 ```
 Database/
-├── pyproject.toml                  ← 패키지 메타데이터 + 의존성
+├── pyproject.toml                  ← package metadata + dependencies
 ├── schemas/                         ← DDL (CREATE TABLE/INDEX) SQL
-├── migrations/                      ← 스키마 변경 이력 (YYYYMMDD_설명.sql)
-├── auto_workflow_database/          ← 파이썬 패키지 루트
+├── migrations/                      ← schema-change history (YYYYMMDD_description.sql)
+├── auto_workflow_database/          ← Python package root
 │   ├── repositories/
 │   │   ├── workflow_repository.py
 │   │   ├── execution_repository.py
@@ -31,51 +33,51 @@ Database/
 │   └── crypto/                      ← hybrid.py (ADR-013)
 ├── scripts/                         ← migrate.py, roll_partitions.py
 ├── tests/                           ← pytest
-└── plans/                           ← PLAN 문서
+└── plans/                           ← PLAN documents
 ```
 
-| 파일 종류 | 저장 위치 | import 경로 |
-|-----------|-----------|------------|
+| File kind | Location | Import path |
+|-----------|----------|-------------|
 | `CREATE TABLE`, `CREATE INDEX` | `schemas/` | — |
-| `ALTER TABLE`, 컬럼 변경 | `migrations/YYYYMMDD_*.sql` | — |
-| Repository 구현 | `auto_workflow_database/repositories/` | `auto_workflow_database.repositories.X` |
-| SQLAlchemy ORM 모델 | `auto_workflow_database/models/` | `auto_workflow_database.models.X` |
-| 암호 헬퍼 | `auto_workflow_database/crypto/` | `auto_workflow_database.crypto.X` |
-| 마이그레이션 실행 스크립트 | `scripts/` | (직접 실행) |
+| `ALTER TABLE`, column changes | `migrations/YYYYMMDD_*.sql` | — |
+| Repository implementations | `auto_workflow_database/repositories/` | `auto_workflow_database.repositories.X` |
+| SQLAlchemy ORM models | `auto_workflow_database/models/` | `auto_workflow_database.models.X` |
+| Crypto helpers | `auto_workflow_database/crypto/` | `auto_workflow_database.crypto.X` |
+| Migration scripts | `scripts/` | (run directly) |
 | pytest | `tests/` | — |
 
-**`Database/` 루트 또는 프로젝트 루트에 파일 직접 생성 금지.**
+**Do not create files directly at the `Database/` root or the project root.**
 
-## 기술 스택
+## Tech stack
 
 ```python
 import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 import asyncpg
-from cryptography.fernet import Fernet   # 자격증명 암호화
+from cryptography.fernet import Fernet   # credential encryption
 ```
 
 - PostgreSQL 16+
-- 비동기 드라이버: `asyncpg` (FastAPI async와 호환)
+- Async driver: `asyncpg` (compatible with FastAPI async)
 - ORM: SQLAlchemy 2.0 async
 
-## 핵심 테이블
+## Core tables
 
-| 테이블 | 설명 |
-|--------|------|
-| `workflows` | 워크플로우 정의 (JSONB로 nodes/connections 저장) |
-| `executions` | 실행 이력 (status, started_at, finished_at, node_results JSONB) |
-| `credentials` | 암호화된 자격증명 (owner_id, name, encrypted_data) |
-| `users` | 계정 정보 |
-| `agents` | 등록된 Agent 메타데이터 (owner_id, public_key, last_heartbeat) |
-| `webhook_registry` | 동적 Webhook 경로 ↔ workflow_id 매핑 |
-| `skills` | PLAN_12/ADR-022 Skill Bootstrap — 코드화된 팀 정책 (condition+action) |
-| `skill_sources` | 각 skill 의 출처 추적 (document/conversation/observation) — append-only |
-| `skill_applications` | compose 시 skill 적용 감사 (workflow_id 는 hard FK 아님) — append-only |
-| `policy_documents` | 업로드 SOP/핸드북. (owner_user_id, content_hash) UNIQUE 로 중복 차단 |
-| `policy_extractions` | 청크 + BGE-M3 임베딩 (`vector(1024)`, HNSW 인덱스) |
+| Table | Description |
+|-------|-------------|
+| `workflows` | Workflow definitions (nodes/connections stored as JSONB) |
+| `executions` | Execution history (status, started_at, finished_at, node_results JSONB) |
+| `credentials` | Encrypted credentials (owner_id, name, encrypted_data) |
+| `users` | Account info |
+| `agents` | Registered agent metadata (owner_id, public_key, last_heartbeat) |
+| `webhook_registry` | Dynamic webhook path ↔ workflow_id mapping |
+| `skills` | PLAN_12 / ADR-022 Skill Bootstrap — codified team policies (condition + action) |
+| `skill_sources` | Per-skill provenance (document / conversation / observation) — append-only |
+| `skill_applications` | Audit of skill application during compose (workflow_id is not a hard FK) — append-only |
+| `policy_documents` | Uploaded SOPs / handbooks. UNIQUE on (owner_user_id, content_hash) prevents duplicates |
+| `policy_extractions` | Chunks + BGE-M3 embeddings (`vector(1024)`, HNSW index) |
 
-## 핵심 인덱스
+## Core indexes
 
 ```sql
 CREATE INDEX idx_executions_workflow_id ON executions(workflow_id, started_at DESC);
@@ -83,19 +85,22 @@ CREATE INDEX idx_workflows_owner ON workflows(owner_id) WHERE is_active = true;
 CREATE INDEX idx_webhook_path ON webhook_registry(path);
 ```
 
-## Repository 패턴
+## Repository pattern
 
-`API_Server`는 ABC 인터페이스(`WorkflowRepository`, `ExecutionRepository`,
-`CredentialStore`)에만 의존. 이 브랜치는 그 구현체를 제공한다.
-테스트 시 `InMemoryWorkflowRepository`로 대체 가능한 구조 유지.
+`API_Server` depends only on the ABC interfaces (`WorkflowRepository`,
+`ExecutionRepository`, `CredentialStore`); this branch provides their
+implementations. Keep the shape swappable with `InMemoryWorkflowRepository`
+for tests.
 
-## 자격증명 암호화 규칙
+## Credential-encryption rules
 
-- 저장 시: AES-256 (Fernet) 대칭키 암호화, 키는 환경변수 `CREDENTIAL_MASTER_KEY`
-- Agent 모드 전송 시: Agent 공개키(RSA)로 **재암호화**하여 전달
-- 평문 자격증명을 **로그/DB/응답**에 절대 포함 금지
+- At rest: AES-256 (Fernet) symmetric encryption; the key lives in the
+  `CREDENTIAL_MASTER_KEY` environment variable.
+- For Agent mode: re-encrypt with the agent's RSA public key before sending.
+- **Never** include plaintext credentials in logs, the database, or HTTP
+  responses.
 
-## 마이그레이션 파일 네이밍
+## Migration file naming
 
 ```
 migrations/
@@ -104,7 +109,9 @@ migrations/
 └── 20260425_add_webhook_registry.sql
 ```
 
-## 인터페이스
+## Interfaces
 
-- **다운스트림**: `API_Server`, `Execution_Engine` — Repository/CredentialStore 구현체 제공
-- 스키마 변경 시 `migrations/`에 이력 SQL 추가 후 다운스트림 브랜치에 공지
+- **Downstream**: `API_Server`, `Execution_Engine` — receive Repository /
+  CredentialStore implementations.
+- When the schema changes, add a migration SQL file under `migrations/` and
+  notify the downstream branches.
