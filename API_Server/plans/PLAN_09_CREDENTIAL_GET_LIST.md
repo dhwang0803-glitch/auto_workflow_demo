@@ -1,30 +1,30 @@
 # PLAN_09 — Credential GET/LIST endpoints
 
-> 선행: Database PLAN_10 (PR #55, 머지) — `CredentialStore.list_by_owner()` + `CredentialMetadata`
-> 본 PR 머지 시 BYO credential CRUD 완결 (POST/GET-list/GET-one/DELETE).
+> Predecessor: Database PLAN_10 (PR #55, merged) — `CredentialStore.list_by_owner()` + `CredentialMetadata`
+> Merging this PR finalizes BYO credential CRUD (POST / GET-list / GET-one / DELETE).
 
-## 목적
+## Purpose
 
-PLAN_07 에서 deferred 된 credential 조회 엔드포인트 추가. 평문 복호화 없이
-metadata 만 반환하여 Frontend credential picker / CLI 조회 / 사용자 자기
-credential 목록 조회 use case 커버.
+Adds the credential-lookup endpoints deferred in PLAN_07. Returns metadata
+only (no plaintext decryption) — covering the Frontend credential picker,
+CLI inspection, and a user listing their own credentials.
 
-## 파일 변경
+## File changes
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `app/models/credential.py` | `CredentialResponse` 에 `created_at: datetime \| None = None` 옵셔널 추가 (POST 에선 None, GET/LIST 에선 populated) |
-| `app/services/credential_service.py` | `list(user)` + `get(user, credential_id)` 메서드 추가 |
-| `app/routers/credentials.py` | `GET /api/v1/credentials` + `GET /{credential_id}` 엔드포인트 추가 |
-| `tests/test_credentials.py` | GET/LIST 통합 테스트 6개 추가 |
+### Modified
+| File | Change |
+|------|--------|
+| `app/models/credential.py` | Add optional `created_at: datetime \| None = None` to `CredentialResponse` (None on POST, populated on GET/LIST) |
+| `app/services/credential_service.py` | Add `list(user)` + `get(user, credential_id)` methods |
+| `app/routers/credentials.py` | Add `GET /api/v1/credentials` + `GET /{credential_id}` endpoints |
+| `tests/test_credentials.py` | Add 6 GET/LIST integration tests |
 
-### 신규
-없음.
+### New
+None.
 
-## 구현 상세
+## Implementation details
 
-### 1. `CredentialResponse` 확장
+### 1. `CredentialResponse` extension
 
 ```python
 class CredentialResponse(BaseModel):
@@ -34,28 +34,30 @@ class CredentialResponse(BaseModel):
     created_at: datetime | None = None
 ```
 
-POST 는 `CredentialStore.store()` 반환 UUID 만 가지므로 `created_at=None`.
-GET/LIST 는 `CredentialMetadata` 에서 받은 값 그대로 넘김.
+POST only has the UUID returned by `CredentialStore.store()`, so
+`created_at=None`. GET/LIST pass through the value from
+`CredentialMetadata`.
 
-### 2. `CredentialService` 확장
+### 2. `CredentialService` extension
 
 ```python
 async def list(self, user: User) -> list[CredentialMetadata]:
     return await self._store.list_by_owner(user.id)
 
 async def get(self, user: User, credential_id: UUID) -> CredentialMetadata:
-    # 2 queries — 현실적 credential 개수(<수백) 에서 충분히 저렴.
-    # 전용 get_metadata(id, owner_id) 추가는 Database branch 재방문이므로 skip.
+    # 2 queries — cheap enough at realistic credential counts (<a few hundred).
+    # Adding a dedicated get_metadata(id, owner_id) would mean revisiting the
+    # Database branch, so skip.
     for row in await self._store.list_by_owner(user.id):
         if row.id == credential_id:
             return row
     raise NotFoundError("credential not found")
 ```
 
-- `get` 은 list + filter 방식 — ownership 검증이 `list_by_owner` 의 WHERE 필터에 내장됨
-- 1-query 최적화는 향후 `CredentialStore.get_metadata` 추가 필요시 고려 (scope 외)
+- `get` is a list + filter — ownership enforcement is built into `list_by_owner`'s WHERE filter
+- 1-query optimization waits until a future `CredentialStore.get_metadata` is needed (out of scope)
 
-### 3. 라우터
+### 3. Router
 
 ```python
 @router.get("", response_model=list[CredentialResponse])
@@ -73,34 +75,34 @@ async def get_credential(credential_id, user, svc) -> CredentialResponse:
     )
 ```
 
-## 보안 불변식
+## Security invariants
 
-- 응답 DTO 에 `plaintext` / `encrypted_data` 없음 — `CredentialMetadata` 자체에 평문 필드 부재
-- `get` 의 ownership 검증은 `list_by_owner` 필터에 내장 (SQL WHERE)
-- 타 유저의 credential 조회 → `NotFoundError` (403 아님, enumeration 방지)
+- The response DTO carries neither `plaintext` nor `encrypted_data` — `CredentialMetadata` itself has no plaintext field
+- Ownership enforcement on `get` is built into the `list_by_owner` filter (SQL WHERE)
+- Lookup of another user's credential → `NotFoundError` (not 403 — prevents enumeration)
 
-## 테스트 전략
+## Test strategy
 
-### test_credentials.py (추가 6개, skipif DATABASE_URL)
+### test_credentials.py (6 added, skipif DATABASE_URL)
 
-1. `test_list_credentials_empty_for_new_user` — 갓 로그인 유저 → `[]`
-2. `test_list_credentials_returns_created_items` — 3개 등록 후 list → 3개 반환, DESC 정렬, plaintext 필드 부재
-3. `test_list_credentials_isolated_to_user` — 유저 A 의 credentials 가 유저 B 의 list 에 안 보임
-4. `test_get_credential_by_id` — 단건 조회 metadata 정확 + plaintext 없음
-5. `test_get_credential_not_owned_404` — 타 유저 credential 조회 → 404
-6. `test_get_credential_nonexistent_404` — 랜덤 UUID → 404
+1. `test_list_credentials_empty_for_new_user` — freshly logged-in user → `[]`
+2. `test_list_credentials_returns_created_items` — after creating 3, list returns 3, DESC-sorted, no plaintext field
+3. `test_list_credentials_isolated_to_user` — user A's credentials are invisible in user B's list
+4. `test_get_credential_by_id` — single-row metadata is correct + no plaintext
+5. `test_get_credential_not_owned_404` — looking up another user's credential → 404
+6. `test_get_credential_nonexistent_404` — random UUID → 404
 
-## 체크리스트
+## Checklist
 
-- [ ] `CredentialResponse` 옵셔널 `created_at`
+- [ ] `CredentialResponse` optional `created_at`
 - [ ] `CredentialService.list` + `get`
-- [ ] 라우터 2 엔드포인트
-- [ ] 테스트 6개 pass, 전체 75→81
-- [ ] 기존 POST/DELETE 테스트 회귀 없음
-- [ ] 커밋 → push → PR
+- [ ] 2 router endpoints
+- [ ] 6 tests pass; overall 75 → 81
+- [ ] No regression in the existing POST / DELETE tests
+- [ ] Commit → push → PR
 
 ## Out of scope
 
-- Pagination (현재 naked list 반환, 수백개 도달시 후속)
-- `CredentialResponse` 에 `updated_at` — 현재 UPDATE 흐름 없음
-- credential detail with audit log (누가 언제 credential 사용했는지) — Phase 2
+- Pagination (currently returns a naked list; revisit on reaching hundreds)
+- `updated_at` on `CredentialResponse` — there is no UPDATE flow today
+- Credential detail with audit log (who used the credential when) — Phase 2

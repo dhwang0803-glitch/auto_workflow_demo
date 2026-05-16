@@ -1,35 +1,37 @@
-# PLAN_08 — Agent Execute WS 에 credential_payloads 동봉 (API_Server 측)
+# PLAN_08 — Attach `credential_payloads` to the Agent execute WS (API_Server side)
 
-> 선행: PLAN_07 (`/credentials` CRUD + serverless validation), Database bulk_retrieve + retrieve_for_agent
-> 후속: Execution_Engine follow-up — Agent daemon 측 복호화 + resolve_credential_refs 재사용
+> Predecessor: PLAN_07 (`/credentials` CRUD + serverless validation), Database bulk_retrieve + retrieve_for_agent
+> Follow-up: Execution_Engine follow-up — Agent-daemon-side decryption + reuse of `resolve_credential_refs`
 
-## 목적
+## Purpose
 
-Heavy 세그먼트 활성화. Serverless 경로는 Worker 가 `CredentialStore` 로 DB 에서 직접
-복호화 (PLAN_08 EE). Agent 경로는 고객 VPC 에서 DB 접근 불가 → 서버가 노드별
-credential 을 **Agent 공개키로 재암호화** (ADR-013 하이브리드) 해서 execute WS 메시지에
-동봉. Agent 가 개인키로 복호화 후 동일한 `resolve_credential_refs` 재사용.
+Activate the Heavy segment. On the Serverless path, the Worker decrypts
+directly from the DB via `CredentialStore` (PLAN_08 EE). On the Agent path,
+the customer's VPC can't reach the DB → the server **re-encrypts per-node
+credentials with the Agent's public key** (ADR-013 hybrid) and attaches them
+to the execute WS message. The Agent decrypts with its private key, then
+reuses the same `resolve_credential_refs`.
 
-## 파일 변경
+## File changes
 
-### 신규
-| 파일 | 역할 |
+### New
+| File | Role |
 |------|------|
-| `tests/test_agent_credential_payload.py` | WS execute 메시지의 `credential_payloads` 필드 E2E 검증 |
+| `tests/test_agent_credential_payload.py` | E2E verifies the `credential_payloads` field on the WS execute message |
 
-### 수정
-| 파일 | 변경 |
-|------|------|
-| `app/services/workflow_service.py` | 생성자에 `credential_store` 주입, `execute_workflow` agent 분기에서 `retrieve_for_agent` 루프 → base64 → `credential_payloads` 추가. ref_ids 수집을 함수 상단으로 끌어올려 validation 과 agent payload 가 같은 변수 공유. |
-| `app/container.py` | `WorkflowService(credential_store=self.credential_store, ...)` 로 배선 |
+### Modified
+| File | Change |
+|------|--------|
+| `app/services/workflow_service.py` | Inject `credential_store` into the constructor; in the `execute_workflow` agent branch, loop `retrieve_for_agent` → base64 → append `credential_payloads`. Hoist ref_id collection to the top of the function so validation and the agent payload share the same variable. |
+| `app/container.py` | Wire `WorkflowService(credential_store=self.credential_store, ...)` |
 
-### 범위 밖
-- Agent daemon 측 복호화 / resolve (Execution_Engine follow-up PR)
-- credential_payloads 가 있는데 store 미구성된 상태 — container 에서 동일 master_key 로 조립되므로 정상 배포에서는 발생 안 함 (방어 코드만 최소)
+### Out of scope
+- Agent-daemon decryption / resolve (Execution_Engine follow-up PR)
+- A state where `credential_payloads` is present but the store isn't configured — the container composes them with the same master_key, so this can't happen in a healthy deployment (defensive code is kept minimal)
 
-## 구현 상세
+## Implementation details
 
-### `WorkflowService` 생성자 확장
+### `WorkflowService` constructor extension
 
 ```python
 def __init__(
@@ -43,7 +45,7 @@ def __init__(
     self._credential_store = credential_store
 ```
 
-### `execute_workflow` 재구성
+### `execute_workflow` restructure
 
 ```python
 async def execute_workflow(self, user, workflow_id) -> Execution:
@@ -102,33 +104,34 @@ async def execute_workflow(self, user, workflow_id) -> Execution:
     return execution
 ```
 
-## 보안 불변식
+## Security invariants
 
-- `retrieve_for_agent` 는 ADR-013 경로 — 서버는 평문을 일회 보지만 즉시 Agent 공개키로 재암호화
-- WS 메시지는 이미 복호화된 평문이 아니라 Agent 공개키로 암호화된 envelope 전달 → 네트워크 상에서 안전
-- `credential_payloads` 빈 배열이라도 Agent 가 credential_ref 있는 그래프에서 실패하면 안전 (Agent 가 자체 검증 — EE follow-up)
+- `retrieve_for_agent` is the ADR-013 path — the server sees plaintext momentarily, then immediately re-encrypts with the Agent's public key
+- The WS message carries the envelope encrypted with the Agent's public key (not already-decrypted plaintext) → safe on the wire
+- Even with an empty `credential_payloads` array, if the Agent fails on a graph that has credential_refs it's safe (the Agent self-validates — EE follow-up)
 
-## 테스트 전략
+## Test strategy
 
-### test_agent_credential_payload.py (E2E, DATABASE_URL 필요)
+### test_agent_credential_payload.py (E2E, requires DATABASE_URL)
 
-테스트 시 RSA 키페어를 동적 생성 (cryptography 라이브러리). 기존 test_agents.py 의
-하드코딩 RSA_PUB_KEY 대신 fresh keypair 사용.
+During the test, generate an RSA keypair dynamically (cryptography library).
+Use a fresh keypair instead of the hardcoded `RSA_PUB_KEY` from the existing
+`test_agents.py`.
 
-1. `test_execute_agent_includes_credential_payloads` — credential 등록 + workflow(credential_ref) + agent 연결 → execute → WS 가 받는 execute 메시지에 `credential_payloads` 존재, 길이 1, 각 필드 b64 디코드 가능
-2. `test_execute_agent_no_refs_sends_empty_payloads` — ref 없는 workflow → credential_payloads=[]
-3. `test_execute_agent_multiple_refs_each_payload_distinct` — 2개 credential → 2개 payloads, credential_id 서로 다름
+1. `test_execute_agent_includes_credential_payloads` — register a credential + workflow (credential_ref) + agent connection → execute → the WS execute message contains `credential_payloads` of length 1, each field is base64-decodable
+2. `test_execute_agent_no_refs_sends_empty_payloads` — workflow with no refs → `credential_payloads=[]`
+3. `test_execute_agent_multiple_refs_each_payload_distinct` — 2 credentials → 2 payloads with distinct `credential_id`s
 
-## 체크리스트
+## Checklist
 
-- [ ] `workflow_service.py` — credential_store 주입 + execute_workflow agent 분기에 credential_payloads 추가
-- [ ] `container.py` — 배선
-- [ ] 3 tests (Docker Postgres 필요)
-- [ ] 기존 72 tests 회귀 없음
-- [ ] 커밋 → push → PR
+- [ ] `workflow_service.py` — inject `credential_store` + add `credential_payloads` to the agent branch of `execute_workflow`
+- [ ] `container.py` — wiring
+- [ ] 3 tests (Docker Postgres required)
+- [ ] No regression in the existing 72 tests
+- [ ] Commit → push → PR
 
 ## Out of scope
 
-- Agent daemon 측 복호화 (다음 PR, Execution_Engine)
-- credential_payloads 가 있는데 store 없을 때 defensive failed — container 가 함께 조립하므로 방어 불필요, 로그 경고만
-- Agent reconnect 중 credential 만료 — 후속
+- Agent-daemon decryption (next PR, Execution_Engine)
+- Defensive "failed" when `credential_payloads` exists but the store doesn't — the container composes them together, so defense isn't needed, only a log warning
+- Credential expiry mid-Agent-reconnect — follow-up

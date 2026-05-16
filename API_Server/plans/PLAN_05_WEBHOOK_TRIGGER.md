@@ -1,87 +1,87 @@
-# PLAN_05 — Webhook 수신 트리거 (API_Server)
+# PLAN_05 — Webhook trigger intake (API_Server)
 
-> **브랜치**: `API_Server` · **작성일**: 2026-04-16 · **상태**: Draft
+> **Branch**: `API_Server` · **Drafted**: 2026-04-16 · **Status**: Draft
 >
-> 외부 시스템(GitHub, Slack, Stripe 등)이 HTTP POST 로 워크플로우
-> 실행을 트리거할 수 있는 동적 Webhook 엔드포인트를 제공한다.
-> Database 의 `WebhookRegistry` (register/resolve/unregister) 위에
-> HMAC 서명 검증 + 실행 트리거를 얹는다.
+> Provides dynamic Webhook endpoints that let external systems (GitHub,
+> Slack, Stripe, etc.) trigger workflow execution over HTTP POST. Layers
+> HMAC signature verification + execution triggering on top of Database's
+> `WebhookRegistry` (register/resolve/unregister).
 
-## 1. 목표
+## 1. Goals
 
-1. `POST /api/v1/workflows/{id}/webhook` — webhook 경로 등록 (secret 자동 생성)
-2. `DELETE /api/v1/workflows/{id}/webhook` — webhook 경로 해제
-3. `POST /webhooks/{path}` — 외부 트리거 수신 (HMAC-SHA256 서명 검증 + 실행 생성)
-4. `main.py` lifespan 에 `PostgresWebhookRegistry` 주입
+1. `POST /api/v1/workflows/{id}/webhook` — register a webhook path (auto-generated secret)
+2. `DELETE /api/v1/workflows/{id}/webhook` — unregister the webhook path
+3. `POST /webhooks/{path}` — accept external triggers (HMAC-SHA256 signature verification + execution creation)
+4. Inject `PostgresWebhookRegistry` in `main.py` lifespan
 
-## 2. 범위
+## 2. Scope
 
 **In**
-- `app/routers/webhooks.py` 신규 — 외부 수신 라우터 (인증 없음, HMAC 검증)
-- `app/routers/workflows.py` 확장 — webhook 등록/해제 엔드포인트
-- `app/services/workflow_service.py` 확장 — `register_webhook`, `unregister_webhook`
-- `app/models/webhook.py` 신규 — `WebhookResponse`
-- `app/main.py` 확장 — `PostgresWebhookRegistry` lifespan 주입 + webhooks 라우터 등록
-- `tests/test_webhooks.py` 신규
+- `app/routers/webhooks.py` (new) — external-intake router (no auth, HMAC verified)
+- `app/routers/workflows.py` extension — webhook register/unregister endpoints
+- `app/services/workflow_service.py` extension — `register_webhook`, `unregister_webhook`
+- `app/models/webhook.py` (new) — `WebhookResponse`
+- `app/main.py` extension — `PostgresWebhookRegistry` lifespan injection + webhooks router registration
+- `tests/test_webhooks.py` (new)
 
 **Out**
-- Agent 관리 (WebSocket) — PLAN_06
+- Agent management (WebSocket) — PLAN_06
 - Webhook retry / dead letter — Phase 2
 - Rate limiting — Phase 2
-- Webhook payload 변환 (외부 → 내부 포맷) — Phase 2
+- Webhook payload transformation (external → internal format) — Phase 2
 
-## 3. 엔드포인트
+## 3. Endpoints
 
-| 메서드 | 경로 | 인증 | 설명 | 응답 |
-|--------|------|------|------|------|
-| `POST` | `/api/v1/workflows/{id}/webhook` | JWT | webhook 등록 | 201 `WebhookResponse` |
-| `DELETE` | `/api/v1/workflows/{id}/webhook` | JWT | webhook 해제 | 204 |
-| `POST` | `/webhooks/{path}` | HMAC | 외부 트리거 수신 | 202 `{"execution_id": "..."}` |
+| Method | Path | Auth | Description | Response |
+|--------|------|------|-------------|----------|
+| `POST` | `/api/v1/workflows/{id}/webhook` | JWT | Register webhook | 201 `WebhookResponse` |
+| `DELETE` | `/api/v1/workflows/{id}/webhook` | JWT | Unregister webhook | 204 |
+| `POST` | `/webhooks/{path}` | HMAC | Receive external trigger | 202 `{"execution_id": "..."}` |
 
-**에러 코드**:
+**Error codes**:
 
-| 상황 | HTTP |
-|------|------|
-| 워크플로우 미존재 / 소유권 없음 | 404 |
-| 비활성 워크플로우에 webhook 등록 | 409 |
-| webhook 경로 미존재 (`/webhooks/{path}`) | 404 |
-| HMAC 서명 불일치 또는 누락 | 401 |
-| 워크플로우 비활성 상태에서 트리거 수신 | 409 |
+| Condition | HTTP |
+|-----------|------|
+| Workflow missing / no ownership | 404 |
+| Webhook registration on an inactive workflow | 409 |
+| Webhook path missing (`/webhooks/{path}`) | 404 |
+| HMAC signature mismatched or missing | 401 |
+| Trigger received while workflow is inactive | 409 |
 
-## 4. HMAC 서명 검증
+## 4. HMAC signature verification
 
-외부 요청의 `X-Webhook-Signature` 헤더를 검증:
+Verify the external request's `X-Webhook-Signature` header:
 
 ```
 expected = HMAC-SHA256(secret, request_body)
 actual = request.headers["X-Webhook-Signature"]
 ```
 
-- `secrets.token_urlsafe(32)` 로 secret 자동 생성 (등록 시)
-- 검증은 `hmac.compare_digest` 사용 (timing attack 방지)
-- 서명 없거나 불일치 → 401
+- Auto-generate the secret via `secrets.token_urlsafe(32)` on registration
+- Use `hmac.compare_digest` for verification (timing-attack defense)
+- Missing or mismatched signature → 401
 
-## 5. 서비스 로직
+## 5. Service logic
 
 ### register_webhook(user, workflow_id)
-1. 소유권 + is_active 확인
+1. Verify ownership + is_active
 2. `secret = secrets.token_urlsafe(32)`
-3. `webhook_registry.register(workflow_id, secret=secret)` → `WebhookBinding` 반환
-4. return binding (path + secret, 등록 시에만 secret 노출)
+3. `webhook_registry.register(workflow_id, secret=secret)` → returns `WebhookBinding`
+4. Return the binding (path + secret, secret exposed only at registration time)
 
 ### unregister_webhook(user, workflow_id)
-1. 소유권 확인
-2. `webhook_registry` 에서 해당 workflow 의 바인딩 조회 → 없으면 무시 (멱등)
+1. Verify ownership
+2. Look up the workflow's binding in `webhook_registry` — if absent, no-op (idempotent)
 3. `webhook_registry.unregister(path)`
 
 ### receive_webhook(path, body, signature)
-1. `webhook_registry.resolve(path)` → 없으면 404
-2. HMAC 검증 → 실패 시 401
-3. `workflow_repo.get(binding.workflow_id)` → 비활성이면 409
-4. `user_repo.get(workflow.owner_id)` → 워크플로우 소유자로 실행
+1. `webhook_registry.resolve(path)` → 404 if missing
+2. Verify HMAC → 401 on failure
+3. `workflow_repo.get(binding.workflow_id)` → 409 if inactive
+4. `user_repo.get(workflow.owner_id)` → execute as the workflow owner
 5. `execute_workflow(user, workflow_id)` → 202 + execution_id
 
-## 6. Pydantic 스키마 (`app/models/webhook.py`)
+## 6. Pydantic schema (`app/models/webhook.py`)
 
 ```python
 class WebhookResponse(BaseModel):
@@ -91,47 +91,47 @@ class WebhookResponse(BaseModel):
     created_at: datetime | None = None
 ```
 
-## 7. 함수 증식 방지 가드레일
+## 7. Function-sprawl-prevention guardrails
 
-- `WorkflowService` 에 메서드 2개 추가 (`register_webhook`, `unregister_webhook`)
-- 외부 수신 로직 (`receive_webhook`) 도 `WorkflowService` 에 — 별도 `WebhookService` 금지
-- HMAC 검증은 `receive_webhook` 본문에서 3줄 인라인. `_verify_hmac` 헬퍼 금지
-- 라우터에 try/except 0개
+- Add 2 methods to `WorkflowService` (`register_webhook`, `unregister_webhook`)
+- External intake (`receive_webhook`) also goes on `WorkflowService` — no separate `WebhookService`
+- HMAC verification is 3 inline lines inside `receive_webhook`. No `_verify_hmac` helper
+- 0 try/except in the router
 
-## 8. 테스트
+## 8. Tests
 
-1. `test_register_webhook_happy` — 201 + path/secret 반환
+1. `test_register_webhook_happy` — 201 + path/secret returned
 2. `test_register_webhook_not_owned_404`
 3. `test_register_webhook_inactive_409`
 4. `test_unregister_webhook_happy` — 204
-5. `test_unregister_webhook_idempotent` — 이미 없어도 204
-6. `test_receive_webhook_happy` — 올바른 서명 → 202 + execution_id
+5. `test_unregister_webhook_idempotent` — already absent → still 204
+6. `test_receive_webhook_happy` — correct signature → 202 + execution_id
 7. `test_receive_webhook_bad_signature_401`
 8. `test_receive_webhook_unknown_path_404`
 
-## 9. 수용 기준
+## 9. Acceptance criteria
 
-- [ ] 신규 8 테스트 통과
-- [ ] 기존 50 테스트 회귀 없음 (총 58+)
-- [ ] HMAC 검증에 `hmac.compare_digest` 사용
-- [ ] webhook secret 은 등록 응답에만 포함, 이후 조회 불가
-- [ ] `WorkflowService` 에 1회용 private 헬퍼 0개
-- [ ] 라우터에 try/except 0개
+- [ ] The 8 new tests pass
+- [ ] No regression in the existing 50 tests (total 58+)
+- [ ] HMAC verification uses `hmac.compare_digest`
+- [ ] Webhook secret appears only in the registration response — not retrievable afterward
+- [ ] 0 single-use private helpers in `WorkflowService`
+- [ ] 0 try/except in the router
 
-## 10. 후속 영향
+## 10. Downstream impact
 
-- **PLAN_06 (Agent 관리)** — 마지막 API_Server PLAN. WebSocket 등록/heartbeat
-- **Frontend** — 워크플로우 설정에서 "Webhook URL" 복사 버튼 + secret 표시 (등록 시 1회)
+- **PLAN_06 (Agent management)** — last API_Server PLAN. WebSocket register/heartbeat
+- **Frontend** — in workflow settings, a "Webhook URL" copy button + secret display (once on registration)
 - **Phase 2** — retry, dead letter, payload transform, rate limit
 
-## 11. 작업 순서
+## 11. Work order
 
-1. PLAN_05 문서 (본 문서) ✓
-2. `app/models/webhook.py` 신규
-3. `app/services/workflow_service.py` 확장 — webhook_registry 주입 + 메서드 3개
-4. `app/routers/webhooks.py` 신규 — 외부 수신
-5. `app/routers/workflows.py` 확장 — 등록/해제
-6. `app/main.py` 확장 — WebhookRegistry lifespan + 라우터
-7. `tests/test_webhooks.py` 작성
-8. 테스트 통과 확인
-9. PR 생성 → 리뷰 → 머지
+1. Write the PLAN_05 document (this document) ✓
+2. New `app/models/webhook.py`
+3. Extend `app/services/workflow_service.py` — inject webhook_registry + 3 methods
+4. New `app/routers/webhooks.py` — external intake
+5. Extend `app/routers/workflows.py` — register/unregister
+6. Extend `app/main.py` — WebhookRegistry lifespan + router
+7. Write `tests/test_webhooks.py`
+8. Verify tests pass
+9. Open PR → review → merge
