@@ -354,9 +354,12 @@ test("record 30-second demo", async ({}, testInfo) => {
     if (!sawActive) {
       await alice.reload();
       await alice.getByTestId("active-personal-section").waitFor({ timeout: 15_000 });
-      // page.reload() wipes the subtitle DOM — re-inject so the caption
-      // persists for the rest of the scene.
-      await showSubtitle(alice, activateCaption);
+      // Intentionally NOT re-injecting the subtitle after reload. The
+      // TTS narration for this sentence plays once at t2; if we showed
+      // the caption a second time post-reload, viewers perceive the
+      // narration as if it had also played twice. Better to lose the
+      // caption for the back half of the scene than to break audio↔
+      // caption parity.
     }
 
     await alice.waitForTimeout(4000);  // ≥5s scene total
