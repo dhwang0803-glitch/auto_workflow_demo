@@ -1,10 +1,13 @@
 # Live demo bundle — recording spec
 
 This directory mirrors the scripts that produced
-[`../media/demo_30s.mp4`](../media/demo_30s.mp4). It is **spec /
-reference material**, not a one-click runnable demo — the recorder
-talks to a live AI_Agent backend (Modal-hosted Gemma 4 on an L4 GPU)
-that is not portable to a judge's machine.
+[`../media/demo_with_audio.mp4`](../media/demo_with_audio.mp4) (the
+primary demo, ~74 s, narration + subtitles) and its silent companion
+[`../media/demo_30s.mp4`](../media/demo_30s.mp4) (~70 s, subtitles
+only). It is **spec / reference material**, not a one-click runnable
+demo — the recorder talks to a live AI_Agent backend (Modal-hosted
+Gemma 4 on an L4 GPU) that is not portable to a judge's machine, and
+the narration was generated separately via ElevenLabs TTS.
 
 The video is the primary demo deliverable; this bundle is here so the
 recording process is fully transparent.
