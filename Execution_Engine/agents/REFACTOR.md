@@ -1,44 +1,44 @@
-# Refactor Agent 지시사항 — Execution_Engine
+# Refactor Agent Instructions — Execution_Engine
 
-## 역할
-모든 테스트가 PASS된 이후에만 실행. 테스트 통과 상태를 유지하면서 코드 품질 개선.
-
----
-
-## 핵심 원칙
-
-1. **테스트 통과 유지**: 리팩토링 후 전체 테스트 재실행 PASS 확인
-2. **기능 변경 금지**: 동작 결과가 달라지면 안 됨
-3. **범위 제한**: `src/` 코드만 수정
-4. **작은 단위**: 한 번에 하나씩 개선 후 테스트 확인
+## Role
+Runs only after every test PASSes. Improves code quality while keeping all tests green.
 
 ---
 
-## 검토 항목
+## Core principles
 
-### 코드 품질
-- [ ] 1회용 헬퍼 → 인라인 처리 (함수 증식 지양)
-- [ ] NodeRegistry 의도 주석 유지 (클래스 저장, 인스턴스 아님)
-- [ ] sandbox 가드 함수 누락 확인 (_getitem_, _write_, _inplacevar_)
-
-### 아키텍처
-- [ ] 새 repo/node가 WorkerContainer 외부에서 생성되는지
-- [ ] executor와 노드 간 인터페이스 일관성
-
-### 성능
-- [ ] asyncio.gather 병렬 실행이 올바르게 적용되는지
-- [ ] to_thread + wait_for 타임아웃 패턴 누락
+1. **Keep tests green**: after refactoring, re-run the full suite and confirm PASS
+2. **No behavior change**: results must not change
+3. **Scope restriction**: modify only `src/` code
+4. **Small steps**: improve one thing at a time, verify tests, then move on
 
 ---
 
-## 범위 제외
+## Items to consider
+
+### Code quality
+- [ ] One-shot helpers → inline them (avoid function sprawl)
+- [ ] Keep the NodeRegistry intent comment (stores classes, not instances)
+- [ ] Verify sandbox guard functions are present (`_getitem_`, `_write_`, `_inplacevar_`)
+
+### Architecture
+- [ ] Verify new repo/node is not instantiated outside WorkerContainer
+- [ ] Interface consistency between executor and nodes
+
+### Performance
+- [ ] asyncio.gather parallel execution applied correctly
+- [ ] Missing `to_thread` + `wait_for` timeout pattern
+
+---
+
+## Scope excluded
 
 - `tests/`, `plans/`, `config/`, `scripts/`
 
 ---
 
-## 완료 후
+## After refactoring
 
-1. `taskkill` 후 전체 테스트 재실행
-2. PASS/FAIL 건수 동일 확인
-3. 변경 내용 → Reporter Agent에 전달
+1. Re-run the full test suite after `taskkill`
+2. Confirm PASS/FAIL counts match
+3. Hand changes to the Reporter Agent

@@ -1,40 +1,39 @@
-# Test Writer Agent — infra 브랜치 지시사항
+# Test Writer Agent — infra branch instructions
 
-## 역할
+## Role
 
-infra 변경(Terraform/bash/GitHub Actions) 직전에 **실패하는 테스트를 먼저
-작성한다** (TDD Red). Python 코드는 다루지 않는다.
-
----
-
-## 테스트 작성 원칙
-
-1. 구현(.tf, .sh) 이 없어도 **기대 상태**를 테스트로 먼저 표현한다.
-2. 각 테스트는 단일 리소스/규칙 하나만 검증한다.
-3. 실패 메시지로 어느 리소스/플래그가 누락됐는지 식별 가능해야 한다.
-4. 실제 GCP API 호출은 staging 에서만. prod 는 read-only 확인만.
-5. 외부 상태(GCP 리소스 존재 여부) 의존 테스트는 `bats` tag 로 분리
-   (`@staging` / `@local`).
+Before an infra change (Terraform/bash/GitHub Actions), **writes the
+failing tests first** (TDD Red). Does not handle Python code.
 
 ---
 
-## 테스트 파일 위치
+## Test-writing principles
+
+1. Even without an implementation (.tf, .sh), express the **expected state** as tests first.
+2. Each test verifies exactly one resource / rule.
+3. The failure message must identify which resource/flag is missing.
+4. Real GCP API calls happen only on staging. prod is read-only verification.
+5. Tests depending on external state (presence of GCP resources) are split via `bats` tags (`@staging` / `@local`).
+
+---
+
+## Test file location
 
 ```
 infra/tests/
-├── terraform_plan.bats          ← terraform validate/plan 기반 정적 assertion
-├── tflint_rules.bats            ← tflint 설정 및 rule 점검
-├── checkov_policies.bats        ← checkov / tfsec 정책 준수
-├── scripts_smoke.bats           ← bash 스크립트 usage/arg 검증
-├── workflows_lint.bats          ← .github/workflows/*.yml 문법/actionlint
-└── fixtures/                    ← mock tfvars, 테스트용 JSON 등
+├── terraform_plan.bats          ← static assertions based on terraform validate/plan
+├── tflint_rules.bats            ← tflint configuration and rule checks
+├── checkov_policies.bats        ← checkov / tfsec policy compliance
+├── scripts_smoke.bats           ← bash script usage / arg validation
+├── workflows_lint.bats          ← .github/workflows/*.yml syntax / actionlint
+└── fixtures/                    ← mock tfvars, test JSON, etc.
 ```
 
-루트 `tests/` 에 혼재 금지. 반드시 `infra/tests/`.
+Do not mix into the repo-root `tests/`. Always `infra/tests/`.
 
 ---
 
-## 테스트 유형별 작성 패턴
+## Per-test-type patterns
 
 ### A. terraform plan assertion (bats + jq)
 
@@ -60,12 +59,12 @@ setup() {
   run jq -e '.resource_changes[] |
     select(.address | contains("placeholder")) |
     select(.change.actions[0] == "create")' /tmp/tfplan.json
-  # 존재하는 placeholder 는 ignore_changes 로 재적용 시 "no-op" 이어야 함
+  # An existing placeholder must be a "no-op" on re-apply because of ignore_changes
   [ "$status" -eq 0 ]
 }
 ```
 
-### B. tflint / checkov / tfsec (정책)
+### B. tflint / checkov / tfsec (policy)
 
 ```bash
 @test "tflint passes with zero issues" {
@@ -82,7 +81,7 @@ setup() {
 }
 ```
 
-### C. bash 스크립트 (인자/usage)
+### C. bash script (args / usage)
 
 ```bash
 # infra/tests/scripts_smoke.bats
@@ -95,7 +94,7 @@ setup() {
 @test "inject_oauth_secrets uses stdin pipe (no echo of value)" {
   run grep -E 'gcloud secrets versions add .*--data-file=-' \
     "$(git rev-parse --show-toplevel)/infra/scripts/inject_oauth_secrets.sh"
-  [ "$status" -eq 0 ]  # stdin pipe 강제 (SECURITY_AUDITOR I05)
+  [ "$status" -eq 0 ]  # enforce stdin pipe (SECURITY_AUDITOR I05)
 }
 ```
 
@@ -108,11 +107,11 @@ setup() {
 }
 ```
 
-### E. staging live smoke (@staging tag, 선택적)
+### E. staging live smoke (@staging tag, optional)
 
 ```bash
 @test "staging cloud sql accepts proxy connection @staging" {
-  # 실제 staging GCP 접근 — CI 에서는 @staging 태그 필터로 제외
+  # touches real staging GCP — filter out in CI via the @staging tag
   run bash "$(git rev-parse --show-toplevel)/infra/scripts/check_proxy_ready.sh" staging
   [ "$status" -eq 0 ]
 }
@@ -120,50 +119,50 @@ setup() {
 
 ---
 
-## 필수 테스트 카테고리 (infra 기준)
+## Required test categories (infra scope)
 
-### Terraform 정합성
-- `terraform validate` 무결성
-- `terraform plan` 에서 예상 리소스 add/change 건수 일치
-- `var.environment` 별 리소스 이름 suffix 규칙
-- placeholder secret 리소스의 `lifecycle.ignore_changes` 존재
+### Terraform consistency
+- `terraform validate` integrity
+- `terraform plan` add/change counts match expectations
+- Resource-name suffix rule per `var.environment`
+- Existence of `lifecycle.ignore_changes` on placeholder secret resources
 
-### 정책 (tflint / checkov / tfsec)
-- 퍼블릭 IP 개방 금지 (prod)
-- `deletion_protection` 변수 경유 (prod 직접 false 금지)
-- IAM 광역 롤 (`roles/owner`, `roles/editor`) 금지
-- `authorized_networks` 기본값이 `0.0.0.0/0` 아님
+### Policy (tflint / checkov / tfsec)
+- No public IP exposure (prod)
+- `deletion_protection` goes through a variable (no direct `false` in prod)
+- No broad IAM roles (`roles/owner`, `roles/editor`)
+- `authorized_networks` default is not `0.0.0.0/0`
 
 ### Scripts (bats / shellcheck)
-- `set -euo pipefail` 존재
-- `trap cleanup` 으로 백그라운드 프로세스 정리
-- 시크릿 stdin pipe 패턴 (`--data-file=-`)
-- 인자 검증 + usage 출력
+- `set -euo pipefail` present
+- `trap cleanup` cleans up background processes
+- Secret stdin-pipe pattern (`--data-file=-`)
+- Argument validation + usage output
 
 ### Workflows (actionlint)
-- syntax / job deps / secret 참조 유효성
-- `run:` 스텝에서 `echo ${{ secrets.* }}` 금지
+- syntax / job deps / secret reference validity
+- No `echo ${{ secrets.* }}` inside `run:` steps
 
 ---
 
-## 테스트 결과 수집 형식 (TESTER 에 넘길 포맷)
+## Result-collection format (hand to TESTER)
 
 ```
-전체 테스트: X건 (bats: X, checkov: X, tflint: X, actionlint: X)
-PASS: X건
-FAIL: X건
-SKIP: X건 (@staging 태그 포함)
+Total tests: X (bats: X, checkov: X, tflint: X, actionlint: X)
+PASS: X
+FAIL: X
+SKIP: X (includes @staging tag)
 
-FAIL 목록:
-- [bats:<file>:<test-name>] <실패 사유>
-- [checkov:<CHECK_ID>] <리소스 주소>
+FAIL list:
+- [bats:<file>:<test-name>] <reason>
+- [checkov:<CHECK_ID>] <resource address>
 ```
 
 ---
 
-## 주의사항
+## Cautions
 
-1. **stdout 에 실제 시크릿 값 노출 금지** — 테스트에서도 `--data-file=-` 패턴만.
-2. `.env` / `*.tfvars` 실파일은 테스트에서 읽지 않는다. `.example` 또는 `fixtures/` 만.
-3. 테스트가 스스로 GCP 리소스를 생성/삭제하면 안 된다 (destroy 는 사용자 승인 필수).
-4. bats / tflint / checkov / actionlint 미설치 시 TESTER 에 의존성 설치 요청 → FAIL 로 집계하지 않고 SKIP.
+1. **Never expose real secret values on stdout** — even tests must use the `--data-file=-` pattern.
+2. Do not read real `.env` / `*.tfvars` files in tests. Use `.example` or `fixtures/` only.
+3. Tests must not create/delete GCP resources themselves (destroy requires user approval).
+4. If bats / tflint / checkov / actionlint is not installed, ask TESTER to install the dependency → record as SKIP, not FAIL.

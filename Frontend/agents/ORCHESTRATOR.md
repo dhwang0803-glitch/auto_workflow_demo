@@ -1,90 +1,90 @@
-# Orchestrator Agent 지시사항 — Frontend
+# Orchestrator Agent Instructions — Frontend
 
-## 역할
-Frontend PLAN 별 TDD 사이클 전체를 관리한다. PLAN 파일을 읽고 작업을 분해하여 각 에이전트를 순서대로 호출하고, 완료 기준을 판단한다.
-
----
-
-## 실행 순서
-
-```
-1. Security Auditor Agent 호출 (PLAN 시작 전 점검)
-   - FAIL 존재 → 사용자에게 보고 후 중단
-   - PASS → 다음 단계 진행
-2. 해당 PLAN 파일 읽기
-3. 작업 목록 분해 (테스트 가능한 단위로 — 보통 라우트/컴포넌트/스토어 단위)
-4. Test Writer Agent 호출 → Playwright 스펙 작성 확인
-5. Developer Agent 호출 → 컴포넌트/스토어/클라이언트 구현 확인
-6. Tester Agent 호출 → tsc + lint + build + Playwright 실행 및 결과 수집
-7. 결과 판단
-   - 모든 단계 PASS → Refactor Agent 호출
-   - FAIL 존재 → Developer Agent 재호출 → Tester Agent 재실행 (최대 3회)
-8. Reporter Agent 호출 → 보고서 생성
-9. Security Auditor Agent 호출 (커밋 직전 최종 점검)
-10. git add / commit (메시지에 PR 번호 의존성 명시) / push → PR 생성
-```
+## Role
+Manages the entire TDD cycle for each Frontend PLAN. Reads the PLAN, breaks the work into pieces, invokes each agent in order, and judges the completion criteria.
 
 ---
 
-## PLAN 파일 위치
+## Execution order
+
+```
+1. Invoke Security Auditor Agent (pre-PLAN check)
+   - FAIL → report to the user and stop
+   - PASS → proceed
+2. Read the PLAN file
+3. Decompose the work list (testable units — usually route/component/store)
+4. Invoke Test Writer Agent → confirm Playwright spec was authored
+5. Invoke Developer Agent → confirm component/store/client implementation
+6. Invoke Tester Agent → run tsc + lint + build + Playwright and collect results
+7. Decide on the result
+   - All steps PASS → invoke Refactor Agent
+   - FAIL exists → re-invoke Developer Agent → re-run Tester Agent (up to 3 iterations)
+8. Invoke Reporter Agent → generate the report
+9. Invoke Security Auditor Agent (final pre-commit check)
+10. git add / commit (mention PR-number dependencies in the message) / push → create the PR
+```
+
+---
+
+## PLAN file location
 
 ```
 Frontend/plans/PLAN_NN_*.md
-AI_Agent/plans/PLAN_12_skill_bootstrap.md   # Frontend 의 W2-5 / W2-6 / W3-1 항목 포함
+AI_Agent/plans/PLAN_12_skill_bootstrap.md   # contains Frontend W2-5 / W2-6 / W3-1 items
 ```
 
-| PLAN | 스코프 | 상태 |
+| PLAN | Scope | Status |
 |------|--------|------|
 | PLAN_01 | Workflow Editor MVP (PR A/B/C) | Done |
 | PLAN_02 | AI Composer (PR A/B/C/D) | Done |
 | PLAN_12 W2-5 | Skill bootstrap interview wizard | Done (PR #137) |
 | PLAN_12 W2-6 | Skill review cards + approve/reject | Done (PR #138) |
-| PLAN_12 W3-1 | Document upload UI | 미착수 (05/05 부재 후) |
+| PLAN_12 W3-1 | Document upload UI | Not started (after 05/05 outage) |
 
 ---
 
-## 브랜치 경계 규칙
+## Branch-boundary rules
 
-- **Frontend 브랜치에서는 `Frontend/` 디렉토리만 수정** — 모노레포 서브디렉토리 ≠ 작업 단위
-- API_Server / AI_Agent 콘트랙트 변경이 필요하면 먼저 해당 브랜치로 checkout 후 별도 PR
-- 메모리 `feedback_no_merge_commits_in_branch.md` 준수: main 동기화는 `git rebase origin/main` (NOT `git merge`). PR 머지 후 재작업은 `git reset --hard origin/main` 부터
-
----
-
-## 에이전트 호출 시 전달 정보
-
-- 현재 PLAN 번호 + 파일 경로
-- 작업 대상 라우트 / 컴포넌트 / 스토어 목록
-- 이전 단계 결과 (Playwright 결과, 구현 결과, 라우트 사이즈)
-- API 콘트랙트 의존성 (예: `API_Server/app/models/skills.py` 미러)
+- **On the Frontend branch, modify only the `Frontend/` directory** — monorepo subdirectory ≠ unit of work
+- If an API_Server / AI_Agent contract change is required, check out that branch first and ship a separate PR
+- Comply with `feedback_no_merge_commits_in_branch.md`: sync main with `git rebase origin/main` (NOT `git merge`). After a PR is merged, start re-work from `git reset --hard origin/main`
 
 ---
 
-## 실패 처리
+## Information to include when invoking an agent
 
-- Developer Agent 3회 재시도 후 FAIL → Reporter 에 실패 내용 전달, 사용자 검토 요청
-- Playwright 가 race condition 으로 간헐 실패 → mock 응답에 `await route.fulfill` 명시 + assertion 에 `await` 누락 검사
-- 보고서 "오류 원인 분석" 에 상세 기록
+- Current PLAN number + file path
+- Target route / component / store list
+- Result of the previous step (Playwright results, implementation results, route size)
+- API contract dependencies (e.g., mirror of `API_Server/app/models/skills.py`)
 
 ---
 
-## 완료 기준
+## Failure handling
 
-- [ ] Security Audit PASS (시작 전)
-- [ ] Playwright 스펙 작성 완료
-- [ ] 컴포넌트 / 스토어 / 클라이언트 구현 완료
-- [ ] `tsc --noEmit` / `next lint` / `next build` 모두 green
+- After 3 Developer retries with FAIL → hand failure details to Reporter and ask for user review
+- Playwright intermittent failure from a race condition → ensure `await route.fulfill` in the mock response + check for missing `await` on assertions
+- Record details in the report's "Failure root-cause analysis"
+
+---
+
+## Completion criteria
+
+- [ ] Security Audit PASS (before)
+- [ ] Playwright spec authored
+- [ ] Components / stores / clients implemented
+- [ ] `tsc --noEmit` / `next lint` / `next build` all green
 - [ ] Playwright (mock) 100% PASS
-- [ ] 보고서 생성 완료 (`Frontend/reports/PLAN_NN_*.md`)
-- [ ] Security Audit PASS (커밋 직전)
-- [ ] PR 본문에 콘트랙트 의존 PR 번호 명시 (예: "Depends on PR #135 — `/api/v1/skills/*` 엔드포인트")
+- [ ] Report generated (`Frontend/reports/PLAN_NN_*.md`)
+- [ ] Security Audit PASS (before commit)
+- [ ] PR body mentions dependent contract PR numbers (e.g., "Depends on PR #135 — `/api/v1/skills/*` endpoint")
 
 ---
 
-## API_Server / AI_Agent 콘트랙트 변경 동반 시
+## When an API_Server / AI_Agent contract change is included
 
-Frontend PR 만 머지하면 main 이 깨지는 시나리오 (콘트랙트 미스매치) 회피:
+To avoid the scenario where merging the Frontend PR alone breaks main (contract mismatch):
 
-1. API_Server / AI_Agent 콘트랙트 PR 먼저 머지
-2. main 으로 reset → Frontend 브랜치 새로 시작 (`feedback_no_merge_commits_in_branch.md`)
-3. Frontend PR 본문에 의존 PR 의 머지 SHA 명시 → 리뷰어 추적 가능
+1. Merge the API_Server / AI_Agent contract PR first
+2. Reset to main → start the Frontend branch fresh (`feedback_no_merge_commits_in_branch.md`)
+3. Mention the dependent PR's merge SHA in the Frontend PR body → reviewers can trace it

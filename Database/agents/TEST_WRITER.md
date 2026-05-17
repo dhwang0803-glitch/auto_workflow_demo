@@ -1,29 +1,29 @@
-# Test Writer Agent 지시사항 — Database
+# Test Writer Agent Instructions — Database
 
-## 역할
-구현 전에 실패하는 테스트를 먼저 작성한다 (TDD Red 단계).
-
----
-
-## 테스트 작성 원칙
-
-1. 구현 코드가 없어도 테스트를 먼저 작성한다
-2. 각 테스트는 하나의 요구사항만 검증한다
-3. 기대값을 명확하게 명시한다
+## Role
+Writes failing tests before implementation (TDD Red step).
 
 ---
 
-## 테스트 파일 위치
+## Test-writing principles
+
+1. Write the test before any implementation exists
+2. Each test verifies exactly one requirement
+3. State expected values clearly
+
+---
+
+## Test file location
 
 ```
-Database/tests/test_{기능명}.py
+Database/tests/test_{feature}.py
 ```
 
 ---
 
-## 테스트 작성 예시
+## Test examples
 
-### Repository 라운드트립
+### Repository round-trip
 
 ```python
 async def test_workflow_save_and_retrieve(session):
@@ -34,7 +34,7 @@ async def test_workflow_save_and_retrieve(session):
     assert loaded.name == "test"
 ```
 
-### InMemory fake 테스트 (DB 불필요)
+### InMemory fake test (no DB needed)
 
 ```python
 async def test_execution_status_transition():
@@ -46,7 +46,7 @@ async def test_execution_status_transition():
     assert result.status == "running"
 ```
 
-### 암호화 대칭성
+### Encryption symmetry
 
 ```python
 def test_fernet_round_trip():
@@ -58,20 +58,20 @@ def test_fernet_round_trip():
 
 ---
 
-## 필수 테스트 카테고리
+## Required test categories
 
-- Repository CRUD 라운드트립 (Workflow, Execution, User, Agent)
-- Execution 상태 전이 규칙
+- Repository CRUD round-trip (Workflow, Execution, User, Agent)
+- Execution status transition rules
 - Keyset pagination (created_at DESC, id DESC)
-- CredentialStore 암호화/복호화 대칭성
-- Agent RSA-AES 하이브리드 재암호화
+- CredentialStore encryption/decryption symmetry
+- Agent RSA-AES hybrid re-encryption
 - Engine resilience (pool timeout, slow query logging)
 
 ---
 
-## 결과 수집 형식
+## Result-collection format
 
 ```
-전체: X건, PASS: X건, FAIL: X건
-FAIL: [테스트 ID]: [메시지]
+Total: X, PASS: X, FAIL: X
+FAIL: [test ID]: [message]
 ```

@@ -1,28 +1,28 @@
-# Tester Agent 지시사항 — Database
+# Tester Agent Instructions — Database
 
-## 역할
-Developer Agent가 구현 파일을 작성한 후, 테스트를 실제로 실행하고 결과를 수집한다.
-Database 테스트는 pytest + 실제 Docker Postgres로 수행한다.
+## Role
+After Developer Agent writes the implementation files, actually runs the tests and collects results.
+Database tests use pytest + real Docker Postgres.
 
 ---
 
-## 실행 환경
+## Runtime environment
 
 - Python 3.11+ (anaconda3), Windows 11
 - Docker Postgres (port 5435, user=auto_workflow)
-- `pip install -e .` 완료 상태
+- `pip install -e .` completed
 
 ---
 
-## 프로세스 관리 규칙 (MANDATORY)
+## Process management rules (MANDATORY)
 
-1. **테스트 프로세스는 항상 1개만 실행** — 새 테스트 전 이전 프로세스 kill
-2. 좀비 프로세스 누적 방지 — `taskkill //F //IM python.exe 2>/dev/null`
-3. background 실행 금지 — foreground에서 즉시 결과 확인
+1. **Run exactly one test process at a time** — kill the previous process before starting a new run
+2. Prevent zombie accumulation — `taskkill //F //IM python.exe 2>/dev/null`
+3. No background execution — read results immediately in the foreground
 
 ---
 
-## 테스트 실행
+## Running tests
 
 ```bash
 $env:DATABASE_URL = "postgresql+asyncpg://auto_workflow:auto_workflow@localhost:5435/auto_workflow"
@@ -32,17 +32,17 @@ python -m pytest tests/ -v
 
 ---
 
-## 결과 보고 형식
+## Result format
 
 ```
-[Tester 실행 결과]
-- 전체: X건, PASS: X건, FAIL: X건, 소요: X초
-FAIL 항목: [테스트 ID] [메시지]
+[Tester run results]
+- Total: X, PASS: X, FAIL: X, Duration: X s
+FAIL items: [test ID] [message]
 ```
 
 ---
 
-## 주의사항
+## Cautions
 
-1. DB 초기화 후 `UndefinedColumn` 에러 → 마이그레이션 재실행
-2. 테스트 재실행 시 반드시 이전 python 프로세스 kill 먼저 수행
+1. `UndefinedColumn` error after DB re-init → re-run migration
+2. Always kill the previous python process before re-running tests

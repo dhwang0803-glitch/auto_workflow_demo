@@ -1,28 +1,28 @@
-# Test Writer Agent 지시사항 — Execution_Engine
+# Test Writer Agent Instructions — Execution_Engine
 
-## 역할
-구현 전에 실패하는 테스트를 먼저 작성한다 (TDD Red 단계).
-
----
-
-## 테스트 작성 원칙
-
-1. 구현 코드가 없어도 테스트를 먼저 작성한다
-2. 각 테스트는 하나의 요구사항만 검증한다
-3. InMemory fakes 사용 — 실 DB 불필요
+## Role
+Writes failing tests before implementation (TDD Red step).
 
 ---
 
-## 테스트 파일 위치
+## Test-writing principles
+
+1. Write the test before any implementation exists
+2. Each test verifies exactly one requirement
+3. Use InMemory fakes — no real DB needed
+
+---
+
+## Test file location
 
 ```
-Execution_Engine/tests/test_{기능명}.py
+Execution_Engine/tests/test_{feature}.py
 ```
 
-| 파일 | 검증 대상 |
+| File | Subject |
 |------|----------|
 | `test_http_request_node.py` | HttpRequestNode + registry |
-| `test_condition_node.py` | ConditionNode 연산자별 분기 |
+| `test_condition_node.py` | ConditionNode per-operator branching |
 | `test_code_node.py` | CodeNode + RestrictedPython sandbox |
 | `test_executor.py` | DAG executor (single/chain/diamond/failure/empty) |
 | `test_dispatcher.py` | Celery dispatcher _execute() |
@@ -30,9 +30,9 @@ Execution_Engine/tests/test_{기능명}.py
 
 ---
 
-## 테스트 작성 예시
+## Test examples
 
-### 노드 단위 테스트
+### Node unit test
 
 ```python
 async def test_condition_eq_true():
@@ -44,7 +44,7 @@ async def test_condition_eq_true():
     assert result["result"] is True
 ```
 
-### DAG executor 테스트 (InMemory fakes)
+### DAG executor test (InMemory fakes)
 
 ```python
 async def test_diamond_parallel(reg, repo):
@@ -65,7 +65,7 @@ async def test_diamond_parallel(reg, repo):
     assert result.status == "success"
 ```
 
-### Sandbox 보안 테스트
+### Sandbox security test
 
 ```python
 def test_import_blocked():
@@ -75,20 +75,20 @@ def test_import_blocked():
 
 ---
 
-## 필수 테스트 카테고리
+## Required test categories
 
-- 각 BaseNode 구현체의 execute() 동작
-- NodeRegistry register/get 라운드트립
+- `execute()` behavior of each BaseNode implementation
+- NodeRegistry register/get round-trip
 - DAG executor: single node, chain, diamond parallel, failure, empty graph
-- Celery dispatcher: 정상/missing execution/missing workflow/node failure
-- Agent: WS repo 메시지 전송, execute 커맨드 성공/실패
-- Sandbox: import 차단, open 차단, 타임아웃
+- Celery dispatcher: normal / missing execution / missing workflow / node failure
+- Agent: WS repo message send, execute command success/failure
+- Sandbox: import block, open block, timeout
 
 ---
 
-## 결과 수집 형식
+## Result-collection format
 
 ```
-전체: X건, PASS: X건, FAIL: X건
-FAIL: [테스트 ID]: [메시지]
+Total: X, PASS: X, FAIL: X
+FAIL: [test ID]: [message]
 ```

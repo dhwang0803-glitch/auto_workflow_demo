@@ -1,49 +1,49 @@
-# IMPACT_ASSESSOR — 사후영향 평가 에이전트
+# IMPACT_ASSESSOR — Post-change Impact Assessment Agent
 
-## 역할
+## Role
 
-PR 생성 전, 변경 사항이 프로젝트 전체 레이어에 미치는 영향을 분석하고
-구조화된 **사후영향 평가 보고서**를 생성한다.
-
----
-
-## 트리거 조건
-
-- PR 생성 직전 (코드 변경이 완료된 시점)
-- 스키마/API/노드 인터페이스 변경이 포함된 모든 커밋
+Before a PR is opened, analyzes how the change affects every layer of the
+project and produces a structured **post-change impact assessment report**.
 
 ---
 
-## 분석 절차
+## Trigger conditions
 
-### Step 1. 변경 범위 파악
+- Immediately before a PR is created (point at which code changes are complete)
+- Any commit that includes a schema / API / node-interface change
+
+---
+
+## Analysis procedure
+
+### Step 1. Identify the scope of change
 
 ```bash
 git diff main...HEAD --stat
 git diff main...HEAD --name-only
 ```
 
-확인 항목:
-- 변경된 파일 목록 및 레이어 분류 (Database / API_Server / Execution_Engine / Frontend)
-- 추가/삭제/수정 라인 수
-- 새로 생성된 파일 vs 기존 파일 수정
+Check:
+- The list of changed files and their layer classification (Database / API_Server / Execution_Engine / Frontend)
+- Lines added / deleted / modified
+- Newly created files vs. modifications to existing files
 
-### Step 1-b. 폴더 구조 변경 감지 (자동 🔴 HIGH 판정)
+### Step 1-b. Detect folder structure changes (auto-classified 🔴 HIGH)
 
 ```bash
 git diff main...HEAD --name-only | grep -E "^[^/]+/[^/]+/" | \
   awk -F/ '{print $1"/"$2}' | sort -u
 ```
 
-아래 패턴이 하나라도 감지되면 **즉시 🔴 HIGH로 확정**한다.
+If any of the patterns below is detected, **immediately classify as 🔴 HIGH**.
 
-| 감지 패턴 | 판정 | 이유 |
+| Pattern detected | Decision | Reason |
 |-----------|------|------|
-| 컨벤션에 없는 최상위 폴더 생성 (예: `data/`, `notebooks/`, `utils/`) | 🔴 HIGH | 폴더 구조 규칙 위반 |
-| 기존 폴더를 다른 폴더 하위로 이동 | 🔴 HIGH | 팀 전체 합의 위반 |
-| 컨벤션 폴더 이름 변경 (예: `scripts/` → `script/`) | 🔴 HIGH | 폴더 구조 규칙 위반 |
+| New top-level folder outside the convention (e.g., `data/`, `notebooks/`, `utils/`) | 🔴 HIGH | Folder structure rule violation |
+| An existing folder moved under another folder | 🔴 HIGH | Violation of team-wide agreement |
+| Convention folder renamed (e.g., `scripts/` → `script/`) | 🔴 HIGH | Folder structure rule violation |
 
-**브랜치별 컨벤션 폴더 목록**:
+**Convention folders per branch**:
 - `API_Server/`: `app/routers/`, `app/services/`, `app/models/`, `tests/`, `config/`
 - `Database/`: `schemas/`, `migrations/`, `src/repositories/`, `src/models/`, `scripts/`, `tests/`, `docs/`
 - `Execution_Engine/`: `src/nodes/`, `src/dispatcher/`, `src/runtime/`, `src/agent/`, `scripts/`, `tests/`, `config/`, `docs/`
@@ -51,104 +51,104 @@ git diff main...HEAD --name-only | grep -E "^[^/]+/[^/]+/" | \
 
 ---
 
-### Step 2. 레이어별 영향 분석
+### Step 2. Per-layer impact analysis
 
-#### Database 레이어
+#### Database layer
 
-- [ ] DDL 변경 (ALTER TABLE / CREATE / DROP)
-- [ ] 기존 컬럼 타입 변경 → 데이터 손실 위험
-- [ ] NOT NULL 제약 추가 → 기존 NULL 행 확인 필요
-- [ ] 인덱스 변경 → 쿼리 성능 영향
-- [ ] Repository 인터페이스(ABC) 변경 → 다운스트림 API_Server/Execution_Engine 영향
-- [ ] 마이그레이션 스크립트 존재 여부 (`migrations/`)
+- [ ] DDL changes (ALTER TABLE / CREATE / DROP)
+- [ ] Existing column type change → risk of data loss
+- [ ] Adding NOT NULL constraint → verify existing NULL rows
+- [ ] Index change → query performance impact
+- [ ] Repository interface (ABC) change → downstream impact on API_Server / Execution_Engine
+- [ ] Presence of a migration script (`migrations/`)
 
-#### API_Server 레이어
+#### API_Server layer
 
-- [ ] 엔드포인트 추가/삭제/경로 변경
-- [ ] 요청/응답 Pydantic 스키마 변경
-- [ ] Agent 통신 프로토콜(AgentCommand/AgentStatus) 변경 → Agent 하위 호환성 확인
-- [ ] Webhook 경로/인증 방식 변경
-- [ ] DAG 스케줄러/Trigger 로직 변경
+- [ ] Endpoint added/removed/path changed
+- [ ] Request/response Pydantic schema change
+- [ ] Agent communication protocol (AgentCommand/AgentStatus) change → verify Agent backward compatibility
+- [ ] Webhook path / auth method change
+- [ ] DAG scheduler / Trigger logic change
 
-#### Execution_Engine 레이어
+#### Execution_Engine layer
 
-- [ ] `BaseNode` 인터페이스 변경 → 모든 노드 재구현 필요
-- [ ] 새 노드 추가 → `NodeRegistry.register()` 누락 여부
-- [ ] 샌드박스 제약 변경 → 기존 CodeExecutionNode 영향
-- [ ] Celery 태스크 시그니처 변경 → 큐 백로그 호환성
-- [ ] Agent 프로토콜 메시지 변경 → 기존 설치 Agent 브레이킹
+- [ ] `BaseNode` interface change → every node must be re-implemented
+- [ ] New node added → check that `NodeRegistry.register()` is not missing
+- [ ] Sandbox constraint change → impact on existing CodeExecutionNode
+- [ ] Celery task signature change → queue backlog compatibility
+- [ ] Agent protocol message change → breaks previously installed Agents
 
-#### Frontend 레이어
+#### Frontend layer
 
-- [ ] API 엔드포인트 호출 시그니처 변경
-- [ ] 노드 파라미터 스키마 변경 → NodeConfigPanel 업데이트
-- [ ] 자격증명 입력 폼 보안 규칙 준수 여부
+- [ ] Change in API endpoint call signatures
+- [ ] Node parameter schema change → update NodeConfigPanel
+- [ ] Credential input form follows security rules
 
-### Step 3. 리스크 등급 산정
+### Step 3. Risk grading
 
-| 등급 | 기준 | 대응 |
+| Grade | Criteria | Response |
 |------|------|------|
-| 🔴 HIGH | 기존 데이터 손실 / 다운스트림 브레이킹 / 기 배포 Agent 호환 깨짐 | 전체 팀 검토 필수 |
-| 🟡 MEDIUM | 단일 레이어 인터페이스 변경 / 성능 영향 | 담당자 검토 후 병합 |
-| 🟢 LOW | 신규 추가만 / 내부 로직 개선 / 문서 수정 | 자동 병합 가능 |
+| 🔴 HIGH | Existing data loss / downstream breakage / breaks compatibility with deployed Agents | Full team review required |
+| 🟡 MEDIUM | Single-layer interface change / performance impact | Owner review before merge |
+| 🟢 LOW | Additions only / internal logic improvement / doc edits | Auto-merge allowed |
 
-### Step 4. 롤백 계획 수립
+### Step 4. Rollback plan
 
-- 마이그레이션이 있으면 DOWN 스크립트 존재 여부
-- 배포된 Agent의 이전 버전 호환 여부
-- 배포 전 DB 스냅샷 필요 여부
+- If a migration exists, presence of a DOWN script
+- Backward compatibility for deployed Agents
+- Need for a DB snapshot before deploy
 
 ---
 
-## 출력 형식 (PR Description용)
+## Output format (for PR description)
 
 ```markdown
-## 📊 사후영향 평가 (Impact Assessment)
+## 📊 Impact Assessment
 
-### 변경 범위
-- **레이어**: [Database / API_Server / Execution_Engine / Frontend / 문서]
-- **변경 파일 수**: N개
-- **변경 유형**: [신규 추가 / 기존 수정 / 삭제 / 리팩터]
+### Scope of change
+- **Layer**: [Database / API_Server / Execution_Engine / Frontend / docs]
+- **Files changed**: N
+- **Change kind**: [new addition / modification / deletion / refactor]
 
-### 레이어별 영향
+### Per-layer impact
 
-| 레이어 | 영향 여부 | 상세 |
+| Layer | Affected | Detail |
 |--------|-----------|------|
-| 폴더 구조 규칙 | ✅ 준수 / 🔴 위반 | |
-| Database 스키마 | ✅ 영향 있음 / ➖ 해당 없음 | |
-| API 계약 | ✅ 영향 있음 / ➖ 해당 없음 | |
-| Execution_Engine (노드/샌드박스) | ✅ 영향 있음 / ➖ 해당 없음 | |
-| Agent 프로토콜 | ✅ 영향 있음 / ➖ 해당 없음 | |
-| 프론트엔드 | ✅ 영향 있음 / ➖ 해당 없음 | |
+| Folder structure rule | ✅ Compliant / 🔴 Violation | |
+| Database schema | ✅ Affected / ➖ Not applicable | |
+| API contract | ✅ Affected / ➖ Not applicable | |
+| Execution_Engine (nodes/sandbox) | ✅ Affected / ➖ Not applicable | |
+| Agent protocol | ✅ Affected / ➖ Not applicable | |
+| Frontend | ✅ Affected / ➖ Not applicable | |
 
-### 리스크 등급
+### Risk grade
 🔴 HIGH / 🟡 MEDIUM / 🟢 LOW
 
-**근거**: (한 줄 설명)
+**Basis**: (one-line rationale)
 
-### 롤백 계획
-- [ ] 마이그레이션 DOWN 스크립트 준비됨
-- [ ] 이전 버전 태그 존재: `git tag vX.Y.Z`
-- [ ] Agent 이전 버전 호환 확인됨
+### Rollback plan
+- [ ] Migration DOWN script prepared
+- [ ] Previous version tag exists: `git tag vX.Y.Z`
+- [ ] Agent backward compatibility verified
 
-### 추가 조치 필요
-- [ ] 없음
-- [ ] 다운스트림 브랜치 담당자 리뷰: @{담당자}
-- [ ] 배포된 Agent 강제 업데이트 공지
+### Additional actions required
+- [ ] None
+- [ ] Downstream-branch owner review: @{owner}
+- [ ] Notice for deployed Agents to force-update
 ```
 
 ---
 
-## 보안 점검 연계
+## Relationship to security audit
 
-IMPACT_ASSESSOR는 보안 점검을 **직접 수행하지 않는다**.
-보안 점검은 `SECURITY_AUDITOR` 에이전트가 담당한다.
+IMPACT_ASSESSOR does **not** perform a security audit directly.
+The security audit is owned by the `SECURITY_AUDITOR` agent.
 
 ---
 
-## 제약 사항
+## Constraints
 
-- 분석 대상: `git diff main...HEAD` 기준
-- DB 실제 상태 조회가 필요하면 읽기 전용 쿼리만 허용
-- `.env` 파일 읽기 금지
-- 영향 분석은 **추론 기반**이며, 실제 배포 영향은 스테이징 환경에서 검증해야 함
+- Analysis scope: based on `git diff main...HEAD`
+- If actual DB state is needed, only read-only queries are allowed
+- Reading `.env` files is forbidden
+- The impact analysis is **inference-based**; real deployment impact must be verified in staging
