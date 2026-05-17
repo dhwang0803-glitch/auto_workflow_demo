@@ -1,63 +1,51 @@
-# Live demo — local replay
+# Live demo bundle — recording spec
 
-This bundle lets a judge run the full three-track demo against a local
-stack in ~5 minutes. The demo video (`../media/demo_30s.mp4`) was
-recorded with these same scripts.
+This directory mirrors the scripts that produced
+[`../media/demo_30s.mp4`](../media/demo_30s.mp4). It is **spec /
+reference material**, not a one-click runnable demo — the recorder
+talks to a live AI_Agent backend (Modal-hosted Gemma 4 on an L4 GPU)
+that is not portable to a judge's machine.
 
-## What you get
+The video is the primary demo deliverable; this bundle is here so the
+recording process is fully transparent.
+
+## What's here
 
 | File | Purpose |
 |---|---|
-| `seed_demo_data.py` | Truncates and reseeds Postgres with `alice@demo.local` + `bob@demo.local` + one workspace skill |
-| `run_demo_scenarios.py` | Drives the three live scenarios end-to-end via HTTP (no UI required) |
-| `RECORD_DEMO.md` | Instructions for re-recording the 30-second mp4 with Playwright |
+| `seed_demo_data.py` | Truncates and reseeds Postgres with `alice@example.com` + `bob@example.com` + one workspace skill + one personal-skill candidate |
+| `run_demo_scenarios.py` | HTTP-only driver for the three demo tracks. Used in dev for live verification; the video itself was driven by Playwright (see `RECORD_DEMO.md`) |
+| `RECORD_DEMO.md` | Playwright + ffmpeg recipe used to record the video |
 | `compose_demo_video.ps1` | ffmpeg compositor invoked by the recorder |
 
-## Prereqs
+## Reproducing the recording
 
-- Postgres on `localhost:5435` (or your own — set `DATABASE_URL`)
-- API_Server running on `localhost:8000`
-- AI_Agent reachable (live Modal endpoint, local llama.cpp, or stub)
+Requires either:
 
-The full stack-up instructions are in the repo root `README.md`.
+- **a Modal account** with `modal deploy AI_Agent/scripts/modal_app.py`
+  (~$1 / hour while the L4 container is hot), **OR**
+- **local llama.cpp** on a 24 GB GPU with the
+  `unsloth/gemma-4-26B-A4B-it-GGUF` UD-Q4_K_M weights
 
-## Steps
+Stub mode (`AI_COMPOSER_USE_STUB=1`) only exercises the Frontend
+without an LLM, so it does not reproduce the AI behaviour the demo is
+actually about.
 
-```powershell
-# 1. seed
-$env:PYTHONUTF8 = "1"
-python seed_demo_data.py
-#   prints alice / bob passwords
+## What the scenarios verify
 
-# 2. run all three tracks
-python run_demo_scenarios.py --all
-#   Track A: marketplace adoption (alice extracts → bob adopts)
-#   Track B: personalization (alice edits → next draft reflects edit)
-#   Track C: share (bob promotes alice's personal skill to workspace)
+If you do bring up a live backend, `python run_demo_scenarios.py --all`
+asserts each track end-to-end over HTTP (no UI):
 
-# 3. (optional) re-record video — see RECORD_DEMO.md
-```
-
-Each scenario emits an NDJSON trace; `run_demo_scenarios.py --help`
-shows per-track flags.
-
-## What you should see
-
-- Track A — alice's `POST /v1/skills/extract` returns a SkillCard, then
-  bob can `GET /api/v1/skills` and the new workspace skill is in the list.
-- Track B — alice saves an edited workflow, the next
+- **Track A** — alice's `POST /v1/skills/extract` returns a SkillCard,
+  then bob can `GET /api/v1/skills` and the new workspace skill is in
+  the list.
+- **Track B** — alice saves an edited workflow, the next
   `POST /v1/personalization/extract_from_diff` produces a candidate
   marked `pending_review`, and a fresh `POST /v1/compose` retrieves it
   alongside workspace skills.
-- Track C — `POST /v1/personalization/{id}/share` flips the candidate's
-  `scope` from `user` to `workspace`. From bob's session, the same row
-  now appears in `/api/v1/skills` (team marketplace).
+- **Track C** — `POST /v1/personalization/{id}/share` flips the
+  candidate's `scope` from `user` → `workspace`. From bob's session,
+  the same row now appears in `/api/v1/skills` (team marketplace).
 
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `login alice@example.com failed: 401` | re-run `seed_demo_data.py` |
-| `ECONNREFUSED localhost:8000` | start API_Server (`uvicorn app.main:app --port 8000`) |
-| `502` from `/v1/compose` | Modal cold start — first call may take 30-90 s, retry |
-| `cp949` decode error | set `$env:PYTHONUTF8 = "1"` before any python invocation |
+Architecture overview and per-track code locations: see the repo root
+[`README.md`](../../README.md#code-tour).

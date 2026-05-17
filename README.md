@@ -17,10 +17,15 @@ active) via **llama.cpp** on a single L4 GPU.
 
 ## Demo
 
-- **30-second video**: see `tmp/demo/final.mp4` (1920×1080 / 30 fps, 33.8 s).
+- **Video** (~70 s, 1920×1080 / 30 fps): [`submission/media/demo_30s.mp4`](submission/media/demo_30s.mp4).
   YouTube link in the Kaggle Writeup.
-- **Cover image**: `tmp/demo/frames/frame_27.png` — the share-narrative beat.
-- **Reproduce the recording**: see [`scripts/RECORD_DEMO.md`](scripts/RECORD_DEMO.md).
+- **Cover images**: [`submission/media/cover_thesis.png`](submission/media/cover_thesis.png) (3-axis thesis) and
+  [`submission/media/cover_share_beat.png`](submission/media/cover_share_beat.png) (share narrative beat).
+- **Writeup**: [`submission/WRITEUP.md`](submission/WRITEUP.md) (~1450 words).
+- **Recording spec**: [`scripts/RECORD_DEMO.md`](scripts/RECORD_DEMO.md) — describes
+  how the video was produced (Playwright + ffmpeg). Re-running the
+  recorder requires a live AI_Agent backend (own Modal deploy or local
+  llama.cpp on a 24 GB GPU); the video itself is the primary deliverable.
 
 ## The three-axis story (what the demo shows)
 
@@ -125,39 +130,54 @@ See [`docs/context/architecture.md`](docs/context/architecture.md) for the full 
 
 Every top-level module has its own `CLAUDE.md` with file-placement and stack rules.
 
-## Run locally
+## Code tour
 
-**Prereqs**: Docker, Python 3.11+, Node 20, pnpm.
+The video shows *what* the three tracks do; this section says *where the
+code that does it lives*, so you can evaluate the implementation without
+spinning up a stack.
 
-```powershell
-# 1. Postgres
-docker compose up -d postgres redis
+### Track A — Marketplace (alice's policy doc → workspace skill)
 
-# 2. API_Server
-cd API_Server
-python -m venv .venv ; .\.venv\Scripts\Activate.ps1
-pip install -e .
-uvicorn app.main:app --port 8000
+| Layer | File |
+|---|---|
+| Frontend wizard | `Frontend/src/components/skills/skill-wizard.tsx` |
+| API endpoint | `API_Server/app/routers/skills.py` |
+| AI service | `AI_Agent/app/services/policy_extract.py` |
+| Agent loop (LLM + judge) | `AI_Agent/app/agents/policy_extract_agent.py` |
 
-# 3. Frontend
-cd ../Frontend
-pnpm install
-pnpm dev   # http://localhost:3000
+### Track B — Personalization (alice's edit → next draft reflects it)
 
-# 4. AI_Agent (one of the following)
-#    a) point at the live Modal endpoint  (set AGENT_ENDPOINT + AGENT_BEARER_TOKEN)
-#    b) run llama.cpp locally with Gemma 4 GGUF on a 24 GB GPU
-#    c) use the stub backend for offline UI dev  (AI_COMPOSER_USE_STUB=1)
-```
+| Layer | File |
+|---|---|
+| Frontend pending-review UI | `Frontend/src/components/skills/suggested-from-edits.tsx` |
+| API endpoint | `API_Server/app/routers/personalization.py` |
+| AI service (per-user scoping) | `AI_Agent/app/services/personalization_service.py` |
+| Agent loop (propose + judge) | `AI_Agent/app/agents/personalization_agent.py` |
 
-To replay the demo scenarios against your local stack:
+### Track C — Share (alice's personal skill → workspace)
 
-```powershell
-python scripts/seed_demo_data.py             # alice + bob + 1 workspace skill
-python scripts/run_demo_scenarios.py --all   # Track A, B, C end-to-end
-```
+| Layer | File |
+|---|---|
+| Frontend skills library | `Frontend/src/components/skills/skills-library.tsx` |
+| API share endpoint | `API_Server/app/routers/personalization.py` (`/share`) |
 
-To re-record the 30 s video, see [`scripts/RECORD_DEMO.md`](scripts/RECORD_DEMO.md).
+### Cross-cutting
+
+| Concern | File |
+|---|---|
+| Modal entrypoint (single L4 container) | `AI_Agent/scripts/modal_app.py` |
+| llama.cpp backend (OpenAI-compatible) | `AI_Agent/app/backends/llamacpp_gemma.py` |
+| AI Composer proxy + SSE | `API_Server/app/services/ai_composer_service.py` |
+| Cross-user isolation tests | `API_Server/tests/test_personalization.py` |
+| Demo recording (Playwright + ffmpeg) | `Frontend/tests/record-demo.spec.ts` + `scripts/compose_demo_video.ps1` |
+| Demo seed | `scripts/seed_demo_data.py` |
+
+### Architecture & decisions
+
+- [`docs/context/architecture.md`](docs/context/architecture.md) — 4-layer breakdown
+- [`docs/context/decisions.md`](docs/context/decisions.md) — ADRs (ADR-022 Skill Bootstrap, ADR-023 Personalization, ADR-024 JSON tool envelope)
+- `<branch>/plans/PLAN_NN_*.md` — per-feature design docs (Database / API_Server / AI_Agent / Frontend / infra)
+- Per-module `CLAUDE.md` — placement and stack rules for each layer
 
 ## Tracks targeted
 
