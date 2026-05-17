@@ -11,7 +11,7 @@
 
 ## Module role
 
-**AI Orchestration Service** — the AI brain of `auto_workflow_demo`.
+**AI Orchestration Service** — the AI brain of `teamlift`.
 Hosts LLM inference (Gemma 4 via llama.cpp), embeddings (personalized
 retrieval), prompt assembly, and node-catalog RAG behind an HTTP boundary,
 separated from `API_Server`.

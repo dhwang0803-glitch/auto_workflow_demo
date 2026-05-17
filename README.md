@@ -1,4 +1,4 @@
-# auto_workflow_demo
+# teamlift
 
 > **A workflow automation engine that learns from your team — not the other way around.**
 >

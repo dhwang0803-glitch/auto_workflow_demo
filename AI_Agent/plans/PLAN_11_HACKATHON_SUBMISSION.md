@@ -7,7 +7,7 @@
 
 ## 1. Goal
 
-Turn the auto_workflow_demo project into a **Kaggle Gemma 4 Good
+Turn the teamlift project into a **Kaggle Gemma 4 Good
 Hackathon** submission. Total prizes: $200K. **Dual-prize target**:
 Main/Impact Track (Digital Equity & Inclusivity) + Special Tech
 (llama.cpp). Win both → $20K+.

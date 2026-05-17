@@ -237,7 +237,7 @@ via WIF OIDC. Eliminates key leak / rotation issues.
 PROJECT_ID=auto-workflow-prod-REPLACE
 POOL=github-pool
 PROVIDER=github-actions
-REPO=dhwang0803-glitch/auto_workflow_demo   # owner/name
+REPO=dhwang0803-glitch/teamlift   # owner/name
 
 # 1. Workload Identity Pool + OIDC provider
 gcloud iam workload-identity-pools create "$POOL" \

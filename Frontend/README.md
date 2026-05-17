@@ -1,6 +1,6 @@
-# auto_workflow Frontend
+# teamlift Frontend
 
-Workflow editor UI for `auto_workflow_demo`. Next.js 14 App Router + TypeScript +
+Workflow editor UI for `teamlift`. Next.js 14 App Router + TypeScript +
 Tailwind + React Flow. See `plans/PLAN_01_WORKFLOW_EDITOR_MVP.md` for scope.
 
 ## Dev setup

@@ -6,7 +6,7 @@
 ## Top-level layout (main branch)
 
 ```
-auto_workflow_demo/
+teamlift/
 ├── _claude_templates/   ← per-branch CLAUDE.md templates (copied by the post-checkout hook)
 ├── _agent_templates/    ← agent instruction docs (per role: TDD / security / refactor)
 ├── .claude/commands/    ← slash-command definitions (e.g. /PR-report)

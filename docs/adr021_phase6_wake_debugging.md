@@ -338,8 +338,8 @@ Previously, apply required three manual gcloud commands afterwards
 
 | Issue | PR | Commit |
 |-------|----|--------|
-| Encode infra IaC fully (env vars, IAM × 2, sidecar, cpu=1, runner fixes) | [#97](https://github.com/dhwang0803-glitch/auto_workflow_demo/pull/97) | `30bf307` |
-| Dockerfile: install Execution_Engine | [#98](https://github.com/dhwang0803-glitch/auto_workflow_demo/pull/98) | `778f998` |
+| Encode infra IaC fully (env vars, IAM × 2, sidecar, cpu=1, runner fixes) | [#97](https://github.com/dhwang0803-glitch/teamlift/pull/97) | `30bf307` |
+| Dockerfile: install Execution_Engine | [#98](https://github.com/dhwang0803-glitch/teamlift/pull/98) | `778f998` |
 | (planned) ADR-021 `Update (2026-04-20)` — actAs dependency | docs branch | — |
 
 ## 8. Follow-ups
