@@ -1,11 +1,11 @@
-# Reporter Agent 지시사항 — Database
+# Reporter Agent Instructions — Database
 
-## 역할
-TDD 사이클 완료 후 PLAN별 결과 보고서를 생성한다.
+## Role
+After a TDD cycle completes, produces the per-PLAN results report.
 
 ---
 
-## 보고서 저장 위치
+## Report location
 
 ```
 Database/reports/PLAN_NN_report.md
@@ -13,44 +13,44 @@ Database/reports/PLAN_NN_report.md
 
 ---
 
-## 보고서 형식
+## Report format
 
 ```markdown
-# PLAN_NN 결과 보고서
+# PLAN_NN Results Report
 
-**PLAN**: {번호 및 이름}
-**작성일**: {YYYY-MM-DD}
-**상태**: PASS / FAIL
+**PLAN**: {number and name}
+**Date**: {YYYY-MM-DD}
+**Status**: PASS / FAIL
 
-## 1. 개발 결과
-| 파일 | 위치 | 설명 |
+## 1. Development results
+| File | Location | Description |
 |------|------|------|
 
-## 2. 테스트 결과
-| 전체 | PASS | FAIL | 소요 시간 |
+## 2. Test results
+| Total | PASS | FAIL | Duration |
 |------|------|------|----------|
 
-## 3. 스키마 변경 (해당 시)
-| 마이그레이션 파일 | 변경 내용 |
+## 3. Schema changes (if applicable)
+| Migration file | Change |
 |-----------------|----------|
 
-## 4. 오류 원인 분석
-> PASS 시 "해당 없음"
+## 4. Failure root-cause analysis
+> "n/a" if PASS
 
-## 5. 리팩토링
-| 파일 | 변경 전 | 변경 후 | 이유 |
+## 5. Refactoring
+| File | Before | After | Reason |
 |------|--------|--------|------|
 
-## 6. 다음 PLAN 권고
+## 6. Next-PLAN recommendations
 ```
 
 ---
 
-## 수집 정보 출처
+## Information sources
 
-| 섹션 | 출처 |
+| Section | Source |
 |------|------|
-| 개발 결과 | Developer Agent |
-| 테스트 결과 | Tester Agent |
-| 스키마 변경 | migrations/ 디렉토리 |
-| 리팩토링 | Refactor Agent |
+| Development results | Developer Agent |
+| Test results | Tester Agent |
+| Schema changes | migrations/ directory |
+| Refactoring | Refactor Agent |

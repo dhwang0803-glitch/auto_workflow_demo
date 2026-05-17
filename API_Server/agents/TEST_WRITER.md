@@ -1,40 +1,40 @@
-# Test Writer Agent 지시사항 — API_Server
+# Test Writer Agent Instructions — API_Server
 
-## 역할
-구현 전에 실패하는 테스트를 먼저 작성한다 (TDD Red 단계).
-
----
-
-## 테스트 작성 원칙
-
-1. 구현 코드가 없어도 테스트를 먼저 작성한다
-2. 각 테스트는 하나의 요구사항만 검증한다
-3. 기대값을 명확하게 명시한다
-4. 테스트 실패 시 원인을 파악할 수 있는 메시지를 포함한다
+## Role
+Writes failing tests before implementation (TDD Red step).
 
 ---
 
-## 테스트 파일 위치
+## Test-writing principles
+
+1. Write the test before any implementation exists
+2. Each test verifies exactly one requirement
+3. State expected values clearly
+4. On failure, include a message that lets you identify the cause
+
+---
+
+## Test file location
 
 ```
-API_Server/tests/test_{기능명}.py
+API_Server/tests/test_{feature}.py
 ```
 
-| 파일 | 검증 대상 |
+| File | Subject |
 |------|----------|
-| `test_auth.py` | 회원가입/로그인/JWT/이메일검증 |
-| `test_workflows.py` | CRUD + 쿼터 + DAG 검증 |
-| `test_dag_validator.py` | Kahn 위상정렬 순환 감지 |
-| `test_executions.py` | 실행 트리거 + 이력 조회 |
+| `test_auth.py` | signup / login / JWT / email verification |
+| `test_workflows.py` | CRUD + quota + DAG validation |
+| `test_dag_validator.py` | Kahn topological sort cycle detection |
+| `test_executions.py` | execution trigger + history queries |
 | `test_scheduler.py` | activate/deactivate + cron/interval |
-| `test_webhooks.py` | webhook 등록/수신/HMAC 검증 |
-| `test_agents.py` | Agent 등록 + WebSocket heartbeat |
+| `test_webhooks.py` | webhook register / receive / HMAC verify |
+| `test_agents.py` | Agent register + WebSocket heartbeat |
 
 ---
 
-## 테스트 작성 예시
+## Test examples
 
-### 라우터 E2E 테스트 (httpx AsyncClient)
+### Router E2E test (httpx AsyncClient)
 
 ```python
 async def test_create_workflow_rejects_cycle(authed_client):
@@ -47,7 +47,7 @@ async def test_create_workflow_rejects_cycle(authed_client):
     assert r.status_code == 422
 ```
 
-### DAG 순수 로직 테스트 (DB 불필요)
+### DAG pure-logic test (no DB needed)
 
 ```python
 from app.services.dag_validator import validate_dag
@@ -63,28 +63,28 @@ def test_cycle_rejected():
 
 ---
 
-## 필수 테스트 카테고리
+## Required test categories
 
-- 워크플로우 CRUD (생성/조회/수정/삭제/목록)
-- DAG 검증 (순환/중복id/unknown edge)
-- 실행 트리거 (수동 실행 → 202 + queued)
-- 실행 이력 조회 (단건/목록 + keyset pagination)
+- Workflow CRUD (create / read / update / delete / list)
+- DAG validation (cycles / duplicate ids / unknown edge)
+- Execution trigger (manual run → 202 + queued)
+- Execution history queries (single / list + keyset pagination)
 - Scheduler (activate cron/interval, deactivate)
-- Webhook (등록/삭제/수신 + HMAC-SHA256 검증)
-- Agent (등록 → JWT, WebSocket heartbeat)
-- 인증 (등록/검증/로그인/토큰만료/리프레시)
-- 쿼터 (plan_tier별 워크플로우 제한)
-- 소유권 (다른 유저 리소스 접근 시 404)
+- Webhook (register / delete / receive + HMAC-SHA256 verify)
+- Agent (register → JWT, WebSocket heartbeat)
+- Auth (register / verify / login / token expiry / refresh)
+- Quota (per-plan_tier workflow limits)
+- Ownership (accessing another user's resource → 404)
 
 ---
 
-## 테스트 결과 수집 형식
+## Result-collection format
 
 ```
-전체 테스트: X건
-PASS: X건
-FAIL: X건
+Total tests: X
+PASS: X
+FAIL: X
 
-FAIL 목록:
-- [테스트 ID]: [실패 메시지]
+FAIL list:
+- [test ID]: [failure message]
 ```

@@ -1,77 +1,77 @@
-# Developer Agent 지시사항 — API_Server
+# Developer Agent Instructions — API_Server
 
-## 역할
-Test Writer Agent가 작성한 테스트를 통과하는 최소한의 코드를 구현한다 (TDD Green 단계).
-과도한 설계나 불필요한 기능을 추가하지 않는다.
-
----
-
-## 구현 원칙
-
-1. **테스트 통과 최우선**: 현재 실패하는 테스트를 통과시키는 것만 구현한다
-2. **최소 구현**: 테스트를 통과하는 가장 단순한 코드를 작성한다
-3. **CLAUDE.md 준수**: `API_Server/CLAUDE.md` 파일 위치 규칙과 인터페이스를 벗어나지 않는다
-4. **함수 증식 금지**: 1회용 헬퍼/thin wrapper 만들지 않는다. 3줄 중복이 추상화보다 낫다
+## Role
+Implements the minimum code that passes the tests written by the Test Writer Agent (TDD Green step).
+Avoids over-design and adds no unnecessary features.
 
 ---
 
-## 파일 위치
+## Implementation principles
 
-| 파일 종류 | 위치 |
+1. **Passing tests first**: implement only what is needed to pass the currently failing tests
+2. **Minimum implementation**: write the simplest code that passes the tests
+3. **Honor CLAUDE.md**: do not stray from the file-location rules and interfaces in `API_Server/CLAUDE.md`
+4. **No function sprawl**: do not create one-shot helpers or thin wrappers. 3 lines of duplication beats premature abstraction
+
+---
+
+## File locations
+
+| File kind | Location |
 |-----------|------|
-| REST 라우터 | `app/routers/` |
-| 비즈니스 로직 | `app/services/` |
-| Pydantic 스키마 | `app/models/` |
-| FastAPI 앱 + DI 조립 | `app/main.py` |
-| 의존성 일원화 | `app/container.py` (AppContainer) |
+| REST routers | `app/routers/` |
+| Business logic | `app/services/` |
+| Pydantic schemas | `app/models/` |
+| FastAPI app + DI wiring | `app/main.py` |
+| Centralized dependencies | `app/container.py` (AppContainer) |
 | pytest | `tests/` |
 
-**`API_Server/` 루트에 `.py` 파일 직접 생성 금지.**
+**Do not create `.py` files directly at the `API_Server/` root.**
 
 ---
 
-## 의존성 조립
+## Dependency wiring
 
-새 Repository나 Service를 추가할 때는 `app/container.py`의 `AppContainer` 한 곳만 수정한다.
-`main.py`나 `scheduler.py`에서 직접 객체를 생성하지 않는다.
+When adding a new Repository or Service, change only the `AppContainer` in `app/container.py`.
+Do not instantiate objects directly in `main.py` or `scheduler.py`.
 
 ```python
-# app/container.py — 여기서만 조립
+# app/container.py — wire here only
 class AppContainer:
     def __init__(self, settings):
         self.engine = build_engine(settings.database_url)
         self.sessionmaker = build_sessionmaker(self.engine)
         self.user_repo = PostgresUserRepository(self.sessionmaker)
-        # ... 새 repo는 여기에 추가
+        # ... new repos go here
 ```
 
 ---
 
-## 비동기 코드 원칙
+## Async code rules
 
-1. FastAPI 라우터와 서비스는 **모두 `async def`**로 작성한다
-2. Blocking I/O 직접 호출 금지 → `httpx.AsyncClient`, `asyncpg` 사용
-3. CPU 바운드 작업은 Celery 태스크로 분리한다
+1. Write FastAPI routers and services as **`async def`**
+2. Do not call blocking I/O directly → use `httpx.AsyncClient`, `asyncpg`
+3. Run CPU-bound work as a separate Celery task
 
 ---
 
-## DB 접근 원칙 (N+1 금지)
+## DB access rules (no N+1)
 
 ```python
-# 금지: 루프 안에서 fetch
+# forbidden: fetch inside a loop
 for wid in workflow_ids:
     row = await session.execute(select(Workflow).where(Workflow.id == wid))
 
-# 올바른 패턴: 배치 조회
+# correct: batched read
 rows = await session.execute(select(Workflow).where(Workflow.id.in_(workflow_ids)))
 ```
 
 ---
 
-## 에러 처리
+## Error handling
 
-`DomainError` 서브클래스를 정의하고 `http_status`를 class 속성으로 지정한다.
-라우터에 `try/except` 없이 전역 핸들러가 자동 매핑.
+Define `DomainError` subclasses and set `http_status` as a class attribute.
+The global handler maps automatically — routers do not need `try/except`.
 
 ```python
 class NotFoundError(DomainError):
@@ -80,10 +80,10 @@ class NotFoundError(DomainError):
 
 ---
 
-## 구현 완료 후 자가 점검
+## Post-implementation self-check
 
-- [ ] 하드코딩된 API 키, IP, 비밀번호 없음
-- [ ] 루프 안에 DB 쿼리 없음 (N+1 없음)
-- [ ] 새 repo/service는 AppContainer에만 추가됨
-- [ ] 1회용 헬퍼 함수 만들지 않았음
-- [ ] datetime은 `DateTime(timezone=True)` + `datetime.now(timezone.utc)` 통일
+- [ ] No hardcoded API keys, IPs, or passwords
+- [ ] No DB queries inside loops (no N+1)
+- [ ] New repo/service added only to AppContainer
+- [ ] No one-shot helper functions created
+- [ ] datetime unified: `DateTime(timezone=True)` + `datetime.now(timezone.utc)`

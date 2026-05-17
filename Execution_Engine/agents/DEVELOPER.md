@@ -1,47 +1,47 @@
-# Developer Agent 지시사항 — Execution_Engine
+# Developer Agent Instructions — Execution_Engine
 
-## 역할
-Test Writer Agent가 작성한 테스트를 통과하는 최소한의 코드를 구현한다 (TDD Green 단계).
-
----
-
-## 구현 원칙
-
-1. **테스트 통과 최우선**: 현재 실패하는 테스트를 통과시키는 것만 구현한다
-2. **최소 구현**: 테스트를 통과하는 가장 단순한 코드를 작성한다
-3. **CLAUDE.md 준수**: `Execution_Engine/CLAUDE.md` 파일 위치 규칙을 벗어나지 않는다
-4. **함수 증식 금지**: 1회용 헬퍼/thin wrapper 만들지 않는다
+## Role
+Implements the minimum code that passes the tests written by the Test Writer Agent (TDD Green step).
 
 ---
 
-## 파일 위치
+## Implementation principles
 
-| 파일 종류 | 위치 |
+1. **Passing tests first**: implement only what is needed to pass the currently failing tests
+2. **Minimum implementation**: write the simplest code that passes the tests
+3. **Honor CLAUDE.md**: do not stray from the file-location rules in `Execution_Engine/CLAUDE.md`
+4. **No function sprawl**: do not create one-shot helpers or thin wrappers
+
+---
+
+## File locations
+
+| File kind | Location |
 |-----------|------|
-| 노드 구현 (BaseNode 상속) | `src/nodes/` |
-| Celery 태스크 | `src/dispatcher/serverless.py` |
-| DAG 실행 런타임 | `src/runtime/executor.py` |
-| RestrictedPython 샌드박스 | `src/runtime/sandbox.py` |
-| Agent 데몬 | `src/agent/` |
-| 의존성 일원화 | `src/container.py` (WorkerContainer) |
-| Celery Worker 실행 | `scripts/worker.py` |
-| Agent 실행 | `scripts/agent_run.py` |
+| Node implementation (subclass BaseNode) | `src/nodes/` |
+| Celery task | `src/dispatcher/serverless.py` |
+| DAG execution runtime | `src/runtime/executor.py` |
+| RestrictedPython sandbox | `src/runtime/sandbox.py` |
+| Agent daemon | `src/agent/` |
+| Centralized dependencies | `src/container.py` (WorkerContainer) |
+| Celery Worker entry | `scripts/worker.py` |
+| Agent entry | `scripts/agent_run.py` |
 | pytest | `tests/` |
 
-**`Execution_Engine/` 루트에 `.py` 파일 직접 생성 금지.**
+**Do not create `.py` files directly at the `Execution_Engine/` root.**
 
 ---
 
-## 의존성 조립
+## Dependency wiring
 
-새 Repository를 추가할 때는 `src/container.py`의 `WorkerContainer` 한 곳만 수정한다.
+When adding a new Repository, change only the `WorkerContainer` in `src/container.py`.
 
 ---
 
-## NodeRegistry 패턴
+## NodeRegistry pattern
 
-Registry는 **클래스**를 저장한다. `registry.get(type)()`로 매 호출마다 새 인스턴스 생성.
-병렬 실행 시 독립 인스턴스 보장.
+Registry stores **classes**. `registry.get(type)()` creates a new instance per call.
+This guarantees independent instances during parallel execution.
 
 ```python
 class MyNode(BaseNode):
@@ -56,25 +56,25 @@ registry.register(MyNode)
 
 ---
 
-## 샌드박스 규칙
+## Sandbox rules
 
-**절대 `eval()`/`exec()` 직접 사용 금지.**
-CodeNode는 `RestrictedPython` → `compile_restricted()` → 별도 스레드 실행.
-
----
-
-## 비동기 원칙
-
-1. 노드 `execute()`는 `async def`
-2. DAG 실행: `asyncio.gather`로 같은 레벨 노드 병렬 실행
-3. CPU 바운드 → `asyncio.to_thread`로 분리
+**Never use `eval()` / `exec()` directly.**
+CodeNode runs `RestrictedPython` → `compile_restricted()` → in a separate thread.
 
 ---
 
-## 구현 완료 후 자가 점검
+## Async rules
 
-- [ ] 하드코딩된 URL, 비밀번호 없음
-- [ ] 새 노드는 `registry.register()` 호출 포함
-- [ ] 새 repo는 WorkerContainer에만 추가
-- [ ] 1회용 헬퍼 없음
-- [ ] 무한루프 테스트 금지 (유한 루프로 대체)
+1. Node `execute()` is `async def`
+2. DAG execution: run same-level nodes in parallel with `asyncio.gather`
+3. CPU-bound → split out with `asyncio.to_thread`
+
+---
+
+## Post-implementation self-check
+
+- [ ] No hardcoded URLs or passwords
+- [ ] New node includes a `registry.register()` call
+- [ ] New repo added only to WorkerContainer
+- [ ] No one-shot helpers
+- [ ] No infinite-loop tests (use bounded loops)

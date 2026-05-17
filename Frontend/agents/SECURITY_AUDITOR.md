@@ -1,20 +1,20 @@
-# Security Auditor Agent 지시사항 — Frontend
+# Security Auditor Agent Instructions — Frontend
 
-## 역할
-코드 작성 후 실행 전, 또는 git commit 직전에 호출된다. **시크릿 / 자격증명 / 시크릿이 클라이언트 번들에 포함될 위험**을 점검하고 위반 항목이 있으면 즉시 차단한다.
+## Role
+Invoked after code is written and before it runs, or just before a git commit. Checks for **the risk that a secret or credential leaks into the client bundle** and immediately blocks if any violations are found.
 
-> 루트의 generic SECURITY_AUDITOR 와 동일한 정신을 따르되, Frontend 만의 추가 위험 (`NEXT_PUBLIC_*` 누설 / `localStorage` 토큰 / `dangerouslySetInnerHTML` / `.env.local` 스테이징) 을 다룬다.
-
----
-
-## 실행 시점
-
-1. 코드 작성/수정 직후 — 파일에 시크릿이 들어갔는지
-2. git commit 직전 — 스테이징 영역 전수 검사
+> Follows the same spirit as the generic SECURITY_AUDITOR at the repo root, but covers Frontend-specific risks (`NEXT_PUBLIC_*` leakage / `localStorage` token / `dangerouslySetInnerHTML` / `.env.local` staging).
 
 ---
 
-## Step 0. 점검 대상 파일 수집
+## When to run
+
+1. Right after code is written/modified — verify no secret was written into a file
+2. Right before `git commit` — scan the entire staged area
+
+---
+
+## Step 0. Collect files to audit
 
 ```bash
 git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|mjs|json)$'
@@ -22,7 +22,7 @@ git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|mjs|json)$'
 
 ---
 
-## [F01] 하드코딩 시크릿 탐지 — FAIL 시 즉시 차단
+## [F01] Hardcoded secret detection — FAIL means immediate block
 
 ```bash
 grep -rEn --include="*.ts" --include="*.tsx" --include="*.mjs" \
@@ -30,30 +30,30 @@ grep -rEn --include="*.ts" --include="*.tsx" --include="*.mjs" \
   Frontend/src/
 ```
 
-판정:
-- 매칭 → **FAIL** (e.g. `const API_KEY = "sk-abcd1234..."`)
-- 예외: `process.env.X` 또는 빈 문자열 / placeholder ("REPLACE_ME") → PASS
-- 예외: 변수명에 `example`, `placeholder`, `sample`, `mock` → PASS
+Decision:
+- Match → **FAIL** (e.g., `const API_KEY = "sk-abcd1234..."`)
+- Exception: `process.env.X`, empty string, or placeholder ("REPLACE_ME") → PASS
+- Exception: variable name contains `example`, `placeholder`, `sample`, `mock` → PASS
 
 ---
 
-## [F02] `NEXT_PUBLIC_*` 변수에 시크릿 패턴 — FAIL
+## [F02] Secret pattern in `NEXT_PUBLIC_*` — FAIL
 
-`NEXT_PUBLIC_*` 는 **클라이언트 번들에 인라인됨** — 시크릿 절대 금지.
+`NEXT_PUBLIC_*` is **inlined into the client bundle** — secrets are strictly forbidden.
 
 ```bash
-# .env.example 및 next.config 에서 NEXT_PUBLIC_ 변수명 확인
+# inspect NEXT_PUBLIC_ variable names in .env.example and next.config
 grep -rEn "NEXT_PUBLIC_[A-Z_]*" Frontend/ \
   | grep -iE "(secret|api_key|password|access_token|private)"
 ```
 
-매칭 → **FAIL**. 허용되는 NEXT_PUBLIC_*:
+Match → **FAIL**. Allowed `NEXT_PUBLIC_*`:
 - `NEXT_PUBLIC_API_BASE_URL` (URL)
-- `NEXT_PUBLIC_DEV_TOKEN` (로컬 dev 한정 — staging/prod 배포 시 제거)
+- `NEXT_PUBLIC_DEV_TOKEN` (local dev only — remove for staging/prod deploy)
 
 ---
 
-## [F03] `localStorage` / `sessionStorage` 토큰 저장 — FAIL
+## [F03] Token stored in `localStorage` / `sessionStorage` — FAIL
 
 ```bash
 grep -rEn --include="*.ts" --include="*.tsx" \
@@ -61,33 +61,33 @@ grep -rEn --include="*.ts" --include="*.tsx" \
   Frontend/src/
 ```
 
-매칭 → **FAIL**. JWT 는 메모리 또는 `httpOnly` 쿠키만.
+Match → **FAIL**. JWT goes in memory or an `httpOnly` cookie only.
 
 ---
 
-## [F04] `dangerouslySetInnerHTML` 사용 — FAIL
+## [F04] Use of `dangerouslySetInnerHTML` — FAIL
 
-LLM 응답 / 사용자 입력 raw HTML 삽입은 XSS.
+Raw HTML injection from LLM output / user input is an XSS vector.
 
 ```bash
 grep -rEn --include="*.tsx" "dangerouslySetInnerHTML" Frontend/src/
 ```
 
-매칭 → **FAIL**. 예외 없음 (마크다운 렌더는 안전한 라이브러리만 — 현재 X).
+Match → **FAIL**. No exception (markdown rendering only via a safe library — currently not in use).
 
 ---
 
-## [F05] `.env.local` / `.env.production` 스테이징 — FAIL
+## [F05] `.env.local` / `.env.production` staging — FAIL
 
 ```bash
 git diff --cached --name-only | grep -E "Frontend/\.env(\.|$)" | grep -v "\.example$"
 ```
 
-매칭 → **FAIL**. `.env.example` 만 git 추적.
+Match → **FAIL**. Only `.env.example` is git-tracked.
 
 ---
 
-## [F06] 실제 IP / 호스트명 하드코딩 — FAIL
+## [F06] Hardcoded real IP / host name — FAIL
 
 ```bash
 grep -rEn --include="*.ts" --include="*.tsx" --include="*.mjs" \
@@ -95,39 +95,39 @@ grep -rEn --include="*.ts" --include="*.tsx" --include="*.mjs" \
   Frontend/src/
 ```
 
-판정:
-- `127.0.0.1`, `0.0.0.0`, `localhost`, `example.com` (테스트) → PASS
-- 그 외 실제 IP / 운영 도메인 → **FAIL**
+Decision:
+- `127.0.0.1`, `0.0.0.0`, `localhost`, `example.com` (test) → PASS
+- Any other real IP / production domain → **FAIL**
 
 ---
 
-## [F07] 자격증명 입력 폼 redaction — WARNING
+## [F07] Credential input form redaction — WARNING
 
 ```bash
-# 폼 input 의 value 가 store 에 저장되는지 확인
+# verify the form input's value is not stored in the store
 grep -rEn --include="*.tsx" -B2 -A2 \
   -E "type=['\"]password['\"]" Frontend/src/components/
 ```
 
-전송 직후 setState 로 `""` 초기화하지 않으면 WARNING (보고서 기록).
+If `setState` does not clear to `""` immediately after submit, WARNING (recorded in the report).
 
 ---
 
-## [F08] `.gitignore` 필수 항목 — FAIL
+## [F08] `.gitignore` required entries — FAIL
 
 ```bash
 cat .gitignore
 ```
 
-아래가 모두 포함돼야 PASS:
-- `.env*` (단 `.env.example` 제외)
+All of the following must be present to PASS:
+- `.env*` (excluding `.env.example`)
 - `node_modules/`
 - `.next/`
 - `playwright-report/`, `test-results/`
 
 ---
 
-## 전체 실행 스크립트
+## Full execution script
 
 ```bash
 #!/usr/bin/env bash
@@ -179,67 +179,67 @@ grep -q "\.next" .gitignore 2>/dev/null || GI_FAIL="${GI_FAIL} .next"
 if [ -n "$GI_FAIL" ]; then echo "[F08 FAIL] .gitignore missing:${GI_FAIL}"; FAIL=$((FAIL+1)); else echo "[F08 PASS]"; fi
 
 echo "=== FAIL: $FAIL / WARN: $WARN ==="
-[ "$FAIL" -gt 0 ] && echo ">>> 커밋 차단" || echo ">>> 커밋 가능"
+[ "$FAIL" -gt 0 ] && echo ">>> commit blocked" || echo ">>> commit may proceed"
 ```
 
 ---
 
-## Orchestrator 에 전달할 결과
+## Result to hand to the Orchestrator
 
 ```
-[Security Auditor 결과 — Frontend]
-- 점검 파일: N개
-- PASS: N건 / FAIL: N건 / WARN: N건
+[Security Auditor result — Frontend]
+- Audited files: N
+- PASS: N / FAIL: N / WARN: N
 
-FAIL 항목:
-- [F번호 FAIL] 설명
-  파일: Frontend/src/<...>:LINE
-  내용 (마스킹): const API_KEY = "sk-***..."
+FAIL items:
+- [F<num> FAIL] description
+  File: Frontend/src/<...>:LINE
+  Content (masked): const API_KEY = "sk-***..."
 
-판단:
-- FAIL 0건 → 커밋/실행 허용
-- FAIL 1건 이상 → 즉시 차단
-- WARN 만 존재 → 허용 + 보고서 기록
+Decision:
+- 0 FAIL → commit/execution allowed
+- 1+ FAIL → immediate block
+- Only WARN → allowed + recorded in the report
 ```
 
 ---
 
-## 수정 가이드
+## Remediation guide
 
-### F01 / F02 위반
+### F01 / F02 violations
 ```typescript
 // Before (FAIL)
 const API_KEY = "sk-abcd1234...";
 
 // After (PASS)
-const API_KEY = process.env.ANTHROPIC_API_KEY ?? "";  // 서버 컴포넌트에서만
-// 클라이언트 번들에 들어가야 한다면 → 서버 라우트 (`app/api/`) 로 프록시
+const API_KEY = process.env.ANTHROPIC_API_KEY ?? "";  // server components only
+// If it must reach the client bundle → proxy through a server route (`app/api/`)
 ```
 
-### F03 위반
+### F03 violation
 ```typescript
 // Before (FAIL)
 localStorage.setItem("jwt", token);
 
 // After (PASS)
-// 메모리 (Zustand) 또는 httpOnly 쿠키. localStorage 사용 금지.
+// Memory (Zustand) or httpOnly cookie. Do not use localStorage.
 useAuthStore.getState().setToken(token);
 ```
 
-### F04 위반
+### F04 violation
 ```typescript
 // Before (FAIL)
 <div dangerouslySetInnerHTML={{ __html: llmResponse }} />
 
-// After (PASS) — React 의 기본 escape 신뢰
+// After (PASS) — trust React's default escaping
 <div className="whitespace-pre-wrap">{llmResponse}</div>
 ```
 
 ---
 
-## 주의사항
+## Cautions
 
-1. 점검 결과 출력에 실제 시크릿 값을 포함하지 않는다 (마스킹)
-2. `.env.example` 은 키 이름만 있으면 PASS — 실제 값이 있으면 FAIL
-3. F07 WARN 은 PR 본문에 기록하되 진행 차단 X
-4. Frontend 에서 발견한 시크릿이 다른 브랜드에 동시 존재 가능 — 루트 SECURITY_AUDITOR 결과와 비교
+1. Do not include actual secret values in the audit output (mask them)
+2. `.env.example` PASSes when it contains key names only — FAILS if it contains actual values
+3. F07 WARN is recorded in the PR body but does not block progress
+4. A secret found in Frontend may also exist in another brand — compare with the root SECURITY_AUDITOR result

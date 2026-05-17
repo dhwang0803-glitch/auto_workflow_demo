@@ -1,39 +1,39 @@
-# Orchestrator Agent 지시사항 — Database
+# Orchestrator Agent Instructions — Database
 
-## 역할
-PLAN별 TDD 사이클 전체를 관리한다. PLAN 파일을 읽고 작업을 분해하여 각 에이전트를 순서대로 호출한다.
+## Role
+Manages the entire TDD cycle for each PLAN. Reads the PLAN, breaks the work into pieces, and invokes each agent in order.
 
 ---
 
-## 실행 순서
+## Execution order
 
 ```
-1. Security Auditor → 2. PLAN 읽기 → 3. 작업 분해
+1. Security Auditor → 2. Read PLAN → 3. Decompose
 4. Test Writer → 5. Developer → 6. Tester
-7. FAIL 시 Developer 재호출 (최대 3회)
-8. Reporter → 9. Security Auditor (커밋 전) → 10. PR 생성
+7. On FAIL, re-invoke Developer (up to 3 times)
+8. Reporter → 9. Security Auditor (pre-commit) → 10. Create PR
 ```
 
 ---
 
-## PLAN 파일 위치
+## PLAN file location
 
-`Database/plans/PLAN_NN_*.md` — PLAN_01~08 Done.
-
----
-
-## 브랜치 경계 규칙
-
-- Database 브랜치에서는 `Database/` 디렉토리만 수정
-- `schemas/001_core.sql` 수정 금지
-- 새 Repository는 ABC + 구현체 + InMemory fake 세트로 추가
+`Database/plans/PLAN_NN_*.md` — PLAN_01–08 Done.
 
 ---
 
-## 완료 기준
+## Branch-boundary rules
+
+- On the Database branch, modify only the `Database/` directory
+- Do not modify `schemas/001_core.sql`
+- New Repositories are added as an ABC + implementation + InMemory fake set
+
+---
+
+## Completion criteria
 
 - [ ] Security Audit PASS
-- [ ] 테스트/구현 완료
-- [ ] 전체 테스트 PASS
-- [ ] 마이그레이션 SQL 작성 (스키마 변경 시)
-- [ ] PR 생성
+- [ ] Test + implementation complete
+- [ ] All tests PASS
+- [ ] Migration SQL written (when the schema changes)
+- [ ] PR created

@@ -1,65 +1,65 @@
-# Refactor Agent 지시사항 — API_Server
+# Refactor Agent Instructions — API_Server
 
-## 역할
-모든 테스트가 PASS된 이후에만 실행된다. 테스트를 통과한 상태를 유지하면서 코드 품질을 개선한다 (TDD Refactor 단계).
-
----
-
-## 핵심 원칙
-
-1. **테스트 통과 상태 유지**: 리팩토링 후 반드시 전체 테스트 재실행하여 PASS 확인
-2. **기능 변경 금지**: 동작 결과가 달라지는 변경은 하지 않는다
-3. **범위 제한**: 요청된 PLAN의 `app/` 파일만 수정한다
-4. **작은 단위로 개선**: 한 번에 하나씩 개선하고 테스트 확인 후 다음으로 넘어간다
+## Role
+Runs only after every test PASSes. Improves code quality while keeping all tests green (TDD Refactor step).
 
 ---
 
-## 개선 검토 항목
+## Core principles
 
-### 코드 품질
-- [ ] 1회용 헬퍼 함수 존재 → 인라인 처리 (함수 증식 지양)
-- [ ] 중복 로직 → 3줄 이상이면 공통 함수 검토
-- [ ] 하드코딩된 값 → Settings 또는 환경변수
-- [ ] DomainError 서브클래스 누락 → 추가
-
-### 아키텍처
-- [ ] 새 repo/service가 AppContainer 외부에서 생성되는지 확인
-- [ ] 라우터에 비즈니스 로직 누출 → 서비스로 이동
-- [ ] `try/except`가 라우터에 있으면 → DomainError 전역 핸들러로 위임
-
-### 성능
-- [ ] N+1 쿼리 패턴 → 배치 조회
-- [ ] 불필요한 DB 조회 → 캐싱 또는 제거
-
-### 일관성
-- [ ] datetime이 `DateTime(timezone=True)` + `datetime.now(timezone.utc)` 통일인지
-- [ ] 응답 스키마가 일관된 형태인지
+1. **Keep tests green**: after refactoring, always re-run the full test suite and confirm PASS
+2. **No behavior change**: do not make changes that alter the runtime result
+3. **Scope restriction**: modify only the `app/` files of the requested PLAN
+4. **Small steps**: improve one thing at a time, verify tests, then move on
 
 ---
 
-## 리팩토링 범위 제외
+## Items to consider
 
-- 테스트 파일 (`tests/`)
-- PLAN 문서 (`plans/`)
-- 환경 설정 (`.env`)
-- `conftest.py` (테스트 인프라)
+### Code quality
+- [ ] One-shot helper functions exist → inline them (avoid function sprawl)
+- [ ] Duplicate logic → consider unifying if 3+ lines
+- [ ] Hardcoded values → Settings or env vars
+- [ ] Missing DomainError subclass → add
+
+### Architecture
+- [ ] Verify new repo/service is not instantiated outside AppContainer
+- [ ] Business logic leaked into routers → move to a service
+- [ ] `try/except` in a router → delegate to the DomainError global handler
+
+### Performance
+- [ ] N+1 query pattern → batched fetch
+- [ ] Unnecessary DB lookups → cache or remove
+
+### Consistency
+- [ ] datetime unified to `DateTime(timezone=True)` + `datetime.now(timezone.utc)`
+- [ ] Response schemas in consistent shape
 
 ---
 
-## 리팩토링 완료 후
+## Scope excluded
+
+- Test files (`tests/`)
+- PLAN documents (`plans/`)
+- Env configs (`.env`)
+- `conftest.py` (test infrastructure)
+
+---
+
+## After refactoring
 
 ```
-1. 전체 테스트 재실행 (taskkill 먼저)
-2. 이전 테스트 결과와 PASS/FAIL 건수 동일한지 확인
-3. 변경 내용 목록 작성 → Reporter Agent에 전달
+1. Re-run the full test suite (kill first)
+2. Confirm the PASS/FAIL counts match the previous run
+3. Write a changelog → hand to Reporter Agent
 ```
 
-## Reporter Agent에 전달할 형식
+## Format to hand to the Reporter Agent
 
 ```
-[리팩토링 항목]
-- 파일: [파일명]
-- 변경 전: [기존 코드/구조 요약]
-- 변경 후: [개선된 코드/구조 요약]
-- 개선 이유: [왜 개선했는지]
+[Refactoring items]
+- File: [name]
+- Before: [old code/structure summary]
+- After: [improved code/structure summary]
+- Reason: [why the change]
 ```

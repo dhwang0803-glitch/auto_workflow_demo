@@ -1,12 +1,12 @@
-# Reporter Agent 지시사항 — API_Server
+# Reporter Agent Instructions — API_Server
 
-## 역할
-TDD 사이클이 완료된 후 PLAN별 결과 보고서를 생성한다.
-Orchestrator, Test Writer, Developer, Refactor Agent로부터 결과를 수집하여 표준 형식으로 문서화한다.
+## Role
+After a TDD cycle completes, produces the per-PLAN results report.
+Collects results from the Orchestrator, Test Writer, Developer, and Refactor Agents and documents them in the standard format.
 
 ---
 
-## 보고서 저장 위치
+## Report location
 
 ```
 API_Server/reports/PLAN_NN_report.md
@@ -14,80 +14,80 @@ API_Server/reports/PLAN_NN_report.md
 
 ---
 
-## 보고서 표준 형식
+## Standard report format
 
 ```markdown
-# PLAN_NN 결과 보고서
+# PLAN_NN Results Report
 
-**PLAN**: {번호 및 이름}
-**작성일**: {YYYY-MM-DD}
-**상태**: PASS 완료 / FAIL 잔존
+**PLAN**: {number and name}
+**Date**: {YYYY-MM-DD}
+**Status**: PASS complete / FAIL remaining
 
 ---
 
-## 1. 개발 결과
+## 1. Development results
 
-### 생성/수정된 파일
-| 파일 | 위치 | 설명 |
+### Files created/modified
+| File | Location | Description |
 |------|------|------|
-| workflow_service.py | app/services/ | 실행 트리거 메서드 추가 |
+| workflow_service.py | app/services/ | added execution trigger method |
 
-### 주요 구현 내용
-- [구현한 핵심 내용 bullet point]
+### Key implementations
+- [bullet list of the core items implemented]
 
 ---
 
-## 2. 테스트 결과
+## 2. Test results
 
-### 요약
-| 구분 | 건수 |
+### Summary
+| Category | Count |
 |------|------|
-| 전체 테스트 | X건 |
-| PASS | X건 |
-| FAIL | X건 |
-| 소요 시간 | X초 |
+| Total tests | X |
+| PASS | X |
+| FAIL | X |
+| Duration | X s |
 
-### 엔드포인트 검증 현황
-| 메서드 | 경로 | 테스트 | 결과 |
+### Endpoint verification status
+| Method | Path | Test | Result |
 |--------|------|--------|------|
 | POST | /api/v1/workflows | test_create_workflow_happy | PASS |
 
 ---
 
-## 3. 오류 원인 분석
+## 3. Failure root-cause analysis
 
-> PASS 완료 시 "해당 없음" 기재
+> Write "n/a" when the status is PASS complete
 
 ---
 
-## 4. 개선 내용 (리팩토링)
+## 4. Improvements (refactoring)
 
-| 파일 | 변경 전 | 변경 후 | 이유 |
+| File | Before | After | Reason |
 |------|--------|--------|------|
 
 ---
 
-## 5. 다음 PLAN 권고사항
+## 5. Recommendations for the next PLAN
 
-- [다음 PLAN 진행 전 확인 필요한 사항]
-- [의존성 또는 선행 조건]
+- [items to verify before starting the next PLAN]
+- [dependencies or prerequisites]
 ```
 
 ---
 
-## 수집 정보 출처
+## Information sources
 
-| 섹션 | 출처 |
+| Section | Source |
 |------|------|
-| 개발 결과 | Developer Agent |
-| 테스트 결과 | Tester Agent 실행 결과 |
-| 오류 원인 분석 | Tester Agent FAIL 로그 |
-| 개선 내용 | Refactor Agent 변경 사항 |
-| 다음 PLAN 권고 | PLAN 문서 + 이번 PLAN 이슈 |
+| Development results | Developer Agent |
+| Test results | Tester Agent execution output |
+| Failure root-cause analysis | Tester Agent FAIL logs |
+| Improvements | Refactor Agent changes |
+| Next-PLAN recommendations | PLAN document + issues from this PLAN |
 
 ---
 
-## 보고서 작성 완료 후
+## After writing the report
 
-- [ ] 보고서 파일 저장 확인
-- [ ] Orchestrator에 완료 보고
+- [ ] Verify the report file is saved
+- [ ] Report completion to the Orchestrator

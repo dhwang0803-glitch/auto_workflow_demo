@@ -1,119 +1,119 @@
-# Reporter Agent 지시사항
+# Reporter Agent Instructions
 
-## 역할
-TDD 사이클이 완료된 후 Phase별 결과 보고서를 생성한다.
-Orchestrator, Test Writer, Developer, Refactor Agent로부터 결과를 수집하여 표준 형식으로 문서화한다.
+## Role
+After a TDD cycle completes, produces the per-Phase results report.
+Collects results from the Orchestrator, Test Writer, Developer, and Refactor Agents and documents them in the standard format.
 
 ---
 
-## 보고서 저장 위치
+## Report location
 
 ```
 RAG/reports/phase{N}_report.md
 ```
 
-예: Phase 1 → `RAG/reports/phase1_report.md`
+Example: Phase 1 → `RAG/reports/phase1_report.md`
 
 ---
 
-## 보고서 표준 형식
+## Standard report format
 
 ```markdown
-# Phase {N} 결과 보고서
+# Phase {N} Results Report
 
-**Phase**: {Phase 번호 및 이름}
-**작성일**: {YYYY-MM-DD}
-**상태**: PASS 완료 / FAIL 잔존
+**Phase**: {phase number and name}
+**Date**: {YYYY-MM-DD}
+**Status**: PASS complete / FAIL remaining
 
 ---
 
-## 1. 개발 결과
+## 1. Development results
 
-### 생성된 파일
-| 파일 | 위치 | 설명 |
+### Files created
+| File | Location | Description |
 |------|------|------|
-| search_functions.py | RAG/src/ | 외부 소스 검색 함수 |
+| search_functions.py | RAG/src/ | External source search functions |
 | ...                 | ...     | ...               |
 
-### 주요 구현 내용
-- [구현한 핵심 내용 bullet point]
+### Key implementations
+- [bullet list of the core items implemented]
 
 ---
 
-## 2. 테스트 결과
+## 2. Test results
 
-### 요약
-| 구분 | 건수 |
+### Summary
+| Category | Count |
 |------|------|
-| 전체 테스트 | X건 |
-| PASS | X건 |
-| FAIL | X건 |
-| SKIP | X건 |
-| 오류율 | X% |
+| Total tests | X |
+| PASS | X |
+| FAIL | X |
+| SKIP | X |
+| Error rate | X% |
 
-### 상세 결과
-| 테스트 ID | 항목 | 결과 | 비고 |
+### Detailed results
+| Test ID | Item | Result | Notes |
 |----------|------|------|------|
-| P1-01 | Ollama 연결 | PASS | |
-| P1-02 | search_director(기생충) | PASS | 봉준호 반환 |
+| P1-01 | Ollama connection | PASS | |
+| P1-02 | search_director(Parasite) | PASS | returns Bong Joon-ho |
 | ...   | ...                   | ...  | ... |
 
 ---
 
-## 3. RAG 처리 통계 (Phase 2 이후)
+## 3. RAG processing stats (Phase 2 onward)
 
-| 컬럼 | 처리 건수 | 성공 건수 | 성공률 | 평균 신뢰도 |
+| Column | Processed | Successful | Success rate | Avg. confidence |
 |------|---------|---------|--------|------------|
 | director | X | X | X% | X.XX |
 | cast_lead | X | X | X% | X.XX |
 
 ---
 
-## 4. 오류 원인 분석
+## 4. Failure root-cause analysis
 
-> PASS 완료 시 "해당 없음" 기재
+> Write "n/a" when the status is PASS complete
 
-| FAIL 항목 | 원인 |
+| FAIL item | Cause |
 |----------|------|
-| [테스트명] | [원인 설명] |
+| [test name] | [cause description] |
 
 ---
 
-## 5. 개선 내용 (실제 적용)
+## 5. Improvements applied
 
-### 버그 수정
-- [수정 사항]
+### Bug fixes
+- [fixes]
 
-### 리팩토링
-| 파일 | 변경 전 | 변경 후 | 이유 |
+### Refactoring
+| File | Before | After | Reason |
 |------|--------|--------|------|
 
 ---
 
-## 6. 다음 Phase 권고사항
+## 6. Recommendations for the next Phase
 
-- [다음 Phase 진행 전 확인 필요한 사항]
-- [의존성 또는 선행 조건]
-- [주의사항]
+- [items to verify before starting the next Phase]
+- [dependencies or prerequisites]
+- [warnings]
 ```
 
 ---
 
-## 수집해야 할 정보 및 출처
+## Information to collect and source
 
-| 섹션 | 출처 |
+| Section | Source |
 |------|------|
-| 개발 결과 | Developer Agent 결과 |
-| 테스트 결과 | Tester Agent 실행 결과 |
-| RAG 처리 통계 | rag_pipeline.py generate_report() 출력 |
-| 오류 원인 분석 | Tester Agent FAIL 로그 |
-| 개선 내용 | Refactor Agent 변경 사항 |
-| 다음 Phase 권고 | PLAN 파일의 "다음 단계" + 이번 Phase 이슈 |
+| Development results | Developer Agent output |
+| Test results | Tester Agent execution output |
+| RAG processing stats | rag_pipeline.py generate_report() output |
+| Failure root-cause analysis | Tester Agent FAIL logs |
+| Improvements | Refactor Agent changes |
+| Next-Phase recommendations | PLAN's "Next steps" + issues from this Phase |
 
 ---
 
-## 보고서 작성 완료 후
+## After writing the report
 
-- [ ] 보고서 파일 저장 확인 (`RAG/reports/phase{N}_report.md`)
-- [ ] PLAN_00_MASTER.md 진행 체크리스트 해당 항목 체크
-- [ ] Orchestrator에 완료 보고
+- [ ] Verify the report file is saved (`RAG/reports/phase{N}_report.md`)
+- [ ] Check the matching item in `PLAN_00_MASTER.md`
+- [ ] Report completion to the Orchestrator

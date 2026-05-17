@@ -1,64 +1,64 @@
-# Refactor Agent 지시사항
+# Refactor Agent Instructions
 
-## 역할
-모든 테스트가 PASS된 이후에만 실행된다. 테스트를 통과한 상태를 유지하면서 코드 품질을 개선한다 (TDD Refactor 단계).
-
----
-
-## 핵심 원칙
-
-1. **테스트 통과 상태 유지**: 리팩토링 후 반드시 전체 테스트를 재실행하여 PASS 확인
-2. **기능 변경 금지**: 동작 결과가 달라지는 변경은 하지 않는다
-3. **범위 제한**: 요청된 Phase의 src/ 파일만 수정한다
-4. **작은 단위로 개선**: 한 번에 하나씩 개선하고 테스트 확인 후 다음으로 넘어간다
+## Role
+Runs only after every test PASSes. Improves code quality while keeping all tests green (TDD Refactor step).
 
 ---
 
-## 개선 검토 항목
+## Core principles
 
-### Python 코드 품질
-- [ ] 중복 검색 로직 → 공통 함수로 통합
-- [ ] 에러 처리 누락 여부 (try-except, 폴백 전략)
-- [ ] 하드코딩된 값 → 상수 또는 환경변수
-- [ ] 로깅 메시지 명확성 (어떤 소스에서 실패했는지)
-
-### 성능 관점
-- [ ] API 캐싱 적절성 (동일 asset_nm 중복 요청 제거)
-- [ ] 배치 크기(batch_size) 최적화
-- [ ] ThreadPoolExecutor max_workers 조정 (API Rate Limit 고려)
-- [ ] 불필요한 LLM 호출 제거 (rating은 규칙 기반으로 충분)
-
-### 데이터 품질
-- [ ] validate_* 함수 엣지케이스 커버리지
-- [ ] confidence_score 가중치 적절성
-- [ ] NULL 처리 일관성
+1. **Keep tests green**: after refactoring, always re-run the full test suite and confirm PASS
+2. **No behavior change**: do not make changes that alter the runtime result
+3. **Scope restriction**: modify only `src/` files for the requested Phase
+4. **Small steps**: improve one thing at a time, verify tests, then move on
 
 ---
 
-## 리팩토링 범위 제한
+## Items to consider
 
-아래 항목은 리팩토링 대상에서 제외한다:
-- 테스트 파일 (`tests/` 폴더)
-- PLAN 문서 (`plans/` 폴더)
-- Skills 문서 (`skills/` 폴더)
-- 환경 설정 (`.env`, `config/api_keys.env`)
+### Python code quality
+- [ ] Duplicate search logic → unify into a shared function
+- [ ] Missing error handling (try-except, fallback strategy)
+- [ ] Hardcoded values → constants or environment variables
+- [ ] Clarity of log messages (which source failed)
+
+### Performance
+- [ ] API caching correctness (eliminate duplicate requests for the same asset_nm)
+- [ ] Batch size (batch_size) tuning
+- [ ] ThreadPoolExecutor max_workers tuning (mind the API rate limit)
+- [ ] Remove unnecessary LLM calls (rating is fine as rule-based)
+
+### Data quality
+- [ ] Edge-case coverage in `validate_*` functions
+- [ ] Appropriateness of `confidence_score` weights
+- [ ] NULL handling consistency
 
 ---
 
-## 리팩토링 완료 후 확인
+## Scope restriction
+
+Excluded from refactoring:
+- Test files (`tests/` folder)
+- PLAN documents (`plans/` folder)
+- Skills documents (`skills/` folder)
+- Environment configs (`.env`, `config/api_keys.env`)
+
+---
+
+## After refactoring
 
 ```
-1. 전체 테스트 재실행
-2. 이전 테스트 결과와 PASS/FAIL 건수 동일한지 확인
-3. 변경된 내용 목록 작성 → Reporter Agent에 전달
+1. Re-run the full test suite
+2. Confirm the PASS/FAIL counts match the previous run
+3. Write a changelog → hand to Reporter Agent
 ```
 
-## Reporter Agent에 전달할 개선 내용 형식
+## Format to hand to the Reporter Agent
 
 ```
-[리팩토링 항목]
-- 파일: [파일명]
-- 변경 전: [기존 코드/구조 요약]
-- 변경 후: [개선된 코드/구조 요약]
-- 개선 이유: [왜 개선했는지]
+[Refactoring items]
+- File: [name]
+- Before: [old code/structure summary]
+- After: [improved code/structure summary]
+- Reason: [why the change]
 ```

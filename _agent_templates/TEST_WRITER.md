@@ -1,36 +1,36 @@
-# Test Writer Agent 지시사항
+# Test Writer Agent Instructions
 
-## 역할
+## Role
 
-구현 전에 실패하는 테스트를 먼저 작성한다 (TDD Red 단계).
-구현 후에는 테스트를 실행하고 결과를 수집한다 (검증 단계).
-
----
-
-## 테스트 작성 원칙
-
-1. 구현 코드가 없어도 테스트를 먼저 작성한다
-2. 각 테스트는 하나의 요구사항만 검증한다
-3. 기대값을 명확하게 명시한다
-4. 테스트 실패 시 원인을 파악할 수 있는 메시지를 포함한다
-5. 외부 API/네트워크 의존 테스트는 실제 호출과 Mock 모드를 구분한다
+Writes failing tests before implementation (TDD Red step).
+After implementation, runs the tests and collects results (verification step).
 
 ---
 
-## 브랜치별 테스트 파일 위치
+## Test-writing principles
 
-| 브랜치 | 테스트 디렉토리 | 형식 |
+1. Write the test before any implementation exists
+2. Each test verifies exactly one requirement
+3. State expected values clearly
+4. On failure, include a message that lets you identify the cause
+5. For tests that depend on external APIs / network, separate real calls from mock mode
+
+---
+
+## Per-branch test locations
+
+| Branch | Test directory | Style |
 |--------|--------------|------|
 | `API_Server` | `API_Server/tests/` | pytest + httpx TestClient |
-| `Database` | `Database/tests/` | pytest + 실제 DB 연결 (테스트 DB) |
+| `Database` | `Database/tests/` | pytest + real DB connection (test DB) |
 | `Execution_Engine` | `Execution_Engine/tests/` | pytest + Celery eager mode |
 | `Frontend` | `Frontend/tests/` | Jest + Playwright |
 
 ---
 
-## 테스트 작성 예시 (pytest)
+## Test examples (pytest)
 
-### API_Server 라우터 테스트
+### API_Server router test
 
 ```python
 import pytest
@@ -39,7 +39,7 @@ from app.main import app
 
 @pytest.mark.asyncio
 async def test_create_workflow_rejects_cycle():
-    """순환 참조가 있는 워크플로우는 400을 반환한다"""
+    """A workflow with a cycle returns 400"""
     cyclic_payload = {
         "name": "cyclic",
         "nodes": [{"node_id": "a"}, {"node_id": "b"}],
@@ -51,10 +51,10 @@ async def test_create_workflow_rejects_cycle():
     async with AsyncClient(app=app, base_url="http://test") as client:
         r = await client.post("/api/v1/workflows", json=cyclic_payload)
     assert r.status_code == 400
-    assert "순환" in r.json()["detail"]
+    assert "cycle" in r.json()["detail"]
 ```
 
-### Execution_Engine 노드 테스트
+### Execution_Engine node test
 
 ```python
 import pytest
@@ -70,7 +70,7 @@ async def test_condition_node_equals_true():
     assert result["branch"] == "true"
 ```
 
-### Database Repository 테스트
+### Database Repository test
 
 ```python
 @pytest.fixture
@@ -90,42 +90,42 @@ async def test_save_and_retrieve(repo):
 
 ---
 
-## 필수 테스트 카테고리
+## Required test categories
 
 ### API_Server
-- 워크플로우 CRUD (생성/조회/활성화/삭제)
-- DAG 스케줄러 순환 참조 감지
-- Webhook 트리거 수신 → 실행 큐잉
-- Agent JWT 등록/인증
-- WebSocket 연결 수립 후 heartbeat 처리
+- Workflow CRUD (create / read / activate / delete)
+- DAG scheduler cycle detection
+- Webhook trigger received → execution queued
+- Agent JWT register / authenticate
+- WebSocket connection established + heartbeat handling
 
 ### Database
-- 각 Repository save/retrieve/list 라운드트립
-- CredentialStore 암호화/복호화 대칭성
-- 마이그레이션 up/down 검증
+- Save/retrieve/list round-trip for each Repository
+- CredentialStore encryption/decryption symmetry
+- Migration up/down verification
 
 ### Execution_Engine
-- 각 `BaseNode` 구현체의 execute() 동작
-- `NodeRegistry.register()` → `get_node()` 라운드트립
-- 서버리스/Agent 디스패치 분기
-- CodeExecutionNode 샌드박스 탈출 시도 거부
-- 동일 `execution_id` 중복 실행 시 멱등성 보장
+- `execute()` behavior of each `BaseNode` implementation
+- `NodeRegistry.register()` → `get_node()` round trip
+- Serverless / Agent dispatch branching
+- CodeExecutionNode sandbox-escape attempts are rejected
+- Idempotency when the same `execution_id` is executed twice
 
 ### Frontend
-- WorkflowCanvas 노드 추가/삭제/연결
-- 워크플로우 JSON 직렬화 라운드트립
-- API 클라이언트 에러 응답 처리
+- WorkflowCanvas node add/delete/connect
+- Workflow JSON serialization round-trip
+- API client error response handling
 
 ---
 
-## 테스트 결과 수집 형식
+## Result-collection format
 
 ```
-전체 테스트: X건
-PASS: X건
-FAIL: X건
-SKIP: X건
+Total tests: X
+PASS: X
+FAIL: X
+SKIP: X
 
-FAIL 목록:
-- [테스트 ID]: [실패 메시지]
+FAIL list:
+- [test ID]: [failure message]
 ```
