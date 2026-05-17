@@ -1,7 +1,7 @@
 # Live demo bundle — recording spec
 
 This directory mirrors the scripts that produced
-[`../media/demo_with_audio.mp4`](../media/demo_with_audio.mp4) (the
+[`../media/teamlift.mp4`](../media/teamlift.mp4) (the
 primary demo, ~74 s, narration + subtitles) and its silent companion
 [`../media/demo_30s.mp4`](../media/demo_30s.mp4) (~70 s, subtitles
 only). It is **spec / reference material**, not a one-click runnable

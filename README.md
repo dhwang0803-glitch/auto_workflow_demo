@@ -1,5 +1,7 @@
 # teamlift
 
+![teamlift cover](submission/media/teamlift_cover.png)
+
 > **A workflow automation engine that learns from your team — not the other way around.**
 >
 > Built for the **Gemma 4 Good Hackathon** (Main Track + llama.cpp Special Tech Track).
@@ -18,7 +20,7 @@ active) via **llama.cpp** on a single L4 GPU.
 ## Demo
 
 - **Video with narration** (~75 s, 1920×1080 / 30 fps):
-  [`submission/media/demo_with_audio.mp4`](submission/media/demo_with_audio.mp4)
+  [`submission/media/teamlift.mp4`](submission/media/teamlift.mp4)
   — the primary demo. Burned-in subtitles + ElevenLabs TTS narration
   synchronized to each scene start. YouTube link in the Kaggle Writeup.
 - **Silent video** (~72 s):
