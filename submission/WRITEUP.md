@@ -25,7 +25,7 @@ opinionated, and more theirs every time someone touches them.
 
 ### The three-track loop the demo shows
 
-The 30-second video walks through three live tracks on a real, running
+The 75-second video walks through three live tracks on a real, running
 stack (no mockups; the recording driver invokes the actual REST
 endpoints):
 
