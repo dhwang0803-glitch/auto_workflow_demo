@@ -329,40 +329,40 @@ test("record 30-second demo", async ({}, testInfo) => {
       .waitFor({ timeout: 30_000 });
     markWait("alice", "wait_skills_load", w0, elapsed("alice"));
 
-    const t2 = elapsed("alice");
-    const activateCaption =
-      "The system noticed her edit, and alice activates it as her personal pattern.";
-    await showSubtitle(alice, activateCaption);
     const firstRow = alice.locator('[data-testid^="suggested-row-"]').first();
     const candidateId = (await firstRow.getAttribute("data-testid"))!.replace(
       "suggested-row-",
       "",
     );
-    await alice.getByTestId(`suggested-activate-${candidateId}`).click();
 
-    // Trust React Query's invalidate first — the user sees a smooth
-    // in-place transition (suggested row vanishes, active-personal-section
-    // appears) without the jarring full-page reload. If the refetch
-    // races (PR-J SuggestedFromEdits invalidate sometimes misses in
-    // real backends), fall back to an explicit reload.
+    // Activate + settle (invalidate-first, fallback reload) ALL happens
+    // inside a markWait so the compose strips the visual noise: the
+    // pending-row beat, the disabled activate-button frame, and (if the
+    // race fires) the page-reload flash. Without this, the scene plays
+    // through twice — once with the pending row + activate click, once
+    // with the active-personal-section after reload — which reads as
+    // "the same scene played twice" even though the narration only
+    // says the line once.
+    const w_pre = elapsed("alice");
+    await alice.getByTestId(`suggested-activate-${candidateId}`).click();
     const sawActive = await alice
       .getByTestId("active-personal-section")
       .waitFor({ timeout: 8_000 })
       .then(() => true)
       .catch(() => false);
-
     if (!sawActive) {
       await alice.reload();
       await alice.getByTestId("active-personal-section").waitFor({ timeout: 15_000 });
-      // Intentionally NOT re-injecting the subtitle after reload. The
-      // TTS narration for this sentence plays once at t2; if we showed
-      // the caption a second time post-reload, viewers perceive the
-      // narration as if it had also played twice. Better to lose the
-      // caption for the back half of the scene than to break audio↔
-      // caption parity.
     }
+    markWait("alice", "wait_alice_3c_settle", w_pre, elapsed("alice"));
 
-    await alice.waitForTimeout(4000);  // ≥5s scene total
+    // Scene only starts once active-personal-section is stable on screen.
+    // 5.5 s = narration sentence (4.88 s) + 0.5 s tail.
+    const t2 = elapsed("alice");
+    const activateCaption =
+      "The system noticed her edit, and alice activates it as her personal pattern.";
+    await showSubtitle(alice, activateCaption);
+    await alice.waitForTimeout(5500);
     markScene("alice", "scene3c_activate", t2, elapsed("alice"));
 
     // Specific enough that the LLM goes straight to draft (avoids the
