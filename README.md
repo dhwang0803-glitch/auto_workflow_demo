@@ -17,15 +17,22 @@ active) via **llama.cpp** on a single L4 GPU.
 
 ## Demo
 
-- **Video** (~70 s, 1920×1080 / 30 fps): [`submission/media/demo_30s.mp4`](submission/media/demo_30s.mp4).
-  YouTube link in the Kaggle Writeup.
+- **Video with narration** (~74 s, 1920×1080 / 30 fps):
+  [`submission/media/demo_with_audio.mp4`](submission/media/demo_with_audio.mp4)
+  — the primary demo. Burned-in subtitles + ElevenLabs TTS narration
+  synchronized to each scene start. YouTube link in the Kaggle Writeup.
+- **Silent video** (~70 s):
+  [`submission/media/demo_30s.mp4`](submission/media/demo_30s.mp4) —
+  the raw Playwright composite before audio overlay (subtitles only),
+  kept for reference.
 - **Cover images**: [`submission/media/cover_thesis.png`](submission/media/cover_thesis.png) (3-axis thesis) and
   [`submission/media/cover_share_beat.png`](submission/media/cover_share_beat.png) (share narrative beat).
 - **Writeup**: [`submission/WRITEUP.md`](submission/WRITEUP.md) (~1450 words).
 - **Recording spec**: [`scripts/RECORD_DEMO.md`](scripts/RECORD_DEMO.md) — describes
-  how the video was produced (Playwright + ffmpeg). Re-running the
-  recorder requires a live AI_Agent backend (own Modal deploy or local
-  llama.cpp on a 24 GB GPU); the video itself is the primary deliverable.
+  how the video was produced (Playwright + ffmpeg + ElevenLabs TTS).
+  Re-running the recorder requires a live AI_Agent backend (own Modal
+  deploy or local llama.cpp on a 24 GB GPU); the video itself is the
+  primary deliverable.
 
 ## The three-axis story (what the demo shows)
 
