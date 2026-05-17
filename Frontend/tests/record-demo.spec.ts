@@ -81,27 +81,39 @@ async function newRecordContext(
 
 async function showSubtitle(page: Page, html: string) {
   await page.evaluate((caption) => {
-    let el = document.getElementById("__demo_subtitle__");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "__demo_subtitle__";
-      Object.assign(el.style, {
+    let wrapper = document.getElementById("__demo_subtitle__");
+    let inner: HTMLElement;
+    if (!wrapper) {
+      wrapper = document.createElement("div");
+      wrapper.id = "__demo_subtitle__";
+      Object.assign(wrapper.style, {
         position: "fixed",
         left: "0",
         right: "0",
-        bottom: "40px",
+        bottom: "80px",
         textAlign: "center",
         zIndex: "999999",
         pointerEvents: "none",
-        font: "600 32px/1.3 system-ui, sans-serif",
+      });
+      inner = document.createElement("span");
+      inner.id = "__demo_subtitle_inner__";
+      Object.assign(inner.style, {
+        display: "inline-block",
+        font: "600 44px/1.3 system-ui, sans-serif",
         color: "#fff",
+        background: "rgba(0,0,0,0.72)",
+        padding: "16px 32px",
+        borderRadius: "16px",
         textShadow:
           "0 2px 8px rgba(0,0,0,0.85), 0 0 4px rgba(0,0,0,0.85)",
-        padding: "12px 24px",
+        maxWidth: "85vw",
       });
-      document.body.appendChild(el);
+      wrapper.appendChild(inner);
+      document.body.appendChild(wrapper);
+    } else {
+      inner = document.getElementById("__demo_subtitle_inner__")!;
     }
-    el.innerHTML = caption;
+    inner.innerHTML = caption;
   }, html);
 }
 
@@ -136,7 +148,7 @@ async function fullScreenBlack(page: Page, html: string) {
 }
 
 test("record 30-second demo", async ({}, testInfo) => {
-  testInfo.setTimeout(5 * 60_000);
+  testInfo.setTimeout(15 * 60_000);  // 4 LLM compose calls × up to 3min cold + scene dwells
   fs.mkdirSync(path.dirname(MARKERS_PATH), { recursive: true });
 
   const browser = await chromium.launch({ headless: false });
@@ -171,31 +183,46 @@ test("record 30-second demo", async ({}, testInfo) => {
   // viewer sees the destination before bob's flow shows what it buys
   // them. Active count chip is the focal point.
   {
-    const t0 = elapsed("alice");
+    // Pre-scene navigate is folded into a wait marker so the page-load
+    // flicker (white screen → loading → content) is cut from final.mp4.
+    const w0a = elapsed("alice");
     await alice.goto(`${WEB}/skills`);
     await alice.getByTestId("team-marketplace").waitFor({ timeout: 15_000 });
     await alice.waitForSelector("text=Notify finance on invoices", { timeout: 15_000 });
+    markWait("alice", "wait_alice_nav_skills_1", w0a, elapsed("alice"));
+
+    const t0 = elapsed("alice");
     await showSubtitle(
       alice,
-      "alice&rsquo;s team marketplace &mdash; one active policy &rarr;",
+      "This is alice&rsquo;s team marketplace, with one active policy that everyone benefits from.",
     );
-    await alice.waitForTimeout(3200);
-    await clearSubtitle(alice);
+    await alice.waitForTimeout(5000);  // stable dwell after navigate is cut
     markScene("alice", "scene2a_skills", t0, elapsed("alice"));
+    // subtitle persists — next scene runs on bob (different page DOM)
   }
   // 2b: bob's first message — phrased so it overlaps with alice's
   // workspace skill `condition`, which lets the LLM recognise the
   // policy and surface it as a clarify option.
   {
     await ensureBob();
-    const t0 = elapsed("bob");
+    // Navigate + composer-ready wait folded into markWait → cut from final.
+    const w0b = elapsed("bob");
     await bob.goto(`${WEB}/workflows/new`);
     await bob.getByTestId("toggle-ai-composer").click();
+    await bob.getByTestId("chat-input").waitFor({ timeout: 15_000 });
+    markWait("bob", "wait_bob_nav_compose_1", w0b, elapsed("bob"));
+
+    const t0 = elapsed("bob");
+    // Subtitle goes up BEFORE the input action so viewers can read it
+    // while bob is typing + sending. Stays up until next scene overwrites.
+    await showSubtitle(bob, "Bob asks for an invoice flow in his own words.");
     await bob
       .getByTestId("chat-input")
       .fill("When a new invoice arrives in our shared inbox, notify the team.");
     await bob.getByRole("button", { name: "Send" }).click();
+    await bob.waitForTimeout(4500);  // ≥5s scene total
     markScene("bob", "scene2b_chat_send", t0, elapsed("bob"));
+    // subtitle persists into the LLM wait + next scene's showSubtitle takes over
 
     // The LLM may answer either intent (Gemma is non-deterministic
     // here). Wait for whichever bubble shows up and branch:
@@ -204,8 +231,8 @@ test("record 30-second demo", async ({}, testInfo) => {
     //   - draft   → skip the second round, just apply
     const w0 = elapsed("bob");
     await Promise.race([
-      bob.getByTestId("clarify-questions").waitFor({ timeout: 90_000 }),
-      bob.getByTestId("proposed-summary").waitFor({ timeout: 90_000 }),
+      bob.getByTestId("clarify-questions").waitFor({ timeout: 180_000 }),
+      bob.getByTestId("proposed-summary").waitFor({ timeout: 180_000 }),
     ]);
     markWait("bob", "wait_compose_2_first", w0, elapsed("bob"));
 
@@ -218,12 +245,13 @@ test("record 30-second demo", async ({}, testInfo) => {
     await showSubtitle(
       bob,
       isClarify
-        ? "your team&rsquo;s policies <em>become</em> options"
-        : "&rarr; draft from one line",
+        ? "Alice&rsquo;s team policy shows up as a clarify option, so bob can just pick it."
+        : "A complete draft from a single line.",
     );
-    await bob.waitForTimeout(2200);
-    await clearSubtitle(bob);
+    // 7s — viewer reads the subtitle AND the actual option text on screen.
+    await bob.waitForTimeout(7000);
     markScene("bob", "scene2c_clarify_shown", t1, elapsed("bob"));
+    // subtitle persists into scene2d/2e
 
     if (isClarify) {
       const t2 = elapsed("bob");
@@ -236,16 +264,17 @@ test("record 30-second demo", async ({}, testInfo) => {
       markScene("bob", "scene2d_pick", t2, elapsed("bob"));
 
       const w1 = elapsed("bob");
-      await bob.getByTestId("proposed-summary").waitFor({ timeout: 90_000 });
+      await bob.getByTestId("proposed-summary").waitFor({ timeout: 180_000 });
       markWait("bob", "wait_compose_2_draft", w1, elapsed("bob"));
     }
 
     const t3 = elapsed("bob");
+    // Subtitle BEFORE apply click so it's already up when the DAG flies in.
+    await showSubtitle(bob, "Bob applies the draft, and the workflow is composed automatically.");
     await bob.getByTestId("apply-draft").click();
-    await showSubtitle(bob, "&rarr; first draft, powered by alice");
-    await bob.waitForTimeout(2000);
-    await clearSubtitle(bob);
+    await bob.waitForTimeout(5000);  // ≥5s, viewer reads + sees DAG
     markScene("bob", "scene2e_dag", t3, elapsed("bob"));
+    // subtitle persists — alice's next scene runs in a different context
   }
 
   // ─── Scene 3 — Personalization (12-20s, alice only) ──────────
@@ -255,17 +284,24 @@ test("record 30-second demo", async ({}, testInfo) => {
   // round-trip. The activated candidate then drives Scenes 3d/3e and
   // Scene 4 (share).
   {
-    const t0 = elapsed("alice");
+    // Double-navigate (home → workflow page) + canvas render wait folded
+    // into markWait → the flicker the user spotted at 26-27s is cut.
+    const w0a = elapsed("alice");
     await alice.goto(`${WEB}/`);
     await alice.getByText("Invoice Pipeline").first().click();
+    await alice.locator(".react-flow__node").first().waitFor({ timeout: 15_000 });
+    markWait("alice", "wait_alice_nav_workflow", w0a, elapsed("alice"));
+
+    const t0 = elapsed("alice");
+    // Subtitle goes up on a stable workflow page; viewer sees the caption
+    // while the node is being highlighted + the properties panel appears.
+    await showSubtitle(alice, "Now alice opens her own workflow and tweaks a node.");
     await alice
       .locator(".react-flow__node")
       .filter({ hasText: /http_request|fetch_invoices/ })
       .first()
       .click();
-    await showSubtitle(alice, "your edits &rarr;");
-    await alice.waitForTimeout(2200);
-    await clearSubtitle(alice);
+    await alice.waitForTimeout(5000);  // ≥5s stable dwell
     markScene("alice", "scene3a_edit", t0, elapsed("alice"));
 
     // No save step — we're not waiting on a real diff-extract. Keep the
@@ -283,42 +319,69 @@ test("record 30-second demo", async ({}, testInfo) => {
     markWait("alice", "wait_skills_load", w0, elapsed("alice"));
 
     const t2 = elapsed("alice");
-    await showSubtitle(alice, "your patterns &rarr;");
+    const activateCaption =
+      "The system noticed her edit, and alice activates it as her personal pattern.";
+    await showSubtitle(alice, activateCaption);
     const firstRow = alice.locator('[data-testid^="suggested-row-"]').first();
     const candidateId = (await firstRow.getAttribute("data-testid"))!.replace(
       "suggested-row-",
       "",
     );
     await alice.getByTestId(`suggested-activate-${candidateId}`).click();
-    // Force a fresh fetch — React Query's prefix invalidate is in place
-    // but the active query occasionally races the wait below in real
-    // (non-mocked) backends. A reload makes the demo deterministic.
-    await alice.waitForTimeout(800);
-    await alice.reload();
-    await alice.getByTestId("active-personal-section").waitFor({ timeout: 15_000 });
-    await alice.waitForTimeout(1500);
-    await clearSubtitle(alice);
+
+    // Trust React Query's invalidate first — the user sees a smooth
+    // in-place transition (suggested row vanishes, active-personal-section
+    // appears) without the jarring full-page reload. If the refetch
+    // races (PR-J SuggestedFromEdits invalidate sometimes misses in
+    // real backends), fall back to an explicit reload.
+    const sawActive = await alice
+      .getByTestId("active-personal-section")
+      .waitFor({ timeout: 8_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!sawActive) {
+      await alice.reload();
+      await alice.getByTestId("active-personal-section").waitFor({ timeout: 15_000 });
+      // page.reload() wipes the subtitle DOM — re-inject so the caption
+      // persists for the rest of the scene.
+      await showSubtitle(alice, activateCaption);
+    }
+
+    await alice.waitForTimeout(4000);  // ≥5s scene total
     markScene("alice", "scene3c_activate", t2, elapsed("alice"));
 
     // Specific enough that the LLM goes straight to draft (avoids the
     // 2-round clarify path Scene 2 uses).
-    const t3 = elapsed("alice");
+    // Navigate + composer-ready wait folded into markWait → cut from final.
+    const w3 = elapsed("alice");
     await alice.goto(`${WEB}/workflows/new`);
     await alice.getByTestId("toggle-ai-composer").click();
+    await alice.getByTestId("chat-input").waitFor({ timeout: 15_000 });
+    markWait("alice", "wait_alice_nav_compose", w3, elapsed("alice"));
+
+    const t3 = elapsed("alice");
+    // Subtitle BEFORE the fill so it stays up while alice types + sends.
+    await showSubtitle(alice, "Then alice asks for her own polling workflow.");
     await alice
       .getByTestId("chat-input")
       .fill("Build a workflow that polls https://example.com/data every 5 minutes and posts the result to slack #ops.");
     await alice.getByRole("button", { name: "Send" }).click();
+    await alice.waitForTimeout(4500);  // ≥5s scene total
     markScene("alice", "scene3d_chat_send", t3, elapsed("alice"));
 
     const w1 = elapsed("alice");
-    await alice.getByTestId("proposed-summary").waitFor({ timeout: 90_000 });
+    await alice.getByTestId("proposed-summary").waitFor({ timeout: 180_000 });
     markWait("alice", "wait_compose_3", w1, elapsed("alice"));
 
     const t4 = elapsed("alice");
-    await showSubtitle(alice, "&rarr; next draft");
-    await alice.waitForTimeout(2000);
-    await clearSubtitle(alice);
+    await showSubtitle(alice, "And gets a draft tailored to her active pattern.");
+    // Apply the draft so the DAG actually lays out on the canvas — that
+    // visual change is what makes "alice built a workflow" land for the
+    // viewer (without apply, the scene is just the AI panel + an idle
+    // empty canvas).
+    await alice.getByTestId("apply-draft").click();
+    await alice.waitForTimeout(5000);  // ≥5s, viewer reads + sees DAG
     markScene("alice", "scene3e_dag", t4, elapsed("alice"));
   }
 
@@ -333,7 +396,8 @@ test("record 30-second demo", async ({}, testInfo) => {
   // We wait on the banner before clearing the subtitle so the camera
   // captures the whole cause→effect.
   {
-    const t0 = elapsed("alice");
+    // Navigate + active-section wait folded into markWait → cut from final.
+    const w0share = elapsed("alice");
     await alice.goto(`${WEB}/skills`);
     await alice.getByTestId("active-personal-section").waitFor({ timeout: 15_000 });
     const activeRow = alice.locator('[data-testid^="active-personal-row-"]').first();
@@ -341,8 +405,17 @@ test("record 30-second demo", async ({}, testInfo) => {
       "active-personal-row-",
       "",
     );
-    await showSubtitle(alice, "share what you discovered &rarr;");
-    await alice.waitForTimeout(800);
+    markWait("alice", "wait_alice_nav_skills_share", w0share, elapsed("alice"));
+
+    const t0 = elapsed("alice");
+    // Single unified subtitle for the entire share climax — the visual
+    // story (card fly-up + count pulse + banner + new marketplace row)
+    // unfolds across the whole 10s while the same caption stays on screen.
+    await showSubtitle(
+      alice,
+      "Watch alice promote her pattern.<br/>It lands in the team marketplace, ready for the whole team.",
+    );
+    await alice.waitForTimeout(2000);  // viewer reads the caption first
     await alice.getByTestId(`active-personal-share-${activeId}`).click();
     // Banner only renders after the flying animation finishes AND the
     // share API succeeds (whichever is later). The Modal-backed share
@@ -354,44 +427,56 @@ test("record 30-second demo", async ({}, testInfo) => {
         // Banner is best-effort cosmetic; the marketplace count + new row
         // already tell the story even if the banner missed its window.
       });
-    await showSubtitle(alice, "&rarr; promoted to the team marketplace");
-    await alice.waitForTimeout(2500);
-    await clearSubtitle(alice);
+    // 7s post-banner dwell — the share climax is the demo narrative
+    // centerpiece; viewer needs time to register the card moved AND see
+    // the marketplace count + new row settled.
+    await alice.waitForTimeout(7000);
     markScene("alice", "scene4a_share", t0, elapsed("alice"));
 
     await ensureBob();
-    const t1 = elapsed("bob");
+    // Navigate + composer-ready wait folded into markWait → cut from final.
+    const w1 = elapsed("bob");
     await bob.goto(`${WEB}/workflows/new`);
     await bob.getByTestId("toggle-ai-composer").click();
+    await bob.getByTestId("chat-input").waitFor({ timeout: 15_000 });
+    markWait("bob", "wait_bob_nav_compose_2", w1, elapsed("bob"));
+
+    const t1 = elapsed("bob");
     // Specific phrasing → straight to draft. retry_interval=300 is the
     // pattern alice shared via Track C — if it shows up in the DAG
     // config, the cross-user lift is live.
+    // Subtitle BEFORE the fill so it stays up while bob types + sends.
+    await showSubtitle(bob, "Bob asks for something new, with alice&rsquo;s pattern already in the mix.");
     await bob
       .getByTestId("chat-input")
       .fill("Build a webhook listener that on receive calls https://api.example.com/data with HTTP retry and notifies slack #alerts.");
     await bob.getByRole("button", { name: "Send" }).click();
+    await bob.waitForTimeout(4500);  // ≥5s scene total
     markScene("bob", "scene4b_chat_send", t1, elapsed("bob"));
 
     const w0 = elapsed("bob");
-    await bob.getByTestId("proposed-summary").waitFor({ timeout: 90_000 });
+    await bob.getByTestId("proposed-summary").waitFor({ timeout: 180_000 });
     markWait("bob", "wait_compose_4", w0, elapsed("bob"));
 
     const t2 = elapsed("bob");
-    await showSubtitle(bob, "&rarr; lift the team");
-    await bob.waitForTimeout(2000);
-    await clearSubtitle(bob);
+    await showSubtitle(bob, "The whole team gets lifted, every time someone shares.");
+    // Apply the draft so the DAG actually lays out on the canvas (same
+    // reasoning as scene3e — without apply, the cross-user lift story
+    // never reaches a visible payoff on bob's canvas).
+    await bob.getByTestId("apply-draft").click();
+    await bob.waitForTimeout(5000);  // ≥5s
     markScene("bob", "scene4c_dag", t2, elapsed("bob"));
   }
 
-  // ─── Scene 5 — Close (27-30s) ────────────────────────────────
+  // ─── Scene 5 — Close ────────────────────────────────────────
   {
     const t0 = elapsed("alice");
     await fullScreenBlack(
       alice,
-      "<div>Skills marketplace &middot; Personalization &middot; Team lift</div>" +
-        "<div style='font-size:28px; opacity:0.7; margin-top:24px'>auto_workflow_demo &middot; Gemma 4 hackathon</div>",
+      "<div>Skills marketplace, personalization, team lift.</div>" +
+        "<div style='font-size:32px; opacity:0.75; margin-top:28px'>Built on Gemma 4 for the hackathon.</div>",
     );
-    await alice.waitForTimeout(3000);
+    await alice.waitForTimeout(5000);
     markScene("alice", "scene5_close", t0, elapsed("alice"));
   }
 
