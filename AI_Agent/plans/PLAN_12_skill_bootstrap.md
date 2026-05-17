@@ -1,94 +1,96 @@
-# PLAN_12 — Skill Bootstrap + 런타임 하네스 통합 파이프라인
+# PLAN_12 — Skill Bootstrap + runtime harness unified pipeline
 
-> **Status**: Draft (2026-04-25) · **Owner**: dhwang0803 · **ADR**: [ADR-022](../../docs/context/decisions.md#adr-022) · **선행 PLAN**: PLAN_11 (종결) · **마감**: 2026-05-18 (해커톤)
+> **Status**: Draft (2026-04-25) · **Owner**: dhwang0803 · **ADR**: [ADR-022](../../docs/context/decisions.md#adr-022) · **Predecessor PLAN**: PLAN_11 (closed) · **Deadline**: 2026-05-18 (hackathon)
 
 ---
 
-## 1. 목표
+## 1. Goal
 
-PLAN_11 종결 후 차별화 재검토 결과 (ADR-022) 채택된 방향을 W2-W3 안에 구현. 단일 목표:
+After PLAN_11 closed, we revisited differentiation and adopted the
+ADR-022 direction. Implement it within W2–W3. Single objective:
 
-> **사용자가 자기 팀의 정책을 한 번 선언하면, 이후 모든 워크플로우 생성/수정에 그 정책이 자동 적용/검증되는 파이프라인을 만든다.**
+> **Once the user declares their team's policy, every subsequent
+> workflow create/edit automatically applies and validates that policy.**
 
-정책 선언 채널은 두 가지 (같은 backend 통합):
-1. **문서 업로드** (Persona B — 5인 팀, 핸드북 PDF 보유)
-2. **대화형 인터뷰** (Persona A — 1인 사업자, 문서 없음)
+Policy declaration has two channels (same backend):
+1. **Document upload** (Persona B — 5-person team with a handbook PDF)
+2. **Conversational interview** (Persona A — solo operator, no documents)
 
-## 2. 페인포인트 매핑
+## 2. Pain-point mapping
 
-현업 워크플로우 자동화 미사용 이유 3대 (ADR-022 Context):
+Top 3 reasons real workers don't use workflow automation (ADR-022 Context):
 
-| # | 페인 | 본 PLAN 의 풀이 |
+| # | Pain | How this PLAN solves it |
 |---|---|---|
-| 1 | 실제 워크플로우와 다름 | 문서 업로드 시 SOP 가 starter template 으로 흡수 → 부분 완화 |
-| 2 | 매번 팀 정책에 맞춰 수정 | **직격** — 정책을 Skill 로 코드화 후 모든 compose 호출에 자동 주입 |
-| 3 | AI 결과 신뢰 불가 | **직격** — 정책 인용 (출처 추적) + 사람 검토 단계 + adversarial harness (W4) |
+| 1 | Doesn't match real workflows | When docs are uploaded, SOPs are absorbed as starter templates → partial mitigation |
+| 2 | Need to retune to team policy every time | **Direct hit** — codify policies as Skills and auto-inject into every compose call |
+| 3 | Can't trust AI results | **Direct hit** — policy citation (source tracking) + human review step + adversarial harness (W4) |
 
-## 3. 범위
+## 3. Scope
 
-### In Scope (W2-W3, ~10일)
+### In Scope (W2-W3, ~10 days)
 
-- 통합 파이프라인 backend (정책 추출 / 갭 분석 / 답변→skill 배치 / 도메인 분류)
-- 시드 정책 라이브러리 (5 도메인, parameter 단위 micro-questions + default_baseline + 산업표준 sources 인용 — 합성된 부분은 `source_kind: synthesized` 로 정직 표기)
-- DB 스키마 5개 (`skills`, `skill_sources`, `skill_applications`, `policy_documents`, `policy_extractions`)
-- 문서 업로드 + 파싱 (PDF / MD / plain text)
-- 임베딩 인덱싱 (BGE-M3, 청크 단위)
-- Skill retrieval (compose 시 top-K query→skill)
-- 검토/편집 UI (skill 카드, source attribution 배지)
-- 인터뷰 UI (ChatPanel 재사용, parameter 카드 + "Use baseline" 버튼)
-- 활성 skill 라이브러리 뷰 (`/skills`, markdown render + sources references)
-- Compose 시 skill 컨텍스트 주입 + 인용 표시
+- Unified pipeline backend (policy extraction / gap analysis / answer→skill batch / domain classification)
+- Seed policy library (5 domains, parameter-level micro-questions + default_baseline + industry-standard sources citations — synthesized portions are honestly tagged as `source_kind: synthesized`)
+- 5 DB tables (`skills`, `skill_sources`, `skill_applications`, `policy_documents`, `policy_extractions`)
+- Document upload + parsing (PDF / MD / plain text)
+- Embedding indexing (BGE-M3, per chunk)
+- Skill retrieval (top-K query→skill at compose time)
+- Review/edit UI (skill cards, source-attribution badges)
+- Interview UI (reuse ChatPanel, parameter cards + "Use baseline" button)
+- Active-skill library view (`/skills`, markdown render + sources references)
+- Skill-context injection at compose time + citation display
 
-### Out of Scope (보류 / future)
+### Out of Scope (deferred / future)
 
-- **Adversarial harness 자동화** — W4 별도 작업 (시드 룰만 본 PLAN 후반에 준비)
-- **Notion / Google Drive 통합** — Drive OAuth 인프라는 있으나 본 PLAN 에서는 plain 업로드만
-- **다중 워크스페이스 멤버십** — 워크스페이스 = 팀 단순 모델
-- **MCP server 노출** (외부 팀 skill 공유) — future
-- **자동 skill aging / 폐기** — 명시 삭제만 지원
-- **자동 충돌 감지** — MVP 는 사용자 검토 단계에서 사람이 발견
+- **Adversarial harness automation** — W4 separate work (this PLAN only preps seed rules toward the end)
+- **Notion / Google Drive integration** — Drive OAuth infra exists, but this PLAN only takes plain uploads
+- **Multi-workspace membership** — workspace = team, simple model
+- **MCP server exposure** (sharing skills with external teams) — future
+- **Automatic skill aging / retirement** — only explicit deletion is supported
+- **Automatic conflict detection** — MVP relies on humans catching it in the review step
 
-## 4. 통합 파이프라인 단계별 명세
+## 4. Unified-pipeline stage spec
 
 ```
-[사용자 입력 0개+ 문서 + 자유 답변] 
+[user input 0+ docs + free-form answers]
   ↓
-(1) 문서 파싱 (PDF/MD/text → 청크)
+(1) Document parsing (PDF/MD/text → chunks)
   ↓
-(2) 청크 임베딩 (BGE-M3 → policy_extractions.embedding)
+(2) Chunk embedding (BGE-M3 → policy_extractions.embedding)
   ↓
-(3) 정책 추출 LLM (청크 → 후보 skill JSON list)
+(3) Policy-extraction LLM (chunk → candidate skill JSON list)
   ↓
-(4) 갭 분석 LLM (도메인 표준 정책 vs 추출된 정책 → 부족분)
+(4) Gap-analysis LLM (domain-standard policies vs extracted → missing)
   ↓
-(5) 타겟팅 질문 생성 (갭 → 자연어 질문 5-10개, 도메인 분류 결과 활용)
+(5) Targeted-question generation (gaps → 5–10 natural-language questions, leveraging the domain classification)
   ↓
-(6) 대화형 인터뷰 (사용자 답변 수집)
+(6) Conversational interview (collect user answers)
   ↓
-(7) 답변→Skill 변환 LLM (질문+답변 컨텍스트 → 구조화 skill JSON)
+(7) Answers→Skill conversion LLM (questions + answers context → structured skill JSON)
   ↓
-(8) 사람 검토 UI (모든 skill 카드 표시, 편집/거절/승인)
+(8) Human review UI (display every skill card, edit/reject/approve)
   ↓
-(9) 활성 skill 저장 (workspace scope)
+(9) Persist active skills (workspace scope)
 ```
 
-각 단계 분기:
-- **docs 풍부한 팀**: (1)-(4) 가 핵심, (5)-(7) 은 갭 적어 1-2 정책분 질문
-- **docs 없는 1인**: (1)-(4) skip, (5) 는 도메인 표준 정책 풀세트 → 5-10 정책 × parameter 단위 micro-questions
-- 같은 storage (`skills`, `skill_sources`), 같은 검토 UI, 같은 적용 메커니즘
+Per-stage branching:
+- **Teams with rich docs**: (1)-(4) is the core, (5)-(7) covers the few remaining gaps with 1–2 policy questions
+- **Solo operator without docs**: skip (1)-(4); (5) becomes a full set of domain-standard policies → 5–10 policies × parameter-level micro-questions
+- Same storage (`skills`, `skill_sources`), same review UI, same application mechanism
 
-**(2026-04-28) (5)-(7) 폴리시 변경**: 정책당 1 큰 Q → parameter 단위 micro-questions (시드 YAML `parameters[].prompt`) + default_baseline + baseline_source. (5) 의 질문 텍스트는 LLM 이 만들지 않고 시드 그대로 첨부 — LLM 호출은 (4) coverage 판정 (docs path) 과 (7) answers→skill 배치 컴파일 두 곳뿐.
+**(2026-04-28) Policy change for (5)-(7)**: from "one big Q per policy" to parameter-level micro-questions (seed YAML `parameters[].prompt`) + default_baseline + baseline_source. (5)'s question text is no longer generated by the LLM — we attach the seed verbatim. LLM calls remain only at (4) coverage judgement (docs path) and (7) answers→skill batch compilation.
 
-## 5. DB 스키마 (Database 브랜드)
+## 5. DB schema (Database branch)
 
 ```sql
 CREATE TABLE skills (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL REFERENCES workspaces(id),
     name VARCHAR(255) NOT NULL,
-    description TEXT,                          -- 자연어 설명 (사용자가 본문)
-    condition JSONB NOT NULL,                  -- 적용 조건 (node type, field 패턴, value 매칭)
-    action JSONB NOT NULL,                     -- 적용 액션 (default 주입, 검증 룰, 가드 추가)
+    description TEXT,                          -- natural-language description (user-facing body)
+    condition JSONB NOT NULL,                  -- application condition (node type, field pattern, value match)
+    action JSONB NOT NULL,                     -- applied action (default injection, validation rule, add guard)
     scope VARCHAR(50) NOT NULL,                -- 'workspace' (MVP) | 'user' | 'team' (future)
     status VARCHAR(20) NOT NULL DEFAULT 'active',  -- 'active' | 'pending_review' | 'rejected' | 'archived'
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -100,25 +102,25 @@ CREATE TABLE skill_sources (
     id UUID PRIMARY KEY,
     skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
     source_type VARCHAR(20) NOT NULL,          -- 'document' | 'conversation' | 'observation'
-    source_ref JSONB NOT NULL,                 -- 문서면 {document_id, chunk_index}, 대화면 {session_id, turn_index}
+    source_ref JSONB NOT NULL,                 -- for doc {document_id, chunk_index}, for conversation {session_id, turn_index}
     extracted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE skill_applications (
     id UUID PRIMARY KEY,
     skill_id UUID NOT NULL REFERENCES skills(id),
-    workflow_id UUID,                          -- 적용된 워크플로우 (nullable: compose 단계만 거치고 저장 안 한 경우)
+    workflow_id UUID,                          -- applied workflow (nullable: compose-only, not persisted)
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    citation TEXT NOT NULL                     -- 사용자 친화적 인용 (UI 에 노출)
+    citation TEXT NOT NULL                     -- user-friendly citation (surfaced in UI)
 );
 
 CREATE TABLE policy_documents (
     id UUID PRIMARY KEY,
     workspace_id UUID NOT NULL REFERENCES workspaces(id),
     filename VARCHAR(512) NOT NULL,
-    content_hash VARCHAR(64) NOT NULL,         -- SHA256 (재업로드 시 중복 검출)
+    content_hash VARCHAR(64) NOT NULL,         -- SHA256 (dedupe on re-upload)
     mime_type VARCHAR(100) NOT NULL,
-    raw_content BYTEA,                          -- 또는 GCS URI (대용량 시)
+    raw_content BYTEA,                          -- or GCS URI (for large blobs)
     uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (workspace_id, content_hash)
 );
@@ -128,211 +130,211 @@ CREATE TABLE policy_extractions (
     document_id UUID NOT NULL REFERENCES policy_documents(id) ON DELETE CASCADE,
     chunk_index INT NOT NULL,
     chunk_text TEXT NOT NULL,
-    embedding VECTOR(1024),                    -- BGE-M3 dim. pgvector 확장 필요
-    extracted_skill_id UUID REFERENCES skills(id),  -- 이 청크에서 추출된 skill (nullable)
+    embedding VECTOR(1024),                    -- BGE-M3 dim. requires pgvector extension
+    extracted_skill_id UUID REFERENCES skills(id),  -- skill extracted from this chunk (nullable)
     UNIQUE (document_id, chunk_index)
 );
 CREATE INDEX idx_policy_extractions_embedding ON policy_extractions USING ivfflat (embedding vector_cosine_ops);
 ```
 
-**고려 사항**:
-- `pgvector` 확장 필요 (Cloud SQL Postgres 16+ 지원 — ADR-018 인프라 호환)
-- `raw_content` BYTEA vs GCS URI: PDF 평균 ~500KB. 작은 워크스페이스 가정 시 BYTEA, 스케일 우려되면 GCS (PLAN_12 에선 BYTEA 로 시작)
-- embedding 인덱스는 ivfflat 우선 (HNSW 는 pgvector 0.5+, 우리 버전 확인 필요)
+**Considerations**:
+- Requires `pgvector` extension (supported by Cloud SQL Postgres 16+ — ADR-018 infra-compatible)
+- `raw_content` BYTEA vs GCS URI: avg PDF ~500KB. With small workspaces, BYTEA; if scale becomes a worry, GCS (PLAN_12 starts with BYTEA)
+- Embedding index prefers ivfflat (HNSW needs pgvector 0.5+, verify our version)
 
-## 6. LLM 호출 종류 + Multi-turn 인터랙션 모델
+## 6. LLM call types + multi-turn interaction model
 
-### 호출 종류 (4종)
+### Call types (4)
 
-| 호출 | 입력 | 출력 | 빈도 |
+| Call | Input | Output | Frequency |
 |---|---|---|---|
-| **policy_extract** | 청크 텍스트 | skill 후보 JSON list (조건+액션 페어 단위) | 청크당 1회 |
-| **domain_classify** | 자유 텍스트 ("어떤 일을 하시나요?") | 카테고리 (e-commerce / 서비스업 / 컨설팅 / 컨텐츠 / NPO / 기타) | 인터뷰 시작 1회 |
-| **gap_analyze** | (도메인, 추출된 skill 리스트) | 부족 seed `policy_id` 리스트 — 질문/베이스라인은 시드 YAML 그대로 첨부 (LLM 생성 X) | 인터뷰 직전 1회. `extracted_skills` 비면 deterministic 분기 (LLM 미호출) |
-| **answers_to_skill** | (정책 id, [(parameter_name, answer)] N개) | 한 정책당 1 SkillDraft (사용자 값 substituted) | 정책당 1회 (인터뷰 종료 시 batch) |
+| **policy_extract** | chunk text | candidate skill JSON list (one condition+action pair per element) | 1 per chunk |
+| **domain_classify** | free text ("What do you do?") | category (e-commerce / services / consulting / content / NPO / other) | 1 at interview start |
+| **gap_analyze** | (domain, extracted skill list) | missing seed `policy_id` list — question text + baseline are attached from the seed YAML as-is (no LLM generation) | 1 right before the interview. If `extracted_skills` is empty, deterministic branch (no LLM call) |
+| **answers_to_skill** | (policy id, [(parameter_name, answer)] × N) | 1 SkillDraft per policy (user values substituted) | 1 per policy (batch at interview end) |
 
-추가로 기존 `compose` 호출은 multi-turn + skill retrieval 컨텍스트 추가됨.
+In addition, the existing `compose` call now carries multi-turn + skill-retrieval context.
 
-> **2026-04-28 폴리시 재설계** — `gap_analyze` 가 질문 텍스트를 생성하던 모델 (정책당 1 큰 Q) 폐기. 시드 YAML 의 `parameters[].prompt` (W2-4a) 를 그대로 사용 → LLM 은 coverage 판정만 담당. `answer_to_skill` (1 Q-A → 1 skill) 은 `answers_to_skill` (정책당 N Q-A → 1 skill batch) 로 교체. 이유: parameter 단위 micro-questions + baseline + 산업표준 sources 풀세트 (메모리 `project_wizard_polish_abc.md`).
+> **2026-04-28 policy redesign** — Retired the `gap_analyze` variant that generated question text (one big Q per policy). Now we use the seed YAML's `parameters[].prompt` (W2-4a) verbatim → the LLM only does coverage judgment. `answer_to_skill` (1 Q-A → 1 skill) is replaced by `answers_to_skill` (N Q-A per policy → 1 skill batch). Reason: full set of parameter-level micro-questions + baseline + industry-standard sources (memory `project_wizard_polish_abc.md`).
 
-### Multi-turn 인터랙션 모델 (single-shot 폐기)
+### Multi-turn interaction model (single-shot retired)
 
-| 차원 | 값 | 비고 |
+| Dimension | Value | Note |
 |---|---|---|
-| 턴당 max_tokens | **1024** | 4096 → 1/4 축소 |
-| 턴당 timeout | **90s** | PR #125 의 240s 는 single-shot 가정. 본 PLAN 머지 시 60-90s 로 재패치 (별도 PR) |
-| streaming | **필수** | SSE first-token <5s 목표 |
-| 상태 저장 | 세션 + skill DB | API_Server DB 가 진실 공급원 |
-| skill 주입 | **retrieval-only** (top-K=5) | broadcast 금지 |
+| Per-turn max_tokens | **1024** | 4096 → 1/4 reduction |
+| Per-turn timeout | **90s** | PR #125's 240s assumed single-shot. After this PLAN merges, repatch to 60–90s (separate PR) |
+| Streaming | **Required** | SSE first-token <5s target |
+| State persistence | session + skill DB | API_Server DB is the source of truth |
+| Skill injection | **retrieval-only** (top-K=5) | no broadcast |
 
-### 컨텍스트 budget (compose 호출 기준)
+### Context budget (per compose call)
 
-| 구성 | 토큰 | 비고 |
+| Component | Tokens | Note |
 |---|---|---|
-| 시스템 프롬프트 + node catalog | ~500 | KV cache 안정 |
-| 활성 skill top-K (5개) | ~1000 | BGE-M3 query similarity 기반 |
-| 대화 history (5-10턴) | ~1500 | 슬라이딩 윈도우 |
-| 사용자 메시지 | ~200 | |
-| **입력 합계** | **~3200** | |
-| 출력 max | 1024 | |
+| System prompt + node catalog | ~500 | KV cache stable |
+| Active skills top-K (5) | ~1000 | based on BGE-M3 query similarity |
+| Conversation history (5–10 turns) | ~1500 | sliding window |
+| User message | ~200 | |
+| **Input total** | **~3200** | |
+| Output max | 1024 | |
 
-**latency**:
-- 첫 턴 (cold prefill): ~50s (3200 / 150 tok/s prefill + 1024 / 35 tok/s gen)
-- 이후 턴 (KV warm, system+skills 안정): ~32s (변동분 ~500 tok prefill + 1024 gen)
+**Latency**:
+- First turn (cold prefill): ~50s (3200 / 150 tok/s prefill + 1024 / 35 tok/s gen)
+- Subsequent turns (KV warm, system+skills stable): ~32s (delta ~500 tok prefill + 1024 gen)
 
-**KV cache 전략**: llama.cpp slot 모드. 시스템 프롬프트 + 활성 skill 컨텍스트는 안정 prefix 로 둬서 첫 턴 후부터 prefill 단축.
+**KV cache strategy**: llama.cpp slot mode. Keep the system prompt + active-skill context as a stable prefix so prefill shortens after the first turn.
 
-## 7. 데모 시퀀스 (영상)
+## 7. Demo sequence (video)
 
-ADR-022 Decision §5 의 페르소나 우선순위 따름. **Persona B 첫 60초 메인, Persona A 보조 ~20초**.
+Follows ADR-022 Decision §5 persona priority. **Persona B is the main first 60s, Persona A is a supporting ~20s**.
 
-| 시간 | 화면 | 페르소나 | narrative |
+| Time | Screen | Persona | Narrative |
 |---|---|---|---|
-| 0:00-0:10 | "정책 문서 있으면 올려주세요 — 없어도 괜찮아요" | (intro) | |
-| 0:10-0:35 | Persona B: 핸드북 PDF 업로드 → 7개 정책 추출 → 1개 갭 질문 ("PII 정의는?") → 검토/활성 | B | "AI 가 우리 핸드북을 읽고 정책을 만들었어요" |
-| 0:35-0:55 | Persona B: "환불 처리 워크플로우 만들어줘" → draft 에 정책 #3 + #5 자동 적용 + 인용 | B | "처음부터 정책 내장" |
-| 0:55-1:15 | Persona A 보조컷: 문서 없이 5질문 인터뷰 (애니메이션 가속) → 5 skill 생성 | A | "문서 없어도 같이 만들 수 있어요" |
-| 1:15-1:45 | Persona B 복귀: `from` 필드 3회 수정 → 패턴 토스트 → 명시적 + 관찰 정책 융합 | B | "진화하는 정책 라이브러리" |
-| 1:45-2:00 | adversarial harness — 정책 위반 시나리오 자동 검출 + 가드 추가 | (closed loop) | "검증도 같은 정책 기반" |
+| 0:00-0:10 | "Upload a policy doc if you have one — totally fine if you don't" | (intro) | |
+| 0:10-0:35 | Persona B: upload handbook PDF → extract 7 policies → 1 gap question ("definition of PII?") → review/activate | B | "AI read our handbook and built policies" |
+| 0:35-0:55 | Persona B: "build me a refund workflow" → draft auto-applies policy #3 + #5 + citation | B | "policies baked in from day 1" |
+| 0:55-1:15 | Persona A side-cut: 5-question interview without docs (animation sped up) → 5 skills created | A | "we can build it together without docs too" |
+| 1:15-1:45 | Persona B returns: `from` field edited 3 times → pattern toast → explicit + observed policies fused | B | "an evolving policy library" |
+| 1:45-2:00 | adversarial harness — auto-detect policy violation scenario + add guard | (closed loop) | "validation lives on the same policies" |
 
-라이브 시연 vs 시드 재생 결정은 **W4 실측 후** (ADR-022 미해결, 본 PLAN 종결 후 결정).
+The choice of live demo vs seed replay is decided **after W4 measurements** (ADR-022 unresolved, settled after this PLAN closes).
 
-## 8. 미해결 결정 → 본 PLAN 에서 확정
+## 8. Unresolved decisions → finalized here
 
-ADR-022 Update §1-5 의 미해결 항목을 본 PLAN 에서 확정:
+ADR-022 Update §1-5 items finalized in this PLAN:
 
-### 8.1 추출 정책 단위
-**결정**: **한 조건+액션 페어 = 1 skill**.
-- 너무 잘게 (단어 단위) 쪼개면 skill 폭증 + 적용 정확도 ↓
-- 너무 크게 (문단 단위) 묶으면 부분 적용/거절 불가
-- "if X then Y" 의 액셔너블 단위로 추출. 예: "외부 도메인으로 발송 시 → 팀장 승인 필요" = 1 skill.
+### 8.1 Extracted policy unit
+**Decision**: **one condition+action pair = 1 skill**.
+- Too fine (word-level) → skill explosion + lower application accuracy
+- Too coarse (paragraph-level) → no partial apply/reject
+- Extract at the actionable "if X then Y" granularity. Example: "if sending to an external domain → require team-lead approval" = 1 skill.
 
-### 8.2 모호한 정책 처리
-**결정**: 추출 시 **"구체화 필요" 플래그** 부여 → 후속 질문으로 보완.
-- "PII 조심하세요" 같은 추상 정책은 actionable 한 형태가 아님
-- LLM 추출 프롬프트에 "조건과 액션이 모호하면 needs_clarification=true 표시" 강제
-- 인터뷰 단계에서 자동으로 follow-up 질문 ("PII 의 정의는?", "조심한다는 게 어떤 액션인가요?") 생성 → 구체화
+### 8.2 Handling ambiguous policies
+**Decision**: stamp **"needs clarification" flag** at extract → fill in with follow-up questions.
+- Abstract policies like "be careful with PII" aren't actionable as-is
+- Force the LLM extract prompt to mark `needs_clarification=true` when condition or action is ambiguous
+- The interview stage automatically generates follow-ups ("Definition of PII?", "What action does 'be careful' translate to?") → concretize
 
-### 8.3 정책 충돌 감지
-**결정**: **MVP 는 사람 검토에 위임**. 자동 검출은 W4 이후 (또는 future PLAN).
-- 검토 UI 에 같은 도메인/필드 영향 skill 들 그룹화 표시 → 사람이 한눈에 충돌 파악
-- "이 두 정책이 같은 필드를 지정합니다 — 우선순위?" 알림은 W3 후반에 시도 (자동 검출 룰 단순)
+### 8.3 Policy-conflict detection
+**Decision**: **MVP delegates to humans in review**. Auto-detection is post-W4 (or a future PLAN).
+- The review UI groups skills affecting the same domain/field → human spots conflicts at a glance
+- "These two policies target the same field — which wins?" warning is attempted late W3 (auto-detection rules are simple)
 
-### 8.4 버전 관리
-**결정**: 재업로드 시 **diff 표시 + 항목별 적용/유지/삭제 선택**. 자동 머지 X.
-- `policy_documents.content_hash` 로 동일 내용 재업로드 차단
-- 다른 hash 면 → 추출 재실행 → 기존 활성 skill 과 비교 → 사용자가 항목별 결정
-- 자동 머지/자동 폐기는 신뢰 깨뜨림
+### 8.4 Version management
+**Decision**: on re-upload show **diff + per-item apply/keep/delete**. No auto-merge.
+- `policy_documents.content_hash` blocks identical re-uploads
+- Different hash → rerun extraction → compare against existing active skills → user decides per item
+- Auto-merge / auto-retire breaks trust
 
-### 8.5 팀 경계 모델
-**결정**: **워크스페이스 = 팀**. 단순 모델로 시작.
-- 한 사용자는 여러 워크스페이스 멤버 (기존 user-workspace 다대다)
-- skill 은 `workspace_id` scope. 다른 워크스페이스에는 자동 노출 X
-- 다중 멤버십 / 팀간 skill 공유 / MCP 노출은 future
+### 8.5 Team-boundary model
+**Decision**: **workspace = team**. Start with the simple model.
+- One user can be a member of multiple workspaces (existing user-workspace many-to-many)
+- Skill is `workspace_id`-scoped. Not auto-exposed to other workspaces
+- Multi-membership / cross-team skill sharing / MCP exposure are future
 
-## 9. W2-W3 작업 분해 (10일)
+## 9. W2-W3 work breakdown (10 days)
 
-### W2 후반 (04/26-05/04, 9일 가용)
+### W2 second half (04/26-05/04, 9 days available)
 
-> **2026-04-28 폴리시 재설계 반영** — W2-4 가 한 정책당 1 큰 Q 모델에서 parameter 단위 micro-questions + baseline + 산업표준 sources 풀세트로 확장 (메모리 `project_wizard_polish_abc.md`). W2-3 (시드 YAML) / W2-5 (인터뷰 UI) / W2-6 (skill 카드) 는 이미 머지된 상태에서 부분 재작업이 필요 — `b` 접미사로 분리. W2-9 (라이브러리 뷰) 는 신규 산출물 (영상/심사위원에 보여줄 tangible artifact). W2-4a/b/c 가 W2-5b/W2-6b/W2-9 의 선행.
+> **Reflecting the 2026-04-28 policy redesign** — W2-4 expanded from a one-big-Q-per-policy model into the full parameter-level micro-questions + baseline + industry-standard sources set (memory `project_wizard_polish_abc.md`). W2-3 (seed YAML) / W2-5 (interview UI) / W2-6 (skill card) were already merged, so partial rework is needed — split with the `b` suffix. W2-9 (library view) is a new deliverable (a tangible artifact for the video / judges). W2-4a/b/c are predecessors of W2-5b / W2-6b / W2-9.
 
-| # | 작업 | 브랜드 | 일수 |
+| # | Work | Branch | Days |
 |---|---|---|---|
-| W2-1 | DB 스키마 마이그레이션 (5 테이블 + pgvector 활성화) | Database | 0.5d |
-| W2-2 | 도메인 분류 LLM (자유텍스트→카테고리, 또는 칩 UI 선택) | AI_Agent | 0.5d |
-| W2-3 | 도메인별 표준 정책 정의 (5 도메인 × 5-10 정책 시드, 합성 best-practice 패치워크) | AI_Agent (정적 데이터) | 1d |
-| W2-4a | **시드 YAML 스키마 마이그레이션** — `parameters` 가 string list → object list `{name, prompt, default_baseline, baseline_source}`, policy 레벨에 `sources: [{title, url}]` + `source_kind: synthesized\|industry-baseline\|regulatory` 추가. 5 도메인 × 정책 × 평균 4 parameter ≈ 160 베이스라인 + 정책당 sources 1차는 LLM 합성 후 사용자 sanity check. 합성된 부분은 `source_kind: synthesized` 로 정직하게 표시 | AI_Agent (정적 데이터) | 0.5d |
-| W2-4b | **gap_analyze 재구성** — `extracted_skills` 비면 deterministic 분기 (전 시드를 gap 으로 emit, LLM 미호출). 비어있지 않으면 LLM 은 coverage 판정만. **질문 텍스트는 시드 `parameters[].prompt` 그대로 첨부** (LLM 생성 X). 응답 schema: `{missing: [{policy_id, parameters: [{name, prompt, default_baseline, baseline_source}], sources, source_kind}]}` | AI_Agent | 0.5d |
-| W2-4c | **answers_to_skill (batch)** — 입력 (정책 id, [(parameter_name, answer)] N개) → 1 SkillDraft. 기존 `answer_to_skill` (1 Q-A → 1 skill) 폐기. baseline 채택 답변과 사용자 작성 답변을 동등하게 다룸. needs_clarification 은 답변 N개 중 하나라도 모호하면 true | AI_Agent | 0.5d |
-| W2-4d | **micro-question UX 보조 필드** — 시드 5 도메인 × 모든 parameter 에 `help_text` (jargon explainer 2-3 문장, 30-500자) + `example_answer` (1줄 placeholder, 1-200자) optional 필드 채움. `WizardQuestion` 모델에도 두 필드 추가 (default `""`, 기존 호출자 깨짐 X). `_build_policy_gap` 패스스루. `test_policy_seeds` invariant 추가 (모든 시드는 두 필드 채워야 + 길이 범위). 프론트 렌더링은 PR #144 에 흡수 | AI_Agent (정적 데이터 + 모델 + 테스트) | 0.25d |
-| W2-5 | 인터뷰 UI (ChatPanel 재사용 + 도메인 칩 + 진행도) — **머지 완료 (PR #137)** | Frontend | 1d |
-| W2-5b | **인터뷰 UI 폴리시** — 정책당 1 textarea → parameter 카드 N개. 카드마다 prompt + baseline preview + "Use baseline" 버튼 (B). 사용자가 클릭하면 텍스트필드에 baseline 자동 채움 (편집 가능). 진행도는 정책 단위 유지 (parameter 카드는 그 안에서 펼침/접힘) | Frontend | 0.75d |
-| W2-6 | skill 카드 컴포넌트 + 검토 UI (편집/거절/승인) — **머지 완료 (PR #138)** | Frontend | 1d |
-| W2-6b | **skill 카드 source attribution** — 카드 푸터에 `source_kind` 배지 + sources 링크 (있는 경우). "Synthesized baseline" vs "Industry baseline (Stripe / NRF)" 구분 표시 (C 의 사실대로 인용) | Frontend | 0.25d |
-| W2-7 | API 엔드포인트: `POST /api/v1/skills/bootstrap` (인터뷰 시작) + `POST /api/v1/skills/answer` (턴) + `POST /api/v1/skills/{id}/approve`. **W2-4c 의 batch 시그니처 반영해 `/answer` → `/answers` (정책당 N 답변)** | API_Server | 1d |
-| W2-8 | E2E 검증 (Persona A 풀세트, 문서 없이 5 정책 × 평균 4 parameter ≈ 20 micro-questions → 5 skill 생성 → 활성) | 통합 | 1d |
-| W2-9 | **라이브러리 뷰** — Frontend `/skills` 라우트 + 글로벌 nav 진입점. 활성 skill markdown render + sources references 섹션 (C). 평소 사용자가 정책 라이브러리를 들여다볼 수 있는 tangible 산출물. compose 시 자동 retrieval (W3-6) 과는 별도 surface | Frontend | 1d |
-| **W2 합계** | | | **9.25d** (~9d 가용 거의 fit. W2-3/W2-5/W2-6 머지분 제외 시 잔여 ~5.75d) |
+| W2-1 | DB schema migration (5 tables + enable pgvector) | Database | 0.5d |
+| W2-2 | Domain-classification LLM (free text → category, or chip-UI selection) | AI_Agent | 0.5d |
+| W2-3 | Per-domain standard policy definitions (5 domains × 5–10 policy seeds, synthesized best-practice patchwork) | AI_Agent (static data) | 1d |
+| W2-4a | **Seed YAML schema migration** — `parameters` goes from string list to object list `{name, prompt, default_baseline, baseline_source}`; add `sources: [{title, url}]` + `source_kind: synthesized\|industry-baseline\|regulatory` at policy level. 5 domains × policies × avg 4 parameters ≈ 160 baselines + per-policy sources first pass is LLM-synthesized followed by user sanity check. Synthesized portions are honestly tagged `source_kind: synthesized` | AI_Agent (static data) | 0.5d |
+| W2-4b | **gap_analyze restructure** — if `extracted_skills` is empty, deterministic branch (emit the whole seed as gap, no LLM call). If non-empty, LLM only judges coverage. **Question text attaches the seed `parameters[].prompt` as-is** (no LLM generation). Response schema: `{missing: [{policy_id, parameters: [{name, prompt, default_baseline, baseline_source}], sources, source_kind}]}` | AI_Agent | 0.5d |
+| W2-4c | **answers_to_skill (batch)** — input (policy id, [(parameter_name, answer)] × N) → 1 SkillDraft. Retire existing `answer_to_skill` (1 Q-A → 1 skill). Treats baseline-accepted answers and user-authored answers equally. `needs_clarification` is true if any of the N answers is ambiguous | AI_Agent | 0.5d |
+| W2-4d | **micro-question UX aux fields** — fill optional `help_text` (jargon explainer 2–3 sentences, 30–500 chars) + `example_answer` (1-line placeholder, 1–200 chars) on every parameter of all 5 seeded domains. Add the two fields to the `WizardQuestion` model too (default `""`, existing callers don't break). `_build_policy_gap` passthrough. Add `test_policy_seeds` invariant (every seed must populate the two fields + length range). Frontend rendering folded into PR #144 | AI_Agent (static data + model + tests) | 0.25d |
+| W2-5 | Interview UI (reuse ChatPanel + domain chips + progress) — **merged (PR #137)** | Frontend | 1d |
+| W2-5b | **Interview UI polish** — one textarea per policy → N parameter cards. Each card has prompt + baseline preview + "Use baseline" button (B). Click auto-fills the text field with baseline (still editable). Progress remains policy-grain (parameter cards expand/collapse inside) | Frontend | 0.75d |
+| W2-6 | Skill-card component + review UI (edit/reject/approve) — **merged (PR #138)** | Frontend | 1d |
+| W2-6b | **Skill-card source attribution** — footer carries `source_kind` badge + sources links (if any). Distinguish "Synthesized baseline" vs "Industry baseline (Stripe / NRF)" honestly (C's true-to-source citation) | Frontend | 0.25d |
+| W2-7 | API endpoints: `POST /api/v1/skills/bootstrap` (start interview) + `POST /api/v1/skills/answer` (per turn) + `POST /api/v1/skills/{id}/approve`. **Reflect the W2-4c batch signature: `/answer` → `/answers` (N answers per policy)** | API_Server | 1d |
+| W2-8 | E2E validation (Persona A full set, without docs 5 policies × avg 4 parameters ≈ 20 micro-questions → 5 skills created → activate) | Integration | 1d |
+| W2-9 | **Library view** — Frontend `/skills` route + global nav entry. Active-skill markdown render + sources references section (C). Tangible artifact users can flip through to inspect the policy library day to day. Separate surface from automatic retrieval at compose (W3-6) | Frontend | 1d |
+| **W2 total** | | | **9.25d** (~9d available, almost fits. Excluding merged W2-3/W2-5/W2-6, remaining ~5.75d) |
 
-### W3 (05/05-05/12, 7일 가용)
+### W3 (05/05-05/12, 7 days available)
 
-| # | 작업 | 브랜드 | 일수 |
+| # | Work | Branch | Days |
 |---|---|---|---|
-| W3-1 | 문서 업로드 UI + 파일 핸들링 | Frontend | 1d |
-| W3-2 | PDF/MD 파서 + 청킹 (pdfminer.six 또는 pypdf) | AI_Agent | 0.5d |
-| W3-3 | BGE-M3 임베딩 인덱싱 + DB 저장 | AI_Agent | 0.5d |
-| W3-4 | policy_extract LLM 프롬프트 (구조화 출력) | AI_Agent | 1d |
-| W3-5 | 두 path 통합 — 갭 분석이 docs 추출 결과 + 도메인 표준 비교 | AI_Agent | 1d |
-| W3-6 | Compose 시 skill retrieval (top-K) + 컨텍스트 주입 + 인용 | API_Server | 1d |
-| W3-7 | E2E 검증 (Persona B 풀세트: PDF 업로드 → 7 skill + 1 갭 질문 → 활성 → compose 시 적용 + 인용) | 통합 | 1d |
-| W3-8 | adversarial harness **시드 룰** 준비 (자동화 X, 영상용 정책 위반 시나리오 3건 사전 작성) | AI_Agent | 0.5d |
-| **W3 합계** | | | **7d** (~7d 가용 안에 fit, 0d 버퍼) |
+| W3-1 | Document-upload UI + file handling | Frontend | 1d |
+| W3-2 | PDF/MD parser + chunking (pdfminer.six or pypdf) | AI_Agent | 0.5d |
+| W3-3 | BGE-M3 embedding indexing + DB persistence | AI_Agent | 0.5d |
+| W3-4 | policy_extract LLM prompt (structured output) | AI_Agent | 1d |
+| W3-5 | Unify both paths — gap analysis compares docs-extracted result + domain standard | AI_Agent | 1d |
+| W3-6 | Skill retrieval at compose (top-K) + context injection + citation | API_Server | 1d |
+| W3-7 | E2E validation (Persona B full set: PDF upload → 7 skills + 1 gap question → activate → applied + cited at compose) | Integration | 1d |
+| W3-8 | adversarial harness **seed rules** prep (no automation; preauthor 3 policy-violation scenarios for the video) | AI_Agent | 0.5d |
+| **W3 total** | | | **7d** (~7d fits, 0d buffer) |
 
-### W4 (05/13-05/18, 6일)
+### W4 (05/13-05/18, 6 days)
 
-영상 + writeup + adversarial harness 자동화 (시간 남으면). 본 PLAN 범위 외.
+Video + writeup + adversarial harness automation (if time left). Out of scope here.
 
-## 10. PR 분할 계획
+## 10. PR-split plan
 
-작은 단위 PR + 브랜치 경계 준수 (`feedback_branch_boundaries.md`).
+Small-unit PRs + branch-boundary discipline (`feedback_branch_boundaries.md`).
 
-| # | 브랜드 | 내용 | 종속 |
+| # | Branch | Content | Depends on |
 |---|---|---|---|
-| **#127** | Database | DB 스키마 + 마이그레이션 (W2-1) + pgvector 활성화 | — |
-| **#128** | AI_Agent | 도메인 분류 + 표준 정책 시드 + gap_analyze + answer_to_skill (W2-2/3/4) | — |
-| **#129** | API_Server | skill bootstrap 엔드포인트 (W2-7) | #127 |
-| **#130** | Frontend | 인터뷰 UI + 도메인 칩 (W2-5) | #129 |
-| **#131** | Frontend | skill 카드 + 검토 UI (W2-6) | #129 |
-| **#132** | API_Server | timeout 60s + max_tokens 1024 재조정 (multi-turn 전환 패치) | — (병렬) |
-| **#133** | AI_Agent | 문서 파서 + BGE-M3 인덱싱 + policy_extract (W3-2/3/4) | #127 |
-| **#134** | Frontend | 문서 업로드 UI (W3-1) | #133 |
-| **#135** | AI_Agent | gap analysis 통합 (W3-5) | #133 |
+| **#127** | Database | DB schema + migration (W2-1) + enable pgvector | — |
+| **#128** | AI_Agent | Domain classify + standard policy seeds + gap_analyze + answer_to_skill (W2-2/3/4) | — |
+| **#129** | API_Server | Skill-bootstrap endpoint (W2-7) | #127 |
+| **#130** | Frontend | Interview UI + domain chips (W2-5) | #129 |
+| **#131** | Frontend | Skill card + review UI (W2-6) | #129 |
+| **#132** | API_Server | Retune timeout 60s + max_tokens 1024 (multi-turn migration patch) | — (parallel) |
+| **#133** | AI_Agent | Document parser + BGE-M3 indexing + policy_extract (W3-2/3/4) | #127 |
+| **#134** | Frontend | Document-upload UI (W3-1) | #133 |
+| **#135** | AI_Agent | Gap-analysis integration (W3-5) | #133 |
 | **#136** | API_Server | compose retrieval+inject (W3-6) | #127, #133 |
-| **#141** | docs (AI_Agent) | PLAN_12 W2-4 표 갱신 — micro-questions 모델 재설계 (선행 doc-only PR, **머지 완료**) | — |
-| **#142** | AI_Agent | 시드 YAML 스키마 마이그레이션 + gap_analyze 재구성 (deterministic 분기) + answers_to_skill batch (W2-4a/b/c). stub 백엔드도 새 schema 출력하도록 패치. legacy `/v1/skills/answer_to_skill` 은 PR #143 까지 single-shot wrapper 로 유지 | — (시드 YAML / 서비스 / stub 만 건드림) |
-| **#143** | API_Server | `/skills/answer` → `/skills/answers` 시그니처 변경 (정책당 batch) + `PolicyGapBody` 에 parameters/sources/source_kind 필드 추가 | #142 |
-| **#144** | Frontend | 인터뷰 UI parameter 카드화 + "Use baseline" 버튼 (W2-5b). batch submit 으로 wire 변경 | #142, #143 |
-| **#145** | Frontend | skill 카드 source attribution + `/skills` 라이브러리 뷰 + 글로벌 nav (W2-6b + W2-9) | #142 |
-| **#146** | AI_Agent | `help_text` + `example_answer` 시드 폴리시 풀세트 + `WizardQuestion` 모델 두 필드 + `_build_policy_gap` 패스스루 + `test_policy_seeds` invariant (W2-4d). Frontend 카드 렌더링은 PR #144 에 흡수 | #142 |
+| **#141** | docs (AI_Agent) | PLAN_12 W2-4 table refresh — micro-questions model redesign (predecessor doc-only PR, **merged**) | — |
+| **#142** | AI_Agent | Seed YAML schema migration + gap_analyze restructure (deterministic branch) + answers_to_skill batch (W2-4a/b/c). Patch stub backend to emit the new schema too. Legacy `/v1/skills/answer_to_skill` stays as a single-shot wrapper until PR #143 | — (touches only seed YAML / services / stub) |
+| **#143** | API_Server | `/skills/answer` → `/skills/answers` signature change (batch per policy) + add parameters/sources/source_kind fields to `PolicyGapBody` | #142 |
+| **#144** | Frontend | Interview UI parameter cards + "Use baseline" button (W2-5b). Wire change to batch submit | #142, #143 |
+| **#145** | Frontend | Skill-card source attribution + `/skills` library view + global nav (W2-6b + W2-9) | #142 |
+| **#146** | AI_Agent | `help_text` + `example_answer` full seed-policy population + two fields on `WizardQuestion` model + `_build_policy_gap` passthrough + `test_policy_seeds` invariant (W2-4d). Frontend card rendering folded into PR #144 | #142 |
 
-총 16 PR. **2026-04-28 폴리시 후 추가**: #141-#146 (6 PR — #141 은 plan 갱신 doc-only, #146 은 #142 머지 후 W2-4d 보조 필드 채움). PR #132 는 PR #125 의 single-shot timeout 패치를 multi-turn 으로 재조정하는 small PR (별도 분리). PR #142 의 stub 패치는 PR #140 (W2-8a) stub 확장의 직속 확장 — 같은 stub 파일을 다시 건드리므로 #142 가 main 진입한 뒤 라이브 backend 작업이 잇따라야 함. PR #142 는 legacy `/v1/skills/answer_to_skill` 엔드포인트를 single-shot wrapper 로 유지해 PR #143 머지 전에도 API_Server 가 깨지지 않게 함. PR #146 은 #142 의 시드 + 스키마를 그대로 두고 두 optional 필드만 채우므로 PR #143/#144/#145 와 직접 충돌 없음 (Frontend 는 #144 에서 두 필드 surface).
+16 PRs total. **Added after 2026-04-28 policy**: #141-#146 (6 PRs — #141 is the plan-refresh doc-only PR, #146 fills the W2-4d auxiliary fields after #142 merges). PR #132 is a small standalone PR that retunes PR #125's single-shot timeout patch to multi-turn. PR #142's stub patch directly extends PR #140 (W2-8a)'s stub expansion — touches the same stub file, so PR #142 should land first and the live backend work follows. PR #142 keeps the legacy `/v1/skills/answer_to_skill` endpoint as a single-shot wrapper so API_Server doesn't break before PR #143 merges. PR #146 leaves #142's seed + schema intact and only populates the two optional fields, so it doesn't conflict with PR #143/#144/#145 directly (Frontend surfaces the two fields in #144).
 
-## 11. 리스크 + 완화
+## 11. Risks + mitigations
 
-| 리스크 | 영향 | 완화 |
+| Risk | Impact | Mitigation |
 |---|---|---|
-| pgvector 확장이 Cloud SQL 인스턴스에 미설치 | 임베딩 인덱싱 blocker | 마이그레이션 첫 단계에서 `CREATE EXTENSION` 시도 + 실패 시 인스턴스 재생성 |
-| BGE-M3 임베딩 비용/지연 (Modal 또는 별도 서비스) | 인덱싱 시간 ↑ | MVP: AI_Agent Modal 에 BGE-M3 같이 로드 (L4 GPU 여유, GGUF 16.9GB 외 BGE-M3 ~2GB 추가). 별도 서비스는 future |
-| 도메인 표준 정책 시드 부재 | gap analysis 부정확 | 5개 도메인 × 5-10 정책 하드코딩 (W2-3). 추후 LLM 생성으로 대체 |
-| Multi-turn KV cache 가 llama.cpp slot 에서 안정적 작동 안 함 | latency 목표 미달 | W2 첫 작업으로 KV cache 동작 검증 (간단 multi-turn 테스트). 안 되면 prompt cache 만으로 fallback |
-| Persona A 인터뷰 가속 영상이 자연스럽지 않음 | 영상 narrative 약화 | W4 실측 후 라이브 vs 시드 재생 결정 (ADR-022 미해결 항목) |
-| W3 일수 부족 (0d 버퍼) | 일정 미스 | W2-8 의 E2E 검증을 W3-1 과 병행 가능 → 1d 추가 확보 |
-| AI Composer 기존 코드 multi-turn 미고려 (single-shot 가정) | 리팩터 부담 | PR #132 + PR #136 가 인터페이스 변경. 기존 PLAN_02 stub backend 인터페이스 유지로 backward compat 유지 |
-| baseline 160개 / sources 풀의 정확성·일관성 | 신뢰 훼손 (가짜 출처 = 데모 자살골) | LLM 1차 합성 후 사람 검토 필수. 검증 불가능한 source 는 절대 포함 X — `source_kind: synthesized` 로 정직하게 표기. industry-baseline 표기는 실제로 추적 가능한 URL 만 (Stripe docs, NRF report, FTC guideline 같이 안정 URL) |
-| W2-5/W2-6 머지분 재작업 (5b/6b) 회귀 | 이미 작동하던 wizard 가 깨짐 | 폴리시 PR (#143/#144) 머지 전 영어 텍스트 + 진행도 + 통합 시연 (PR #140 의 Persona A 검증 시퀀스) 회귀 검증 의무화 |
+| pgvector extension not installed on the Cloud SQL instance | Embedding indexing blocker | First step of the migration attempts `CREATE EXTENSION` + recreates the instance on failure |
+| BGE-M3 embedding cost/latency (Modal or separate service) | Indexing time ↑ | MVP: load BGE-M3 alongside AI_Agent on Modal (L4 GPU has headroom — GGUF 16.9GB + BGE-M3 ~2GB). Separate service is future |
+| No domain-standard policy seeds | Gap analysis inaccurate | Hardcode 5 domains × 5–10 policies (W2-3). Replace with LLM-generated later |
+| Multi-turn KV cache not stable on llama.cpp slot | Misses latency target | First W2 work validates KV cache behavior (simple multi-turn test). If it fails, fall back to prompt cache only |
+| Persona A sped-up interview video looks unnatural | Video narrative weakens | After W4 measurements, decide live vs seed replay (ADR-022 unresolved item) |
+| W3 day count tight (0d buffer) | Schedule slip | W2-8's E2E validation can run in parallel with W3-1 → buys 1d |
+| AI Composer existing code is single-shot-only | Refactor cost | PR #132 + PR #136 change the interface. Keep the existing PLAN_02 stub-backend interface for backward compat |
+| Accuracy / consistency of the 160 baselines / sources pool | Trust damage (fake sources = demo own-goal) | Mandatory human review after LLM's first synthesis. Never include a source we can't verify — honestly tag `source_kind: synthesized`. The industry-baseline tag is reserved for stably trackable URLs (Stripe docs, NRF report, FTC guideline, etc.) |
+| Regression in W2-5/W2-6 merged portions during 5b/6b rework | Already-working wizard breaks | Mandate regression checks (English text + progress + integration demo from PR #140's Persona A validation sequence) before the policy PRs (#143/#144) merge |
 
-## 12. 후속 영향 (PLAN_13 / future)
+## 12. Downstream impact (PLAN_13 / future)
 
-본 PLAN 이 닫지 않은 후속:
+What this PLAN doesn't close:
 
-- **PLAN_13 (가능)**: Adversarial harness 자동화 — 정책 → 자동 위반 시나리오 생성 + 가드 자동 추가. 본 PLAN W3-8 의 시드 룰을 자동화한 형태.
-- **MCP server 노출**: 워크스페이스 skill 묶음을 외부 팀이 import 할 수 있는 MCP 형태로 export.
-- **자동 충돌 감지**: 활성 skill 간 모순 자동 검출 (룰 기반 시작, LLM 기반 확장).
-- **Skill aging**: 일정 기간 미사용 skill 자동 archived 제안.
-- **Trace-driven refinement**: 실행 trace → 패턴 → skill 후보 (관찰 기반 보강).
-- **다중 워크스페이스 / 다중 멤버십**: 사용자가 여러 팀에 동시 소속 시 skill 우선순위 / 머지 정책.
-- **Notion / Drive 통합**: 기존 Drive OAuth 인프라 (PLAN_06 OAuth) 재사용해 SOP 자동 동기화.
+- **PLAN_13 (possible)**: Adversarial-harness automation — policy → auto-generated violation scenarios + auto-added guards. The automated form of this PLAN's W3-8 seed rules.
+- **MCP server exposure**: export a workspace's skill bundle as MCP that external teams can import.
+- **Automatic conflict detection**: auto-detect contradictions across active skills (rules-based first, LLM-based later).
+- **Skill aging**: propose archiving unused skills after some time.
+- **Trace-driven refinement**: execution trace → patterns → candidate skills (observation-based augmentation).
+- **Multi-workspace / multi-membership**: skill priority / merge policy when a user belongs to multiple teams.
+- **Notion / Drive integration**: reuse existing Drive OAuth infra (PLAN_06 OAuth) to auto-sync SOPs.
 
-## 13. 관련 ADR / 메모리 / 문서
+## 13. Related ADRs / memory / docs
 
-- **ADR-022** (`docs/context/decisions.md`) — 본 PLAN 의 결정 기록 (런타임 하네스 + Skill Bootstrap)
-- **ADR-018** — Cloud SQL Postgres + Secret Manager (DB 스키마 호환 기반)
-- **ADR-019** — OAuth (Drive 통합 미래 작업의 기반)
-- `docs/harness_engineering_guide.md` — 기존 dev-time 하네스 (본 PLAN 의 컨셉 부모)
-- 메모리 `project_skill_bootstrap_design.md` — 설계 결정 요약
-- 메모리 `project_gemma4_hackathon.md` — 트랙 / 예산 / 영상 컨테이너
-- 메모리 `project_llm_backend_swap_plan.md` — multi-turn 전환에 따른 PR #125 timeout 재조정 주의
-- 메모리 `feedback_branch_boundaries.md` — 본 PLAN PR 10건 진행 시 준수
-- 메모리 `feedback_test_before_pr.md` — 외부 검증 (마이그레이션 / E2E) 은 PR 오픈 전 feature 브랜치에서 완료
-- PR #125 (머지됨) — single-shot 가정 timeout 패치. PR #132 가 multi-turn 으로 재조정
-- PLAN_11 (종결) — Modal Gemma 4 호스팅 (본 PLAN 의 전제 인프라)
+- **ADR-022** (`docs/context/decisions.md`) — decision record for this PLAN (runtime harness + Skill Bootstrap)
+- **ADR-018** — Cloud SQL Postgres + Secret Manager (DB schema compatibility base)
+- **ADR-019** — OAuth (foundation for future Drive integration work)
+- `docs/harness_engineering_guide.md` — existing dev-time harness (the conceptual parent of this PLAN)
+- memory `project_skill_bootstrap_design.md` — design-decision summary
+- memory `project_gemma4_hackathon.md` — track / budget / video container
+- memory `project_llm_backend_swap_plan.md` — caution: PR #125 timeout retune required when shifting to multi-turn
+- memory `feedback_branch_boundaries.md` — honor it across the 10-PR run of this PLAN
+- memory `feedback_test_before_pr.md` — external validation (migration / E2E) must complete on the feature branch before PR open
+- PR #125 (merged) — single-shot timeout patch. PR #132 retunes to multi-turn
+- PLAN_11 (closed) — Modal Gemma 4 hosting (the infra premise of this PLAN)
