@@ -1,4 +1,4 @@
-"""PLAN_10 — Agent daemon credential 복호화 + 주입 테스트."""
+"""PLAN_10 — Agent daemon credential decryption + injection tests."""
 from __future__ import annotations
 
 import base64

@@ -1,8 +1,8 @@
-PR 작성 전 커밋부터 PR 생성까지 전 과정을 자동으로 수행해줘.
+Automatically run the full pipeline from commit to PR creation before opening a PR.
 
 ---
 
-## 1. 현재 브랜치 및 변경 파일 확인
+## 1. Verify the current branch and changed files
 
 ```bash
 git branch --show-current
@@ -10,218 +10,217 @@ git status
 git diff --stat
 ```
 
-현재 브랜치명을 파악하고, 변경된 파일이 **현재 브랜치 폴더** 내에 있는지 확인한다.
-**다른 브랜치 폴더(예: API_Server/, Database/, Execution_Engine/, Frontend/)의 파일은 절대 스테이징하지 않는다.**
+Identify the current branch name and confirm the changed files live inside the **current branch's folder**.
+**Never stage files belonging to another brand folder (e.g., API_Server/, Database/, Execution_Engine/, Frontend/).**
 
 ---
 
-## 2. 보안 점검 (커밋 전 필수)
+## 2. Security check (mandatory before commit)
 
-변경된 파일에 대해 아래 패턴을 스캔한다.
+Scan the changed files for the patterns below.
 
 ```bash
-# 하드코딩된 자격증명 탐지
+# detect hardcoded credentials
 git diff | grep -E "(password|secret|api_key|token|host)\s*=\s*['\"][^'\"]{4,}"
 
-# os.getenv 기본값에 실제 인프라 정보 탐지
+# detect real-infra info in os.getenv defaults
 git diff | grep -E "os\.getenv\(.+,\s*['\"]"
 ```
 
-| 점검 항목 | 기준 |
+| Check | Standard |
 |-----------|------|
-| 하드코딩된 자격증명 | API 키, 비밀번호, 토큰 하드코딩 없어야 함 |
-| os.getenv() 기본값 | 실제 IP, DB명, 사용자명 기본값 없어야 함 |
-| .env 파일 포함 여부 | .gitignore에 .env 있는지 확인 |
-| data/ 포함 여부 | .gitignore에 data/ 있는지 확인 |
+| Hardcoded credentials | No hardcoded API keys, passwords, or tokens |
+| os.getenv() defaults | No real IPs, DB names, or usernames as defaults |
+| .env file presence | `.env` is in `.gitignore` |
+| data/ presence | `data/` is in `.gitignore` |
 
-- 탐지된 항목이 있으면 → **커밋 중단, 즉시 수정 요청**
-- 이상 없으면 → "보안 점검 통과" 보고 후 계속 진행
+- If anything is detected → **stop the commit and request an immediate fix**
+- If clean → report "security check passed" and continue
 
 ---
 
-## 2-b. 위키(공용 컨텍스트 문서) 갱신 점검
+## 2-b. Wiki (shared-context docs) update check
 
-**위키 파일(`docs/context/*`)은 현재 코드 브랜치에서 절대 수정·커밋하지 않는다.**
-위키 갱신은 전용 `docs` 브랜치에서만 이뤄지며, 별도 PR로 분리한다.
+**Wiki files (`docs/context/*`) must never be modified or committed from the current code branch.**
+Wiki updates happen only on the dedicated `docs` branch and ship as a separate PR.
 
-### 점검 순서 (반드시 이 순서로)
+### Inspection order (must follow this order)
 
-#### Step 1 — 결정 감사 (Decision Audit, **필수 선행**)
+#### Step 1 — Decision Audit (**mandatory precursor**)
 
-> ⚠️ **주의**: "diff 에 `docs/context/` 가 없다" 만 보고 "위키 갱신 불요" 라고 보고하는 것은
-> 금지. 그건 "**건드렸냐**" 체크지 "**최신이냐**" 체크가 아니다. 아래 감사를
-> 건너뛰고 Step 2 의 diff 체크만 수행한 PR 은 **규칙 위반**이다.
+> ⚠️ **Caution**: It is forbidden to report "no wiki update needed" based only on "the diff does not contain `docs/context/`."
+> That checks "did I touch it," not "is it up to date." A PR that skips this audit
+> and only runs Step 2's diff check is a **rule violation**.
 
-현재 PR 이 포함하는 **모든 결정** 을 나열한다. "결정" 이란 코드·문서·설정
-변경을 유발한 **판단** 을 의미한다 — 단순 리팩토링/버그 수정은 결정이 아님.
+Enumerate every **decision** this PR contains. A "decision" means a **judgment** that drove a
+code / doc / config change — a simple refactor or bug fix is not a decision.
 
-결정 후보(자문 체크리스트):
-- 이 PR 에서 추가된 새 기술/라이브러리/확장/이미지/도구가 있는가?
-- 이 PR 에서 결정된 **계약 형상**(JSON 키, DTO 필드, API 시그니처, 상태 값 집합)이 있는가?
-- 이 PR 에서 두 개 이상 브랜치가 공유하는 **데이터 흐름** 이 바뀌었는가 (누가 누구에게 쓰는가, 읽는가)?
-- 이 PR 에서 보안 정책(저장/전송/로깅) 에 변화가 있는가?
-- 이 PR 에서 운영 절차(스케줄러, 백업, 마이그레이션, 파티셔닝) 가 바뀌거나 새로 생겼는가?
-- 이 PR 에서 MVP/Phase 경계가 바뀌었는가 (무언가를 MVP 에 당겨오거나 Phase 2 로 미뤘는가)?
+Decision candidates (self-audit checklist):
+- Does this PR add a new technology / library / extension / image / tool?
+- Does this PR settle a **contract shape** (JSON key, DTO field, API signature, set of status values)?
+- Does this PR change a **data flow** shared by two or more branches (who writes, who reads)?
+- Does this PR change a security policy (storage / transit / logging)?
+- Does this PR change or introduce an operations procedure (scheduler, backup, migration, partitioning)?
+- Does this PR shift the MVP / Phase boundary (pull something into the MVP or push something to Phase 2)?
 
-각 결정마다 다음 두 질문에 답한다:
+For each decision, answer two questions:
 
-1. **이 결정을 모르면 다른 브랜치 작업자가 잘못된 전제로 작업할 가능성이 있는가?**
-2. **현재 위키(`architecture.md` / `decisions.md` / `MAP.md`) 만 읽어서 이 결정을 파악할 수 있는가?**
+1. **Without knowing this decision, could another branch's worker proceed on a wrong premise?**
+2. **Can the current wiki (`architecture.md` / `decisions.md` / `MAP.md`) alone communicate this decision?**
 
-질문 1 의 답이 **Yes** 이고 질문 2 의 답이 **No** 이면 → **위키 갱신 필요**.
+If Q1 is **Yes** and Q2 is **No** → **wiki update needed**.
 
-#### Step 2 — 트리거 매핑
+#### Step 2 — Trigger mapping
 
-Step 1 에서 "갱신 필요" 로 분류된 결정을 아래 표에 매핑한다.
+Map decisions classified as "update needed" in Step 1 to the table below.
 
-| 변경 유형 | 갱신 대상 (docs 브랜치에서) |
+| Change kind | Update target (on the docs branch) |
 |-----------|-----------|
-| 새 최상위 폴더/브랜치 추가, 파일 배치 규칙 변경 | `docs/context/MAP.md` |
-| 4-layer 흐름 / 데이터 경로 / 새 실행 모드 / Repository 간 쓰기 순서 | `docs/context/architecture.md` |
-| 기술 스택 교체·추가, 보안 정책 변경, 트레이드오프가 있는 설계 결정, **타 브랜치가 의존할 계약 형상** (JSON 키, 상태 값, API 시그니처) | `docs/context/decisions.md` (새 ADR 추가 또는 기존 ADR 에 `**Update (YYYY-MM-DD)**` 섹션 추가. Superseded 의 경우 기존 항목에 표시) |
+| New top-level folder/branch added; file placement rule changed | `docs/context/MAP.md` |
+| 4-layer flow / data path / new execution mode / write order between Repositories | `docs/context/architecture.md` |
+| Tech-stack swap or addition, security-policy change, design decision with trade-offs, **contract shape another branch will depend on** (JSON key, status value, API signature) | `docs/context/decisions.md` (add a new ADR or append an `**Update (YYYY-MM-DD)**` section to an existing ADR. For Superseded, mark the existing entry) |
 
-기존 ADR 을 **정제/보강** 하는 경우(Superseded 아님)는 새 ADR 대신 해당 ADR 의
-`Update` 섹션으로 들어가는 것이 우선. 새 ADR 은 "기존 결정과 독립적인 새 결정"
-일 때만 만든다.
+When **refining/strengthening** an existing ADR (not Superseded), prefer adding to that ADR's
+`Update` section over creating a new ADR. Create a new ADR only when the new decision is
+"independent from the existing one".
 
-브랜치 내부 구조/컨벤션 변경(`_claude_templates/CLAUDE_*.md`) 은 해당 코드 브랜치에서 함께 수정해도 된다 — 그 브랜치의 관심사이므로.
+Changes to internal branch structure / convention (`_claude_templates/CLAUDE_*.md`) may be made in the code branch alongside the change — it is that branch's concern.
 
-#### Step 3 — diff 사고 방지
+#### Step 3 — Diff-mistake guard
 
-현재 브랜치의 diff 에 `docs/context/` 파일이 **실수로** 포함돼 있으면 → **stash 또는 복원 후 중단**, 사용자에게 `docs` 브랜치로 이동해 별도 PR 을 만들 것을 안내.
-(Step 1/2 는 "해야 할 일" 을 찾고, Step 3 는 "실수로 한 일" 을 잡는다.)
+If the current branch's diff contains a `docs/context/` file **by accident** → **stash or restore it and stop**; tell the user to move to the `docs` branch and create a separate PR.
+(Steps 1/2 find "what should be done"; Step 3 catches "what was done by mistake.")
 
-### 보고 형식
+### Reporting format
 
-감사 결과는 아래 중 하나로 명시 보고한다. "위키 갱신 불요" 한 줄 보고는 **금지** — 반드시 감사 내용을 함께 남긴다.
+The audit result must be reported explicitly in one of the forms below. A one-line "wiki update not needed" report is **forbidden** — always include the audit detail.
 
-- **Case A — 갱신 불요**:
+- **Case A — no update needed**:
   ```
-  [위키 감사]
-  결정 N 건: <결정 1>, <결정 2>, ...
-  각 결정의 Q1/Q2 판정: <모두 브랜치-로컬 / 기존 위키로 커버됨>
-  → 갱신 불요
+  [Wiki audit]
+  N decisions: <decision 1>, <decision 2>, ...
+  Q1/Q2 verdict for each decision: <all branch-local / covered by existing wiki>
+  → no update needed
   ```
-- **Case B — 갱신 필요하지만 아직 안 됨**:
+- **Case B — update needed but not yet done**:
   ```
-  [위키 감사]
-  갱신 필요 결정: <결정명>
-  → 이번 코드 PR 을 올리기 전/후 로 `docs` 브랜치 PR 을 만들어야 함
-  → 코드 PR 본문의 "사후 영향 평가" 에 "위키 갱신 PR 필요: <설명>" 행 추가
+  [Wiki audit]
+  Update-needed decision: <decision name>
+  → must open a `docs` branch PR before/after this code PR
+  → add "Wiki update PR required: <description>" to the "Impact Assessment" section of the code PR body
   ```
-- **Case C — 갱신 완료됨**: 같은 PR 주기 안에서 이미 `docs` 브랜치 PR 을
-  만들었다면 링크/PR 번호를 본 PR 본문에 참조.
+- **Case C — update done**: if a `docs` branch PR has already been opened in this PR cycle, link / reference the PR number in this PR body.
 
 ---
 
-## 3. 현재 브랜치 파일만 스테이징 및 커밋
+## 3. Stage and commit current-branch files only
 
-미커밋 변경사항이 있는 경우에만 실행한다.
+Run only when there are uncommitted changes.
 
 ```bash
-git add {현재 브랜치 폴더}/
+git add {current branch folder}/
 git commit -m "..."
 ```
 
-**커밋 금지 파일**: `.env`, `data/`, `*.parquet`, `*.pkl`, `*.pem`, `credentials.json`
+**Files that must not be committed**: `.env`, `data/`, `*.parquet`, `*.pkl`, `*.pem`, `credentials.json`
 
 ---
 
-## 4. base 브랜치 최신화
+## 4. Refresh the base branch
 
 ```bash
-# 1) 원격 최신 상태 가져오기
+# 1) fetch latest from remote
 git fetch origin
 
-# 2) base 브랜치(main)와 현재 브랜치 간 diverge 여부 확인
+# 2) check divergence between base (main) and current branch
 git log HEAD..origin/main --oneline
 git log origin/main..HEAD --oneline
 ```
 
-- `origin/main`에 내 브랜치에 없는 커밋이 있으면 → **pull 먼저 수행**
-- 충돌(conflict) 발생 시 → 사용자에게 충돌 파일 목록을 알리고 **중단**. 충돌 해결 후 재실행 요청.
-- diverge 없으면 → 다음 단계로 진행
+- If `origin/main` has commits the local branch lacks → **run `git pull` first**
+- On conflict → list the conflicting files to the user and **stop**. Ask them to resolve and re-invoke.
+- If there is no divergence → continue
 
 ```bash
-# diverge가 있는 경우에만 실행
+# run only when there is divergence
 git pull origin main
 ```
 
 ---
 
-## 5. 변경사항 분석
+## 5. Analyze the changes
 
 ```bash
-# 베이스 대비 변경된 파일 목록
+# list of files changed vs the base
 git diff --name-status origin/main...HEAD
 
-# 커밋 히스토리
+# commit history
 git log origin/main..HEAD --oneline
 ```
 
-- 변경된 파일 수 및 목록 (추가/수정/삭제 구분)
-- 각 커밋의 주요 내용 요약
+- Number and list of files changed (added/modified/deleted)
+- Summary of each commit's main content
 
 ---
 
-## 6. 이전 PR 내용 확인
+## 6. Inspect previous PR contents
 
 ```bash
-gh pr list --head {현재 브랜치} --state all --limit 1
-gh pr view {PR번호} --json body
+gh pr list --head {current branch} --state all --limit 1
+gh pr view {PR number} --json body
 ```
 
-- 이전 PR이 있으면 body를 읽어 내용을 파악한다.
-- 새 PR body 작성 시 이전 PR과 **중복되는 항목은 최신 내용으로 덮어써서 반영**, **새로 추가된 항목은 해당 섹션에 추가**한다.
-- 이전 PR이 없으면 새로 작성한다.
+- If a previous PR exists, read its body to understand it.
+- When writing the new PR body, **overwrite duplicate items with the latest content**, and **add new items to the matching section**.
+- If no previous PR exists, write a fresh one.
 
 ---
 
-## 7. PR 생성
+## 7. Create the PR
 
-위 분석 결과를 바탕으로 아래 형식으로 PR 본문을 작성하고 `gh pr create`를 실행한다.
-PR base branch는 항상 `main`이다.
+Based on the analysis above, write the PR body in the format below and run `gh pr create`.
+The PR base branch is always `main`.
 
 ```
-## 변경사항 요약
-<!-- 변경된 파일별로 무엇을 왜 변경했는지 기술 (bullet 3개 이내) -->
+## Change summary
+<!-- For each changed file, describe what changed and why (max 3 bullets) -->
 
-## 사후 영향 평가
-| 영향 범위 | 내용 | 조치 필요 여부 |
+## Impact assessment
+| Impact area | Detail | Action needed |
 |-----------|------|---------------|
-| 업스트림 의존성 | ... | Yes / No |
-| 다운스트림 의존성 | ... | Yes / No |
-| DB 스키마 변경 | ... | Yes / No |
-| API 인터페이스 변경 | ... | Yes / No |
+| Upstream dependency | ... | Yes / No |
+| Downstream dependency | ... | Yes / No |
+| DB schema change | ... | Yes / No |
+| API interface change | ... | Yes / No |
 
-## 보안 평가
-| 점검 항목 | 결과 |
+## Security assessment
+| Check | Result |
 |-----------|------|
-| 하드코딩된 자격증명 | ✅/❌ |
-| os.getenv() 기본값 인프라 노출 | ✅/❌ |
-| .env, data/ gitignore 확인 | ✅/❌ |
-| 외부 입력값 검증 | ✅/❌ |
+| Hardcoded credentials | ✅/❌ |
+| os.getenv() default exposes infra | ✅/❌ |
+| `.env`, `data/` in gitignore | ✅/❌ |
+| External input validation | ✅/❌ |
 
-## 테스트 체크리스트
-- [ ] 로컬 실행 확인
-- [ ] 주요 변경 함수 단위 테스트
-- [ ] 관련 팀원에게 리뷰 요청
+## Test checklist
+- [ ] Local run verified
+- [ ] Unit tests on key changed functions
+- [ ] Review requested from the relevant team member
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
 ---
 
-## ⛔ 절대 금지 규칙 (Claude 포함 모든 실행 주체)
+## ⛔ Absolute rules (apply to every execution subject, Claude included)
 
-**아래 행동은 사용자의 명시적 승인 없이 절대 실행하지 않는다.**
+**The following actions must never be executed without explicit user approval.**
 
-1. `git push origin main` — main 브랜치 직접 push 금지
-2. PR 없이 main에 직접 merge 금지
-3. PR 리뷰(Approve) 없이 merge 금지
-4. 다른 브랜치 폴더 파일을 현재 브랜치 커밋에 포함 금지
-5. PR 생성 과정에서 요청하지 않은 파일을 추가로 커밋·push 금지
+1. `git push origin main` — no direct push to main
+2. No direct merge to main without a PR
+3. No merge without PR review (Approve)
+4. Do not include files from another brand folder in the current branch's commit
+5. During PR creation, do not additionally commit/push files that were not requested
 
-**이 규칙은 사용자가 명시적으로 "push해줘", "merge해줘"라고 말하기 전까지 유효하다.**
+**These rules hold until the user explicitly says "push it" or "merge it."**
 
-> 위반 시: 즉시 중단하고 사용자에게 보고한다.
+> Violation: stop immediately and report to the user.

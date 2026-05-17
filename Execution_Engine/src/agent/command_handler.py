@@ -1,4 +1,4 @@
-"""Agent command handler — execute 커맨드 수신 → run_workflow() 호출."""
+"""Agent command handler — receive execute commands → invoke run_workflow()."""
 from __future__ import annotations
 
 import logging

@@ -1,4 +1,4 @@
-"""DelayNode — 후속 노드 실행 전 일정 시간 대기."""
+"""DelayNode — wait for a fixed duration before downstream nodes run."""
 from __future__ import annotations
 
 import asyncio

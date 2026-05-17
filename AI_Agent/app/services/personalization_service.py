@@ -9,8 +9,8 @@ decide what to persist (candidate row, review queue, etc.).
 Stateless on the request side too — the caller passes the
 `rejected_hashes` it has on record for this user, so AI_Agent never
 needs to know who is who. That makes the route trivially testable in
-isolation and keeps the user-scoping invariant (PLAN_14 §4.6: "사용자
-A 의 personal skill 이 사용자 B 검색 풀에 절대 들어가지 않음") under
+isolation and keeps the user-scoping invariant (PLAN_14 §4.6: "user A's
+personal skill must never enter user B's search pool") under
 API_Server's direct control rather than threaded through HTTP.
 """
 from __future__ import annotations

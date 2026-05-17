@@ -1,9 +1,9 @@
-"""PLAN_08 — Agent execute WS 메시지의 credential_payloads 서비스 레벨 검증.
+"""PLAN_08 — service-level verification of credential_payloads in the Agent execute WS message.
 
-E2E WS 테스트는 httpx_ws + authed_client 조합에서 hang 이 발생하므로 서비스
-레벨에서 MockWebSocket 을 주입하여 `workflow_service.execute_workflow` 가 실제
-어떤 payload 를 `send_json` 으로 밀어넣는지 확인한다. 실 WS 전달 경로는
-`test_agents.py::test_ws_heartbeat` 가 별개로 보장.
+The E2E WS test hangs in the httpx_ws + authed_client combo, so at the service level we
+inject a MockWebSocket to verify what payload `workflow_service.execute_workflow` actually
+pushes through `send_json`. The real WS delivery path is covered separately by
+`test_agents.py::test_ws_heartbeat`.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 
 class _SpyWebSocket:
-    """agent_connections 의 WebSocket 자리에 꽂아 send_json 호출을 기록."""
+    """Plug into the WebSocket slot of agent_connections and record send_json calls."""
 
     def __init__(self) -> None:
         self.sent: list[dict] = []

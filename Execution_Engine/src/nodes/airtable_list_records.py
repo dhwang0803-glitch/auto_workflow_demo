@@ -1,6 +1,6 @@
-"""AirtableListRecordsNode — Airtable REST API 레코드 목록 조회.
+"""AirtableListRecordsNode — list records via the Airtable REST API.
 
-filterByFormula / maxRecords / view 는 query param 으로 전송.
+filterByFormula / maxRecords / view are sent as query params.
 """
 from __future__ import annotations
 

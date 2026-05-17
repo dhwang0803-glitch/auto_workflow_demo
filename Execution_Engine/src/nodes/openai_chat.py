@@ -1,6 +1,6 @@
-"""OpenAIChatNode — Chat Completions 단일 응답.
+"""OpenAIChatNode — single response from Chat Completions.
 
-api_token 은 http_bearer credential_type 으로 주입되어 config 에 평문 존재.
+api_token is injected via the http_bearer credential_type, so it exists in config in plaintext.
 """
 from __future__ import annotations
 

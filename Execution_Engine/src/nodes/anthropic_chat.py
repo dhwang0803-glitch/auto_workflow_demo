@@ -1,7 +1,7 @@
-"""AnthropicChatNode — Anthropic Messages API 단일 응답.
+"""AnthropicChatNode — single response via the Anthropic Messages API.
 
-OpenAI 와 달리 x-api-key 헤더, system 은 top-level 필드, max_tokens 필수.
-api_token 은 http_bearer credential_type 으로 주입되어 config 에 평문 존재.
+Unlike OpenAI: x-api-key header, system is a top-level field, max_tokens is required.
+api_token is injected via the http_bearer credential_type, so it exists in config in plaintext.
 """
 from __future__ import annotations
 

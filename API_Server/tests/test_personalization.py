@@ -575,7 +575,7 @@ async def test_activate_propagates_to_ai_agent_memory(pz_client_factory):
 
         assert len(fake.upsert_calls) == 1
         call = fake.upsert_calls[0]
-        # Stable string for the wire (UUID 객체 그대로 직렬화하면 JSON 호환성 깨짐).
+        # Stable string for the wire (serializing the UUID object directly breaks JSON compatibility).
         UUID(call["user_id"])  # validates the shape rather than the value
         skill = call["skill"]
         assert skill["id"] == cid

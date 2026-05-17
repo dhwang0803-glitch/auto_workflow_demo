@@ -57,3 +57,4 @@ Thumbs.db
 .idea/
 .vscode/
 .tmp/
+scheduled_tasks.lock

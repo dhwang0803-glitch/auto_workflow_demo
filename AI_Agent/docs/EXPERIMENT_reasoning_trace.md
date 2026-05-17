@@ -1,37 +1,37 @@
-# Gemma 4 reasoning trace — 실험 노트 + 재현 가이드
+# Gemma 4 reasoning trace — experiment notes + reproduction guide
 
-PLAN_12 W3-4 후속 진단 (2026-05-05 후반 세션). max_tokens 1024→4096 으로 90% 도달 후 잔여 *2건 stochastic 실패* 와 *dense chunk 의 30-77s latency* 의 근본 원인을 추적해 도달한 결과.
+A follow-up diagnostic to PLAN_12 W3-4 (late session, 2026-05-05). After raising max_tokens from 1024 → 4096 reached 90%, this is the result of tracking down the root causes of the remaining *2 stochastic failures* and the *30–77 s latency on dense chunks*.
 
-> 전체 세션 narrative + 메모리 인덱스: auto-memory `reference_gemma4_reasoning_trace.md`, `project_session_20260505_reasoning_root_cause.md`. 이 문서는 codebase 내부에서 *실험을 이어서 진행* 할 때의 진입점이다.
+> Full session narrative + memory index: auto-memory `reference_gemma4_reasoning_trace.md`, `project_session_20260505_reasoning_root_cause.md`. This document is the entry point for *continuing the experiment* from inside the codebase.
 
-## 1. 결과 요약
+## 1. Result summary
 
-| 지표 | reasoning ON (4차/5차) | reasoning OFF (6차) | 변화 |
+| Metric | reasoning ON (cycles 4/5) | reasoning OFF (cycle 6) | Delta |
 |---|---|---|---|
-| 총 wall time | ~600s (10분) | **~55s** | **-91%** |
-| 실패율 | 10% (4차) → 0% (5차 budget 4096 후) | **0%** | |
-| 평균 dense chunk | 30-77s | 2.8-5.5s | -90% |
-| 평균 빈 응답 chunk | ~10-30s | **0.7-1.0s** | -97% |
-| candidates 수 | 14-19 (cycle 변동) | **10** | **-29% recall** |
+| Total wall time | ~600 s (10 min) | **~55 s** | **-91%** |
+| Failure rate | 10% (cycle 4) → 0% (cycle 5 after budget 4096) | **0%** | |
+| Average dense chunk | 30–77 s | 2.8–5.5 s | -90% |
+| Average empty-response chunk | ~10–30 s | **0.7–1.0 s** | -97% |
+| Number of candidates | 14–19 (cycle variance) | **10** | **-29% recall** |
 
-20 chunk fixture (`tests/fixtures/gitlab_handbook_excerpt.pdf`) 기준.
+Based on a 20-chunk fixture (`tests/fixtures/gitlab_handbook_excerpt.pdf`).
 
-## 2. 근본 원인
+## 2. Root cause
 
-Gemma 4 26B-A4B 는 hidden reasoning model. `<think>...</think>` 트레이스를 emit 하고, llama-server 의 chat-template 파서가 그 트레이스를 visible `choices[0].message.content` 에서 자동 stripping. 사용자/caller 는 못 보지만 GPU 시간과 max_tokens budget 은 그대로 소비.
+Gemma 4 26B-A4B is a hidden-reasoning model. It emits a `<think>...</think>` trace, and llama-server's chat-template parser automatically strips that trace from the visible `choices[0].message.content`. The caller never sees it, but the GPU time and the max_tokens budget are consumed all the same.
 
-**결정적 증거** (Modal 로그 한 줄):
+**Decisive evidence** (one line from a Modal log):
 
 ```
 eval time = 76063.81 ms / 3832 tokens (50.38 tok/s)
 slot release: stop processing: n_tokens = 4484, truncated = 0
 ```
 
-같은 호출의 응답 본문: `len(content) = 655` (~165 tokens).
+Body of the same call: `len(content) = 655` (~165 tokens).
 
-생성 3832 토큰 / visible 165 토큰 = **3667 토큰이 chat-template 에서 strip**.
+3832 tokens generated / 165 tokens visible = **3667 tokens stripped by the chat template**.
 
-## 3. 적용된 fix
+## 3. Applied fix
 
 `app/backends/llamacpp_gemma.py::_chat_payload`:
 
@@ -40,35 +40,35 @@ slot release: stop processing: n_tokens = 4484, truncated = 0
 "reasoning_format": "none",
 ```
 
-두 필드 동시 송신 — llama-server 빌드별로 어느 키를 인식할지 달라서. 모르는 키는 silently 무시.
+Both fields are sent at once — depending on the llama-server build, different keys are recognized. Unknown keys are silently ignored.
 
-## 4. 미해결 trade-off
+## 4. Outstanding trade-off
 
-candidates **14 → 10** (-29%). 사라진 후보:
+candidates dropped from **14 → 10** (-29%). Lost candidates:
 
-| chunk | 5차 (reasoning ON) | 6차 (reasoning OFF) |
+| chunk | cycle 5 (reasoning ON) | cycle 6 (reasoning OFF) |
 |---|---|---|
-| #8 | "Allocate Compute Minutes by tier" | (없음) |
-| #12 | "Request CustomersDot Admin Access" | (없음) |
-| #15 | "format_zuora_access_requests" | (없음) |
-| #18 | "exclude_out_of_scope_requests_from_queue" | (없음) |
+| #8 | "Allocate Compute Minutes by tier" | (missing) |
+| #12 | "Request CustomersDot Admin Access" | (missing) |
+| #15 | "format_zuora_access_requests" | (missing) |
+| #18 | "exclude_out_of_scope_requests_from_queue" | (missing) |
 
-모두 명확한 정책 — reasoning 없으면 모델이 보수적으로 해석해서 거름. interview path 가 사용자로부터 보충하지만 docs path 단독 가치는 떨어짐.
+All are clear policies — without reasoning, the model interprets conservatively and filters them out. The interview path lets the user fill them back in, but the standalone value of the docs path drops.
 
-## 5. 실험 결과 (2026-05-06 종결)
+## 5. Experiment results (closed 2026-05-06)
 
-> **결정: 옵션 D 의 변형이 winner — system prompt 에 "high recall over precision" bias 추가**.
-> 본 §5.1 의 데이터로 옵션 D 가 docs path 단독 recall 을 10 → 16 으로 회복하면서 latency 는 default 그대로 유지함을 확인. Phase 3 burn-in PR 에서 default `_system_prompt` 에 흡수 + Phase 1 계측 surface 전부 제거.
+> **Decision: a variant of option D is the winner — add "high recall over precision" bias to the system prompt**.
+> The data in §5.1 below shows option D recovers docs-path-only recall from 10 → 16 while keeping latency at the default. Phase 3 burn-in PR absorbs this into the default `_system_prompt` and removes all Phase 1 instrumentation surfaces.
 
-### 5.1. Phase 0 / Phase 2 측정 데이터
+### 5.1. Phase 0 / Phase 2 measurement data
 
-3 사이클 진행:
+Three cycles run:
 
-- **Phase 0 (baseline 분산)**: smoke 3회 동일조건 → 10 candidates / 2 needs_clarif / 41s warm. 청크별 분포 + 추출 텍스트가 byte-identical → **결정적 (variance = 0)**. 누락 4건은 stochastic 이 아닌 systematic conservatism — 재시도/리트라이로 회수 불가능.
-- **Phase 1 (계측 surface, PR #154)**: `/v1/policy/extract` 가 4 개 실험용 request 필드 수용 (`system_prompt_override`, `enable_thinking`, `temperature`, `include_raw`). 스모크 스크립트도 `--strictness {default,aggressive,lenient}` / `--enable-thinking` / `--temperature` flag. 1회 redeploy 로 이후 모든 sweep 가 client-side iteration.
-- **Phase 2 (스윕)**: 7 셀.
+- **Phase 0 (baseline variance)**: 3 smoke runs under identical conditions → 10 candidates / 2 needs_clarif / 41 s warm. The per-chunk distribution and extracted text are byte-identical → **deterministic (variance = 0)**. The 4 missing items are not stochastic but systematic conservatism — cannot be recovered by retry.
+- **Phase 1 (instrumentation surface, PR #154)**: `/v1/policy/extract` accepts 4 experiment request fields (`system_prompt_override`, `enable_thinking`, `temperature`, `include_raw`). The smoke script also gains `--strictness {default,aggressive,lenient}` / `--enable-thinking` / `--temperature` flags. One redeploy turns every later sweep into client-side iteration.
+- **Phase 2 (sweep)**: 7 cells.
 
-| 셀 | strictness | thinking | temp | candidates | needs_clarif | wall (s) |
+| Cell | strictness | thinking | temp | candidates | needs_clarif | wall (s) |
 |---|---|---|---|---|---|---|
 | S0 | default | OFF | 0 | 10 | 2 | 64 |
 | **S1** | default | **ON** | 0 | **14** | 3 | **634** |
@@ -78,30 +78,30 @@ candidates **14 → 10** (-29%). 사라진 후보:
 | S4a/b/c | default | OFF | 0.4 | 15-16 | 2 | 50-54 |
 | S5 | aggressive | OFF | 0.4 | 15 | 3 | 52 |
 
-핵심:
+Key findings:
 
-- **Aggressive prompt (S2)** 가 ground truth (S1, 14) 보다 raw count 더 많고 (16) latency 는 default 와 동등. count 결정적 (S2 ↔ S2' 청크별 분포 동일).
-- **Temperature 단독 (S4)** 도 ~16 도달하지만 variance 있음 + #11 같은 boundary 후보 누락. Aggressive 의 결정성이 더 유리.
-- **결합 (S5)** 은 손해 — temp 가 aggressive 의 결정적 #11 finding 을 흩뜨림.
-- **Lenient (S3)** 는 needs_clarification 폭증 (9) 으로 review UI 부하 큼. 비효율.
-- **Reasoning ON 만 회복하는 3건** (#8 Allocate Compute Minutes, #12 CustomersDot Admin, #15 Zuora format) — 모두 dense reference table 파싱이 필요. prompt/sampling 으론 해결 불가. 해커톤 demo 에서는 충분한 다른 후보가 있어 받아들임.
-- **Aggressive 가 추가로 잡는 것** (#11 Join reviewers group, #18 dense exclusion 5-way split) — reasoning ON 도 못 한 것. 정성적으로도 가치 있음.
+- **Aggressive prompt (S2)** produces more raw candidates (16) than ground truth (S1, 14), with latency equal to default. The count is deterministic (S2 ↔ S2' have identical per-chunk distribution).
+- **Temperature alone (S4)** also reaches ~16, but with variance + misses boundary candidates such as #11. Aggressive's determinism is preferable.
+- **Combined (S5)** is a regression — temperature scatters the deterministic #11 finding aggressive locks in.
+- **Lenient (S3)** explodes needs_clarification (9), heavy load on the review UI. Inefficient.
+- **Three items only reasoning ON recovers** (#8 Allocate Compute Minutes, #12 CustomersDot Admin, #15 Zuora format) — all need parsing dense reference tables. Cannot be solved by prompt/sampling. Acceptable for the hackathon demo because there are enough other candidates.
+- **Extra items aggressive catches** (#11 Join reviewers group, #18 dense exclusion 5-way split) — even reasoning ON missed these. Qualitatively valuable too.
 
-### 5.2. 채택된 변경 (Phase 3 burn-in)
+### 5.2. Adopted changes (Phase 3 burn-in)
 
-- `_system_prompt` 끝에 짧은 "## Bias" 절 추가 — "When in doubt, INCLUDE the candidate with needs_clarification=true rather than dropping it."
-- Phase 1 의 4 개 request 필드 / 응답 `raw` / 스모크 flag 모두 제거 (해커톤 main 청결 유지)
-- 기타 인프라 (`enable_thinking=False`, `temperature=0.0`, `reasoning_format=none`) 그대로
+- Short "## Bias" section appended to `_system_prompt` — "When in doubt, INCLUDE the candidate with needs_clarification=true rather than dropping it."
+- Remove all of Phase 1: the 4 request fields, response `raw`, and smoke flags (keep hackathon main clean)
+- Other infrastructure (`enable_thinking=False`, `temperature=0.0`, `reasoning_format=none`) unchanged
 
-### 5.3. 폐기된 옵션 (참고용)
+### 5.3. Discarded options (for reference)
 
-### 옵션 A: 현 fix 유지 + recall 회수 보류
+### Option A: keep current fix + defer recall recovery
 
-해커톤 데모 우선. 인터뷰 path 가 자연스럽게 보충. 코드 변경 없음.
+Demo-first for the hackathon. The interview path naturally fills in. No code change.
 
-### 옵션 B: `--reasoning-budget N` (server-level, 균형)
+### Option B: `--reasoning-budget N` (server-level, balanced)
 
-`scripts/modal_app.py::start_llama_server` cmd 에 추가:
+Add to the `cmd` in `scripts/modal_app.py::start_llama_server`:
 
 ```python
 cmd = [
@@ -111,50 +111,50 @@ cmd = [
 ]
 ```
 
-→ 모델이 N 토큰까지만 reasoning 후 visible 출력 시작. N 튜닝:
-- 0: 현 fix 와 동일 (10/10 candidates 잡지만 recall 14→10 그대로)
-- 256: ~5s/chunk, recall 12-13 추정
-- 512: ~10s/chunk, recall 13-14 추정
-- -1 (unlimited): 원본 거동, recall 14-19 / 30-77s/chunk
+→ The model reasons up to N tokens, then starts producing visible output. Tuning N:
+- 0: same as the current fix (catches 10/10 candidates but recall stays 14→10)
+- 256: ~5 s/chunk, estimated recall 12–13
+- 512: ~10 s/chunk, estimated recall 13–14
+- -1 (unlimited): original behavior, recall 14–19 / 30–77 s/chunk
 
-`chat_template_kwargs` 와 충돌 가능 — 동시에 적용 시 시도해보고 `chat_template_kwargs` 빼야 할 수도.
+May conflict with `chat_template_kwargs` — when applied together, try first and remove `chat_template_kwargs` if needed.
 
-**재현 명령** (Modal 재배포 + smoke):
+**Reproduction commands** (Modal redeploy + smoke):
 
 ```powershell
-$env:REASONING_BUDGET = "256"  # llama-server flag 로 전달
+$env:REASONING_BUDGET = "256"  # passed as a llama-server flag
 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 modal deploy AI_Agent/scripts/modal_app.py
-# Wait for "App deployed" (~4분)
+# Wait for "App deployed" (~4 min)
 cd AI_Agent
 $env:AGENT_URL = "https://dhwang0803--auto-workflow-agent-agentservice-fastapi.modal.run"
 $env:AGENT_BEARER_TOKEN = $(gcloud secrets versions access latest --secret=agent-bearer-token-staging --project=autoworkflowdemo)
 python scripts/smoke_handbook_policy_extract.py | Tee-Object /tmp/smoke_budget_256.txt
 ```
 
-비교 지표: 총 wall time, candidates 수, dense chunks (#4, #13) latency.
+Comparison metrics: total wall time, candidates count, dense-chunks (#4, #13) latency.
 
-### 옵션 C: 2-pass (구조적)
+### Option C: 2-pass (structural)
 
-`policy_extract` 호출 측 (API_Server) 에서:
+On the `policy_extract` caller side (API_Server):
 
-1. 1차: reasoning OFF (현 fix). 빠름. recall 10
-2. 2차 (옵션): 사용자가 "더 발견해줘" 클릭 시 reasoning ON 으로 re-run. recall 14-19
+1. Pass 1: reasoning OFF (current fix). Fast. recall 10
+2. Pass 2 (optional): when the user clicks "find more," re-run with reasoning ON. recall 14-19
 
-복잡도 ↑. 별도 endpoint 또는 query param 으로 reasoning toggle 노출 필요. 단점: GPU time 2x (ON 호출은 느림).
+Higher complexity. Needs a separate endpoint or a query param to toggle reasoning. Downside: 2x GPU time (ON calls are slow).
 
-### 옵션 D (실험): 강한 system prompt 로 reasoning 자제
+### Option D (experiment): suppress reasoning via a stronger system prompt
 
-`enable_thinking=False` 빼고 system prompt 끝에:
+Remove `enable_thinking=False` and append to the end of the system prompt:
 
 > "Output ONLY the JSON object directly. Do not include any reasoning or explanation."
 
-→ reasoning 트레이스를 짧게 emit (모델이 self-suppress). 효과 추정 50-50. 가장 가벼운 시도.
+→ Reasoning trace is emitted briefly (model self-suppresses). Effect estimated 50-50. Lightest attempt.
 
-## 6. 진단 도구 (현재 코드베이스에 남아 있는 것)
+## 6. Diagnostic tools (still present in the current codebase)
 
 ### 6-1. 502 detail dict (`{error, raw_len, raw}`)
 
-`app/main.py::policy_extract` 가 `PolicyExtractParseError` catch 시 raw payload (truncated 1500 chars) 를 detail dict 로 실어 보냄. parse 실패 라이브 발생 시 caller 가 Modal log hop 없이 raw 봄.
+`app/main.py::policy_extract` catches `PolicyExtractParseError` and sends the raw payload (truncated to 1500 chars) as a detail dict. When a parse failure happens live, the caller sees the raw without a Modal log hop.
 
 ```
 HTTP 502
@@ -165,69 +165,69 @@ HTTP 502
 }}
 ```
 
-`PolicyExtractParseError.raw` 는 service 단의 attribute. 운영 시 logger 에 같이 찍을 수도 (현재 안 함).
+`PolicyExtractParseError.raw` is a service-side attribute. In production it could also be written to the logger (currently not).
 
-### 6-2. Modal 로그 grep (재현)
+### 6-2. Modal log grep (reproduction)
 
 ```powershell
 modal app logs auto-workflow-agent --since 600s | Select-String "eval time|stop processing"
 ```
 
-각 호출마다:
-- `eval time = X ms / Y tokens (... tok/s)` ← 생성된 총 토큰
-- `slot release: stop processing: n_tokens = Z` ← prompt + completion 합계
+For each call:
+- `eval time = X ms / Y tokens (... tok/s)` ← total tokens generated
+- `slot release: stop processing: n_tokens = Z` ← prompt + completion sum
 
-`Y` (생성) >> `len(content)/4` (visible) 면 reasoning trace stripping. 이번 발견의 결정 증거 제공한 단일 채널.
+If `Y` (generated) >> `len(content)/4` (visible), reasoning trace is being stripped. The single channel that provided the decisive evidence for this finding.
 
-## 7. 추가 실험 시 재추가 instrumentation (1회용)
+## 7. Re-add this instrumentation (one-shot) when running more experiments
 
-본 fix 가 PR 머지 후, 옵션 B/C/D 시도 시 다시 필요할 수 있는 *임시* 진단:
+After this fix is merged, when trying options B/C/D, the *temporary* instrumentation that may be needed again:
 
-### 7-1. Raw response 노출 (`include_raw` flag)
+### 7-1. Raw response exposure (`include_raw` flag)
 
-PR 머지 시 회수됨 (production surface 깨끗하게 유지). 재시도 시:
+Removed once the PR merged (keep the production surface clean). To re-add:
 
 ```python
-# app/models/skills.py PolicyExtractRequest 에 추가:
+# add to app/models/skills.py PolicyExtractRequest:
 include_raw: bool = False
 
-# PolicyExtractResponse 에 추가:
+# add to PolicyExtractResponse:
 raw: str | None = None
 
-# app/services/policy_extract.py extract_policies 가 (drafts, raw) tuple 반환하게 변경
-# app/main.py policy_extract handler 에서 payload.include_raw 분기로 raw 첨부
+# change app/services/policy_extract.py extract_policies to return (drafts, raw) tuple
+# branch app/main.py policy_extract handler on payload.include_raw to attach raw
 ```
 
-### 7-2. Smoke 스크립트의 raw dump
+### 7-2. Smoke script raw dump
 
-`scripts/smoke_handbook_policy_extract.py` 에서 PR 머지 시 회수됨. 재시도 시:
+In `scripts/smoke_handbook_policy_extract.py`, removed once the PR merged. To re-add:
 
 ```python
-# request 에 "include_raw": True 추가
-# response 에서 raw = body.get("raw") or "" 추출
-# elapsed > 50s 인 chunk 에 대해 dump_path.write_text(raw, encoding="utf-8")
+# add "include_raw": True to the request
+# extract raw = body.get("raw") or "" from the response
+# dump_path.write_text(raw, encoding="utf-8") for any chunk where elapsed > 50s
 ```
 
-본 세션의 git history (revert 직전 commit) 에서 정확한 패치 회수 가능. 또는 본 문서 §3 + §5 의 변경분 참고.
+The exact patch can be recovered from this session's git history (commit just before the revert). Or refer to the changes in §3 + §5 of this document.
 
-## 8. 영향 범위 (다른 LLM 서비스)
+## 8. Scope of impact (other LLM services)
 
-`LlamaCppGemmaBackend` 의 `_chat_payload` 가 backend 단위 공통이라 chat_template_kwargs 가 모든 서비스에 적용됨:
+`LlamaCppGemmaBackend`'s `_chat_payload` is shared across the backend, so `chat_template_kwargs` applies to every service:
 
-| 서비스 | 입력 | 출력 | 영향 추정 | 검증 상태 |
+| Service | Input | Output | Estimated impact | Verification status |
 |---|---|---|---|---|
-| `compose_service` | 자연어 | WorkflowSchema JSON | reasoning 이득 가능성 ↑ | **미검증** |
-| `domain_classifier` | 짧은 텍스트 | DomainCategory | 짧은 입출력, 영향 작음 | unit test only |
-| `gap_analyze` | 정책 list | PolicyGap[] | 중간 입출력 | unit test only |
-| `answers_to_skill` | parameter answers | SkillDraft | 중간 | unit test only |
-| `policy_extract` | document chunk | SkillDraft[] | 본 실험에서 검증됨 | **6차 smoke OK** |
+| `compose_service` | natural language | WorkflowSchema JSON | reasoning likely beneficial | **unverified** |
+| `domain_classifier` | short text | DomainCategory | short I/O, small impact | unit test only |
+| `gap_analyze` | policy list | PolicyGap[] | medium I/O | unit test only |
+| `answers_to_skill` | parameter answers | SkillDraft | medium | unit test only |
+| `policy_extract` | document chunk | SkillDraft[] | verified in this experiment | **cycle 6 smoke OK** |
 
-다른 서비스에서 reasoning 이 본질적으로 필요해지면 `_chat_payload` 를 service-level toggle 로 변경 (예: `complete(*, enable_thinking: bool = False)`). 현재는 모든 서비스가 JSON 출력이라 reasoning 의 이득보다 latency 손해가 큼 — 통합 fix.
+If another service essentially needs reasoning, change `_chat_payload` to a service-level toggle (e.g., `complete(*, enable_thinking: bool = False)`). Right now every service outputs JSON, so the latency loss outweighs the reasoning gain — uniform fix.
 
-## 9. 참고 메모리 / ADR
+## 9. Referenced memory / ADRs
 
-- auto-memory `reference_gemma4_reasoning_trace.md` — 일반 패턴 (진단 방법 + Fix + llama.cpp 옵션 풀)
-- auto-memory `project_session_20260505_reasoning_root_cause.md` — 본 세션 narrative
-- auto-memory `reference_policy_extract_smoke_findings.md` — 4차 smoke 까지의 사이클별 데이터
-- ADR-022 §8.1 (조건+동작 단위), §8.2 (needs_clarification)
-- PLAN_12 §6 (budget 가정), §9 W3 (docs path)
+- auto-memory `reference_gemma4_reasoning_trace.md` — general pattern (diagnostic method + fix + llama.cpp option pool)
+- auto-memory `project_session_20260505_reasoning_root_cause.md` — narrative of this session
+- auto-memory `reference_policy_extract_smoke_findings.md` — per-cycle data up through cycle 4 smoke
+- ADR-022 §8.1 (condition+action unit), §8.2 (needs_clarification)
+- PLAN_12 §6 (budget assumption), §9 W3 (docs path)
