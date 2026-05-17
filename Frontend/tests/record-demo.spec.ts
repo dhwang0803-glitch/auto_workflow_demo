@@ -163,7 +163,16 @@ test("record 30-second demo", async ({}, testInfo) => {
   // that uses it actually runs.
   let bob!: Page;
   const ensureBob = async () => {
-    if (!bob || bob.isClosed()) bob = await bobCtx.newPage();
+    if (!bob || bob.isClosed()) {
+      bob = await bobCtx.newPage();
+      // Critical: Playwright's per-context webm timestamp starts at the
+      // first newPage(), not at ctx creation. Without this reset,
+      // elapsed("bob") (measured from ctxStart, set in newRecordContext)
+      // is ~10-12 s ahead of bob.webm's timeline, and compose_demo_video
+      // cuts the wrong raw frames (bob scenes look like the next scene's
+      // post-LLM state instead of their own input/dwell content).
+      ctxStart["bob"] = Date.now();
+    }
     return bob;
   };
 
@@ -196,7 +205,9 @@ test("record 30-second demo", async ({}, testInfo) => {
       alice,
       "This is alice&rsquo;s team marketplace, with one active policy that everyone benefits from.",
     );
-    await alice.waitForTimeout(5000);  // stable dwell after navigate is cut
+    // 6.5 s — TTS narration for this sentence is 5.7 s, so we need at
+    // least 6.2 s of dwell + a 0.5 s tail before the scene transitions.
+    await alice.waitForTimeout(6500);
     markScene("alice", "scene2a_skills", t0, elapsed("alice"));
     // subtitle persists — next scene runs on bob (different page DOM)
   }
