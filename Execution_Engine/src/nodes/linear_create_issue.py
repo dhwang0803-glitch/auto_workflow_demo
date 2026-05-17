@@ -1,8 +1,8 @@
 """LinearCreateIssueNode — Linear GraphQL `issueCreate` mutation.
 
-Linear API 는 `Authorization: <api_key>` 형태로 Bearer prefix 를 요구하지 않는다
-(lin_api_... Personal API Key). OAuth 토큰을 쓰는 경우만 Bearer 를 붙이는데,
-현 credential_type `http_bearer` 는 Personal API Key 전제.
+The Linear API does not require a Bearer prefix — `Authorization: <api_key>` form
+(lin_api_... Personal API Key). Only OAuth tokens take the Bearer prefix; the current
+credential_type `http_bearer` assumes a Personal API Key.
 """
 from __future__ import annotations
 

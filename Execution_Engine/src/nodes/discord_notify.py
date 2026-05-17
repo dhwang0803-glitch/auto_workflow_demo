@@ -1,6 +1,6 @@
-"""DiscordNotifyNode — Discord Incoming Webhook 메시지 전송.
+"""DiscordNotifyNode — send a message via a Discord Incoming Webhook.
 
-webhook_url 자체가 secret 이므로 별도 credential 불필요 (Slack 동일 패턴).
+webhook_url is itself a secret, so no separate credential is required (same pattern as Slack).
 """
 from __future__ import annotations
 

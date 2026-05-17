@@ -1,9 +1,10 @@
-"""DBQueryNode — Postgres 쿼리 실행 via asyncpg.
+"""DBQueryNode — execute a Postgres query via asyncpg.
 
-DSN 은 credential_ref 로 주입된 `config["connection_url"]` 에 평문으로 들어있다는
-전제 (PLAN_08 Worker 가 해소). 노드 자체는 credential_id 를 모른다.
+The DSN is assumed to be in `config["connection_url"]` in plaintext, injected via
+credential_ref (resolved by the PLAN_08 Worker). The node itself does not know the
+credential_id.
 
-파라미터는 asyncpg `$N` 플레이스홀더만 허용 — 문자열 interpolation 금지.
+Parameters accept only the asyncpg `$N` placeholder — no string interpolation.
 """
 from __future__ import annotations
 

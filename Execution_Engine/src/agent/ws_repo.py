@@ -1,8 +1,8 @@
-"""WebSocketExecutionRepository — DB 없이 WS로 실행 상태를 서버에 보고.
+"""WebSocketExecutionRepository — report execution state to the server over WS without a DB.
 
-Agent는 고객 VPC에서 실행되어 DB 직접 접근이 없다. executor의
-ExecutionRepository ABC를 WS 메시지 전송으로 구현하여 run_workflow()가
-serverless/agent 양쪽에서 동일하게 동작한다.
+The Agent runs inside the customer's VPC and has no direct DB access. We implement
+executor's ExecutionRepository ABC as WS message sending so that run_workflow() behaves
+identically in both serverless and agent modes.
 """
 from __future__ import annotations
 

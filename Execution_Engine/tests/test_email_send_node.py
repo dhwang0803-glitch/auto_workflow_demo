@@ -1,6 +1,6 @@
 """PLAN_07 — EmailSendNode tests.
 
-aiosmtplib.send 는 AsyncMock 으로 패치하여 실제 SMTP 연결 없이 호출 인자 검증.
+aiosmtplib.send is patched with AsyncMock to verify call arguments without a real SMTP connection.
 """
 from __future__ import annotations
 

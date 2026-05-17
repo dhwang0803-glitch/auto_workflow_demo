@@ -1,6 +1,6 @@
-"""AirtableCreateRecordNode — Airtable REST API 레코드 1건 생성.
+"""AirtableCreateRecordNode — create a single record via the Airtable REST API.
 
-URL 은 base_id + table 로 런타임 합성. table 은 name 또는 tblXXXX id 둘 다 허용.
+The URL is composed at runtime from base_id + table. table accepts both a name and a tblXXXX id.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class AirtableCreateRecordNode(BaseNode):
     async def execute(self, input_data: dict, config: dict) -> dict:
         api_token = config["api_token"]
         base_id = config["base_id"]
-        # table 은 한글/공백 포함 가능 → path segment 인코딩 필요 (slash 보존 금지)
+        # table may contain non-ASCII chars / spaces → path-segment encode (do not preserve slashes)
         table = quote(config["table"], safe="")
         url = f"https://api.airtable.com/v0/{base_id}/{table}"
 

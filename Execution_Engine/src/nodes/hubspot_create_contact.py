@@ -1,7 +1,7 @@
-"""HubSpotCreateContactNode — HubSpot CRM API Contact 생성.
+"""HubSpotCreateContactNode — create a Contact via the HubSpot CRM API.
 
-api_token 은 HubSpot Private App token. http_bearer 주입 전제.
-properties dict 는 email/firstname/lastname 등 HubSpot 표준 필드 + 커스텀 필드.
+api_token is a HubSpot Private App token, injected via http_bearer.
+The properties dict contains HubSpot standard fields (email/firstname/lastname) + custom fields.
 """
 from __future__ import annotations
 

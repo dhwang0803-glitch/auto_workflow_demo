@@ -1,14 +1,14 @@
-"""LoopItemsNode — worker 노드를 item 배열로 N 회 실행.
+"""LoopItemsNode — run a worker node N times across an item array.
 
-본 노드는 visual subgraph 없이 "노드가 노드를 호출" 패턴으로 loop 를
-구현. Frontend visual editor 가 들어오면 별도 PLAN 에서 재설계 예정.
+This node implements the loop via the "node calls node" pattern, without a visual
+subgraph. To be redesigned in a separate PLAN once the Frontend visual editor lands.
 
-config 템플릿 치환:
-- worker_config 의 값이 "{item}" 이면 item 자체 치환
-- "{item.field}" 이면 점 경로 조회
+config template substitution:
+- if a value in worker_config is "{item}", substitute the item itself
+- if it is "{item.field}", do a dotted-path lookup
 
-실패 격리: 하나가 실패해도 나머지 실행. 실패 결과는 {_error: str} 로 포함.
-재귀 방지: worker_type == "loop_items" 는 거부 (depth=1 cap).
+Failure isolation: if one item fails, the rest still run. The failure result is included as {_error: str}.
+Recursion guard: worker_type == "loop_items" is rejected (depth=1 cap).
 """
 from __future__ import annotations
 

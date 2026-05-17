@@ -1,7 +1,7 @@
-"""GitHubCreateIssueNode — GitHub REST API 이슈 생성.
+"""GitHubCreateIssueNode — create an issue via the GitHub REST API.
 
-api_token 은 classic PAT 또는 fine-grained token. http_bearer 주입 전제.
-X-GitHub-Api-Version 은 안정 API 계약 고정용.
+api_token is a classic PAT or a fine-grained token, injected via http_bearer.
+X-GitHub-Api-Version pins the stable API contract.
 """
 from __future__ import annotations
 

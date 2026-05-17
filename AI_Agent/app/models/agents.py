@@ -17,8 +17,8 @@ Import direction is one-way:
 
 The response packages the same internal AgentIteration + EvalReport
 Pydantic models — operators get the full reasoning trace without an
-external tracing UI (PLAN_13 §3 In-Scope: "응답에 `agent_trace`
-포함"). The companion `langsmith_url` is populated when LangSmith
+external tracing UI (PLAN_13 §3 In-Scope: "include `agent_trace`
+in the response"). The companion `langsmith_url` is populated when LangSmith
 tracing is enabled (PR-D wires it); PR-C leaves it null.
 """
 from __future__ import annotations

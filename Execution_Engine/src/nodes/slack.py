@@ -1,4 +1,4 @@
-"""SlackNotifyNode — Incoming Webhook 알림 전송."""
+"""SlackNotifyNode — send a notification via Incoming Webhook."""
 from __future__ import annotations
 
 import httpx

@@ -1,7 +1,7 @@
-"""EmailSendNode — SMTP 전송 via aiosmtplib.
+"""EmailSendNode — send over SMTP via aiosmtplib.
 
-파일명 email_send.py 는 stdlib `email` 패키지 shadowing 회피 목적.
-자격증명은 config 로 주입된 값을 함수 지역 변수로 1회 사용 후 범위 종료.
+The filename `email_send.py` avoids shadowing the stdlib `email` package.
+The credential injected via config is used once as a function-local variable and then leaves scope.
 """
 from __future__ import annotations
 

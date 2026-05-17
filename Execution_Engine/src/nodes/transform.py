@@ -1,10 +1,10 @@
-"""TransformNode — 선언적 필드 매핑.
+"""TransformNode — declarative field mapping.
 
-config.mapping 의 각 값에 대해:
-- 값이 "{input.foo.bar}" 패턴이면 input_data 에서 점 경로로 조회해 치환
-- 그 외 문자열/원시 값은 그대로 보존
+For each value in config.mapping:
+- if the value matches the pattern "{input.foo.bar}", do a dotted-path lookup in input_data and substitute
+- otherwise preserve the string/primitive value as-is
 
-누락 키는 config.defaults[key] 가 있으면 그것으로, 아니면 None.
+Missing keys fall back to config.defaults[key] if present, otherwise None.
 """
 from __future__ import annotations
 

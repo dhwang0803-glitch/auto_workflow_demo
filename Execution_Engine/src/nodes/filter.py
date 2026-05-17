@@ -1,9 +1,9 @@
-"""FilterNode — 배열 필터링.
+"""FilterNode — filter an array.
 
-input_data[items_key] 에서 배열을 꺼내 config.condition 을 각 item 에
-적용. operator 는 eq/ne/gt/lt/gte/lte/contains/in/truthy 지원.
+Pull the array from input_data[items_key] and apply config.condition to each item.
+operator supports eq/ne/gt/lt/gte/lte/contains/in/truthy.
 
-복합 조건 (AND/OR) 은 filter 를 체이닝하거나 code 노드로 대체.
+For compound conditions (AND/OR), chain filters or fall back to a code node.
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""PLAN_09 — DBQueryNode tests (AsyncMock 으로 asyncpg 패치)."""
+"""PLAN_09 — DBQueryNode tests (asyncpg patched with AsyncMock)."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock

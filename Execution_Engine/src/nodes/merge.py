@@ -1,8 +1,8 @@
-"""MergeNode — 명시적 수렴점.
+"""MergeNode — an explicit convergence point.
 
-executor 가 이미 predecessor output 을 input_data 에 dict merge 하므로
-(executor.py line 60~64) 본 노드는 사실상 no-op passthrough. 그래프 상
-"분기 후 합치기" 의도를 명시하는 용도.
+executor already dict-merges predecessor output into input_data
+(executor.py lines 60–64), so this node is effectively a no-op passthrough. Its purpose
+is to make the graph's "branch then merge" intent explicit.
 """
 from __future__ import annotations
 
